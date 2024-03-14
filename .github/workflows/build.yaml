@@ -17,7 +17,7 @@ jobs:
           python-version: 3.11
       - name: 🏗 Install build dependencies
         run: |
-          python -m pip install wheel build --user
+          python -m pip install -U wheel build setuptools --user
       - name: 🔨 Build a binary wheel and a source tarball
         run: |
           python -m build --wheel
@@ -32,6 +32,15 @@ jobs:
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: dist/*.whl
+          tag: ${{ github.event.release.tag_name }}
+          overwrite: true
+          file_glob: true
+      - name: ➕ Upload CHANGELOG to GH release page
+        uses: svenstaro/upload-release-action@v2
+        if: github.event_name == 'release' && github.repository == 'Pioreactor/pioreactor'
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: CHANGELOG.md
           tag: ${{ github.event.release.tag_name }}
           overwrite: true
           file_glob: true

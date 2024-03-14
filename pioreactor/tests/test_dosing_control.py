@@ -18,6 +18,7 @@ from pioreactor import pubsub
 from pioreactor import structs
 from pioreactor.automations import events
 from pioreactor.automations.dosing.base import AltMediaFractionCalculator
+from pioreactor.automations.dosing.base import close
 from pioreactor.automations.dosing.base import DosingAutomationJob
 from pioreactor.automations.dosing.base import VialVolumeCalculator
 from pioreactor.automations.dosing.pid_morbidostat import PIDMorbidostat
@@ -33,10 +34,6 @@ from pioreactor.whoami import get_unit_name
 
 
 unit = get_unit_name()
-
-
-def close(x: float, y: float) -> bool:
-    return abs(x - y) < 1e-10
 
 
 def pause(n=1) -> None:
@@ -161,7 +158,12 @@ def test_turbidostat_automation() -> None:
     experiment = "test_turbidostat_automation"
     target_od = 1.0
     with Turbidostat(
-        target_normalized_od=target_od, duration=60, volume=0.25, unit=unit, experiment=experiment
+        target_normalized_od=target_od,
+        duration=60,
+        volume=0.25,
+        unit=unit,
+        experiment=experiment,
+        skip_first_run=True,
     ) as algo:
         pubsub.publish(
             f"pioreactor/{unit}/{experiment}/growth_rate_calculating/growth_rate",
@@ -331,6 +333,7 @@ def test_pid_morbidostat_automation() -> None:
         target_normalized_od=1.0,
         target_growth_rate=target_growth_rate,
         duration=60,
+        skip_first_run=True,
         unit=unit,
         experiment=experiment,
     ) as algo:
@@ -409,6 +412,7 @@ def test_changing_turbidostat_params_over_mqtt() -> None:
         duration=60,
         unit=unit,
         experiment=experiment,
+        skip_first_run=True,
     )
     assert algo.volume == og_volume
 
@@ -523,8 +527,8 @@ def test_old_readings_will_not_execute_io() -> None:
         assert isinstance(algo.run(), events.NoEvent)
 
 
-def test_throughput_calculator() -> None:
-    experiment = "test_throughput_calculator"
+def test_throughput_calculator_multiple_types() -> None:
+    experiment = "test_throughput_calculator_multiple_types"
 
     with DosingController(
         unit,
@@ -533,6 +537,7 @@ def test_throughput_calculator() -> None:
         target_growth_rate=0.05,
         target_normalized_od=1.0,
         duration=60,
+        skip_first_run=True,
     ) as algo:
         assert algo.automation_job.media_throughput == 0
         pause()
@@ -692,6 +697,20 @@ def test_execute_io_action_outputs1() -> None:
         assert result["media_ml"] == 1.25
         assert result["alt_media_ml"] == 0.01
         assert result["waste_ml"] == 1.26
+
+
+def test_execute_io_action_outputs_float_point_error() -> None:
+    # regression test
+    experiment = "test_execute_io_action_outputs1"
+
+    with DosingAutomationJob(unit=unit, experiment=experiment) as ca:
+        media = 0.1
+        waste = 1.2 - 1.1  # should be ~0.09999999999999987
+        assert waste < 0.1
+
+        result = ca.execute_io_action(media_ml=media, waste_ml=waste)
+        assert result["media_ml"] == media
+        assert result["waste_ml"] == waste
 
 
 def test_mqtt_properties_in_dosing_automations() -> None:
@@ -1106,13 +1125,12 @@ def test_what_happens_when_no_od_data_is_coming_in() -> None:
         retain=True,
     )
 
-    algo = Turbidostat(
+    with Turbidostat(
         target_normalized_od=0.1, duration=40 / 60, volume=0.25, unit=unit, experiment=experiment
-    )
-    pause()
-    event = algo.run()
-    assert isinstance(event, events.ErrorOccurred)
-    algo.clean_up()
+    ) as algo:
+        pause()
+        event = algo.run()
+        assert isinstance(event, events.ErrorOccurred)
 
 
 def test_AltMediaFractionCalculator() -> None:
@@ -1495,13 +1513,17 @@ def test_adding_pumps_and_calling_them_from_execute_io_action() -> None:
     class ExternalAutomation(DosingAutomationJob):
         automation_name = "_test_external_automation"
 
-        def add_salty_media_to_bioreactor(self, unit, experiment, ml, source_of_event):
-            self.logger.info(f"dosing {ml / 2}mL from salty")
+        def add_salty_media_to_bioreactor(
+            self, unit, experiment, ml, source_of_event, mqtt_client, logger
+        ) -> float:
+            logger.info(f"dosing {ml / 2}mL from salty")
             pause()
             return ml / 2
 
-        def add_acid_media_to_bioreactor(self, unit, experiment, ml, source_of_event):
-            self.logger.info(f"dosing {ml}mL from acid")
+        def add_acid_media_to_bioreactor(
+            self, unit, experiment, ml, source_of_event, mqtt_client, logger
+        ) -> float:
+            logger.info(f"dosing {ml}mL from acid")
             pause()
             return ml
 
@@ -1519,7 +1541,7 @@ def test_adding_pumps_and_calling_them_from_execute_io_action() -> None:
         unit,
         experiment,
     ):
-        pause(60)
+        pause(40)
 
 
 def test_execute_io_action_errors() -> None:
@@ -1581,6 +1603,7 @@ def test_automation_will_pause_itself_if_pumping_goes_above_safety_threshold() -
 
         job.set_state("ready")
         assert job.state == "ready"
+
         pause()
         pause()
         pause()
@@ -1593,7 +1616,7 @@ def test_warning_is_logged_if_under_remove_waste() -> None:
     class BadWasteRemoval(DosingAutomationJob):
         automation_name = "_test_bad_waste_removal"
 
-        def remove_waste_from_bioreactor(self, unit, experiment, ml, source_of_event, mqtt_client):
+        def remove_waste_from_bioreactor(self, unit, experiment, ml, source_of_event, mqtt_client, logger):
             return ml / 2
 
         def execute(self):

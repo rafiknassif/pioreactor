@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import subprocess
 from contextlib import suppress
-from json import loads
+from shlex import join  # https://docs.python.org/3/library/shlex.html#shlex.quote
 from threading import Thread
 from time import sleep
 from typing import Any
@@ -12,6 +12,7 @@ from typing import Optional
 
 import click
 import lgpio
+from msgspec.json import decode as loads
 
 from pioreactor import error_codes
 from pioreactor import utils
@@ -20,8 +21,7 @@ from pioreactor import whoami
 from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.config import config
 from pioreactor.config import get_config
-from pioreactor.config import leader_address
-from pioreactor.config import leader_hostname
+from pioreactor.config import mqtt_address
 from pioreactor.hardware import GPIOCHIP
 from pioreactor.hardware import is_HAT_present
 from pioreactor.hardware import PCB_BUTTON_PIN as BUTTON_PIN
@@ -87,7 +87,7 @@ class Monitor(BackgroundJob):
     published_settings = {
         "computer_statistics": {"datatype": "json", "settable": False},
         "button_down": {"datatype": "boolean", "settable": False},
-        "versions": {"datatype": "json", "settable": False},
+        "versions": {"datatype": "json", "settable": True},
         "voltage_on_pwm_rail": {"datatype": "Voltage", "settable": False},
         "ipv4": {"datatype": "string", "settable": False},
         "wlan_mac_address": {"datatype": "string", "settable": False},
@@ -103,25 +103,22 @@ class Monitor(BackgroundJob):
         def pretty_version(info: tuple) -> str:
             return ".".join((str(x) for x in info))
 
-        # TODO: problem: these values aren't updated when software updates, only on monitor init. This makes them unreliable
-        # Sol1: restart monitor after pio update app - but this is very heavy handed.
-        # Sol2: pio update app republishes this data, OR publishes an event that Monitor listens to.
-        #
         self.versions = {
-            "software": pretty_version(version.software_version_info),
+            "app": pretty_version(version.software_version_info),
             "hat": pretty_version(version.hardware_version_info),
+            "firmware": pretty_version(version.get_firmware_version()),
             "hat_serial": version.serial_number,
+            "rpi_machine": version.rpi_version_info,
             "timestamp": current_utc_timestamp(),
         }
 
-        self.logger.debug(f"Pioreactor software version: {pretty_version(version.software_version_info)}")
+        self.logger.debug(f"Pioreactor software version: {self.versions['app']}")
+        self.logger.debug(f"Raspberry Pi: {self.versions['rpi_machine']}")
 
         if whoami.am_I_active_worker():
             self.logger.debug(f"Pioreactor HAT version: {self.versions['hat']}")
 
-            self.logger.debug(
-                f"Pioreactor firmware version: {pretty_version(version.get_firmware_version())}"
-            )
+            self.logger.debug(f"Pioreactor firmware version: {self.versions['firmware']}")
 
             self.logger.debug(f"Pioreactor HAT serial number: {self.versions['hat_serial']}")
 
@@ -244,14 +241,15 @@ class Monitor(BackgroundJob):
 
         for file in [
             storage_path / "pioreactor.sqlite",
-            storage_path
-            / "pioreactor.sqlite-shm",  # this and wal sometimes aren't present at when monitor starts
+            # shm and wal sometimes aren't present at when monitor starts
+            storage_path / "pioreactor.sqlite-shm",
             storage_path / "pioreactor.sqlite-wal",
         ]:
             if file.exists() and (file.owner() != "pioreactor" or file.group() != "www-data"):
-                self.logger.error(
-                    f"Pioreactor sqlite database files has the wrong permissions. Check `ls -al {config.get('storage', 'database')}*`."
+                self.logger.warning(
+                    f"Pioreactor sqlite database file {file} has the wrong permissions / does not exist."
                 )
+                break
 
         return
 
@@ -398,7 +396,7 @@ class Monitor(BackgroundJob):
 
             self.logger.warning(
                 f"""Not able to connect MQTT clients to leader.
-1. Is the leader, {leader_hostname} at {leader_address}, in config.ini correct?
+1. Is the {mqtt_address=}, in config.ini correct?
 2. Is the Pioreactor leader online and responsive?
 """
             )  # remember, this doesn't get published to leader...
@@ -639,12 +637,13 @@ class Monitor(BackgroundJob):
         job_name = msg.topic.split("/")[-1]
         payload = loads(msg.payload) if msg.payload else {"options": {}, "args": []}
 
-        if "options" not in payload:
-            self.logger.debug("`options` key missing from payload. You should provide an empty dictionary.")
+        # if "options" not in payload:
+        #    self.logger.debug("`options` key missing from payload. You should provide an empty dictionary.")
+
         options = payload.get("options", {})
 
-        if "args" not in payload:
-            self.logger.debug("`args` key missing from payload. You should provide an empty list.")
+        # if "args" not in payload:
+        #    self.logger.debug("`args` key missing from payload. You should provide an empty list.")
 
         args = payload.get("args", [])
 
@@ -662,13 +661,13 @@ class Monitor(BackgroundJob):
                 kwargs={"sleep_for": 0.4, "retries": 5},
             ).start()
 
-        elif job_name in (
+        elif job_name in {
             "add_media",
             "add_alt_media",
             "remove_waste",
             "circulate_media",
             "circulate_alt_media",
-        ):
+        }:
             from pioreactor.actions import pump as pump_actions
 
             pump_action = getattr(pump_actions, job_name)
@@ -677,27 +676,22 @@ class Monitor(BackgroundJob):
             options["experiment"] = whoami._get_latest_experiment_name()  # techdebt
             options["config"] = get_config()  # techdebt
             Thread(target=pump_action, kwargs=options, daemon=True).start()
+            self.logger.debug(f"Running `{job_name}` from monitor job.")
 
         else:
             command = self._job_options_and_args_to_shell_command(job_name, args, options)
-
-            self.logger.debug(f"Running `{command}` from monitor job.")
-
             Thread(
                 target=subprocess.run,
                 args=(command,),
                 kwargs={"shell": True, "start_new_session": True},
                 daemon=True,
             ).start()
+            self.logger.debug(f"Running `{command}` from monitor job.")
 
     @staticmethod
     def _job_options_and_args_to_shell_command(
         job_name: str, args: list[str], options: dict[str, Any]
     ) -> str:
-        from shlex import join  # https://docs.python.org/3/library/shlex.html#shlex.quote
-
-        prefix = "nohup"
-
         core_command = ["pio", "run", job_name]
 
         list_of_options: list[str] = []
@@ -707,13 +701,9 @@ class Monitor(BackgroundJob):
                 # this handles flag arguments, like --dry-run
                 list_of_options.append(str(value))
 
-        suffix = ">/dev/null 2>&1 &"
-
         # shell-escaped to protect against injection vulnerabilities, see join docs
         # we don't escape the suffix.
-        command = prefix + " " + join(core_command + args + list_of_options) + " " + suffix
-
-        return command
+        return f"nohup {join(core_command + args + list_of_options)} >/dev/null 2>&1 &"
 
     def flicker_error_code_from_mqtt(self, message: MQTTMessage) -> None:
         if self.led_in_use:
@@ -721,6 +711,14 @@ class Monitor(BackgroundJob):
 
         error_code = int(message.payload)
         Thread(target=self.flicker_led_with_error_code, args=(error_code,), daemon=True).start()
+
+    def set_versions(self, data: dict):
+        # first remove any extra keys
+        for key in data:
+            if key not in self.versions:
+                data.pop(key)
+
+        self.versions = self.versions | data
 
     def start_passive_listeners(self) -> None:
         self.subscribe_and_callback(

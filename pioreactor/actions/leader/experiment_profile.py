@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import re
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -16,10 +15,8 @@ from msgspec.yaml import decode
 from pioreactor.config import get_active_workers_in_inventory
 from pioreactor.config import leader_address
 from pioreactor.experiment_profiles import profile_struct as struct
-from pioreactor.experiment_profiles.parser import check_syntax
-from pioreactor.experiment_profiles.parser import parse_profile_expression
-from pioreactor.experiment_profiles.parser import parse_profile_expression_to_bool
 from pioreactor.logging import create_logger
+from pioreactor.logging import CustomLogger
 from pioreactor.mureq import put
 from pioreactor.pubsub import publish
 from pioreactor.utils import publish_ready_to_disconnected_state
@@ -29,8 +26,8 @@ from pioreactor.whoami import get_unit_name
 bool_expression = str | bool
 
 
-def wrap_in_try_except(func, logger):
-    def inner_function(*args, **kwargs):
+def wrap_in_try_except(func, logger: CustomLogger) -> Callable:
+    def inner_function(*args, **kwargs) -> None:
         try:
             func(*args, **kwargs)
         except Exception as e:
@@ -39,12 +36,16 @@ def wrap_in_try_except(func, logger):
     return inner_function
 
 
-def is_bracketed_expression(value) -> bool:
+def is_bracketed_expression(value: str) -> bool:
+    import re
+
     pattern = r"\${{(.*?)}}"
     return bool(re.search(pattern, str(value)))
 
 
-def strip_expression_brackets(value) -> str:
+def strip_expression_brackets(value: str) -> str:
+    import re
+
     pattern = r"\${{(.*?)}}"
     match = re.search(pattern, value)
     assert match is not None
@@ -56,6 +57,8 @@ def evaluate_options(options: dict, unit: str) -> dict:
     Users can provide options like {'target_rpm': '${{ bioreactor_A:stirring:target_rpm + 10 }}'}, and the latter
     should be evaluated
     """
+    from pioreactor.experiment_profiles.parser import parse_profile_expression
+
     options_expressed = {}
     for key, value in options.items():
         if is_bracketed_expression(value):
@@ -69,6 +72,8 @@ def evaluate_options(options: dict, unit: str) -> dict:
 
 
 def evaluate_bool_expression(bool_expression: bool_expression, unit: str) -> bool:
+    from pioreactor.experiment_profiles.parser import parse_profile_expression_to_bool
+
     if isinstance(bool_expression, bool):
         return bool_expression
 
@@ -83,6 +88,8 @@ def evaluate_bool_expression(bool_expression: bool_expression, unit: str) -> boo
 
 
 def check_syntax_of_bool_expression(bool_expression: bool_expression) -> bool:
+    from pioreactor.experiment_profiles.parser import check_syntax
+
     if isinstance(bool_expression, bool):
         return True
 
@@ -122,7 +129,7 @@ def _led_intensity_hack(action: struct.Action) -> struct.Action:
             raise ValueError()
 
 
-def get_simple_priority(action):
+def get_simple_priority(action: struct.Action):
     match action:
         case struct.Start():
             return 0
@@ -146,8 +153,8 @@ def wrapped_execute_action(
     unit: str,
     experiment: str,
     job_name: str,
-    logger,
-    schedule,
+    logger: CustomLogger,
+    schedule: scheduler,
     action: struct.Action,
     dry_run: bool = False,
 ) -> Callable[..., None]:
@@ -205,8 +212,8 @@ def chain_functions(*funcs: Callable[[], None]) -> Callable[[], None]:
 def common_wrapped_execute_action(
     experiment: str,
     job_name: str,
-    logger,
-    schedule,
+    logger: CustomLogger,
+    schedule: scheduler,
     action: struct.Action,
     dry_run: bool = False,
 ) -> Callable[..., None]:
@@ -225,7 +232,7 @@ def repeat(
     job_name: str,
     dry_run: bool,
     if_: Optional[bool_expression],
-    logger,
+    logger: CustomLogger,
     repeat_action: struct.Repeat,
     while_: Optional[bool_expression],
     repeat_every_hours: float,
@@ -285,7 +292,7 @@ def log(
     options: struct._LogOptions,
     dry_run: bool,
     if_: Optional[str | bool],
-    logger,
+    logger: CustomLogger,
 ) -> Callable[..., None]:
     def _callable() -> None:
         if (if_ is None) or evaluate_bool_expression(if_, unit):
@@ -305,7 +312,7 @@ def start_job(
     args: list,
     dry_run: bool,
     if_: Optional[str | bool],
-    logger,
+    logger: CustomLogger,
 ) -> Callable[..., None]:
     def _callable() -> None:
         if (if_ is None) or evaluate_bool_expression(if_, unit):
@@ -323,7 +330,12 @@ def start_job(
 
 
 def pause_job(
-    unit: str, experiment: str, job_name: str, dry_run: bool, if_: Optional[str | bool], logger
+    unit: str,
+    experiment: str,
+    job_name: str,
+    dry_run: bool,
+    if_: Optional[str | bool],
+    logger: CustomLogger,
 ) -> Callable[..., None]:
     def _callable() -> None:
         if (if_ is None) or evaluate_bool_expression(if_, unit):
@@ -338,7 +350,12 @@ def pause_job(
 
 
 def resume_job(
-    unit: str, experiment: str, job_name: str, dry_run: bool, if_: Optional[str | bool], logger
+    unit: str,
+    experiment: str,
+    job_name: str,
+    dry_run: bool,
+    if_: Optional[str | bool],
+    logger: CustomLogger,
 ) -> Callable[..., None]:
     def _callable() -> None:
         if (if_ is None) or evaluate_bool_expression(if_, unit):
@@ -353,7 +370,12 @@ def resume_job(
 
 
 def stop_job(
-    unit: str, experiment: str, job_name: str, dry_run: bool, if_: Optional[str | bool], logger
+    unit: str,
+    experiment: str,
+    job_name: str,
+    dry_run: bool,
+    if_: Optional[str | bool],
+    logger: CustomLogger,
 ) -> Callable[..., None]:
     def _callable() -> None:
         if (if_ is None) or evaluate_bool_expression(if_, unit):
@@ -368,7 +390,13 @@ def stop_job(
 
 
 def update_job(
-    unit: str, experiment: str, job_name: str, options: dict, dry_run: bool, if_: Optional[str | bool], logger
+    unit: str,
+    experiment: str,
+    job_name: str,
+    options: dict,
+    dry_run: bool,
+    if_: Optional[str | bool],
+    logger: CustomLogger,
 ) -> Callable[..., None]:
     def _callable() -> None:
         if (if_ is None) or evaluate_bool_expression(if_, unit):
@@ -389,7 +417,7 @@ def hours_to_seconds(hours: float) -> float:
     return hours * 60 * 60
 
 
-def _verify_experiment_profile(profile: struct.Profile) -> struct.Profile:
+def _verify_experiment_profile(profile: struct.Profile) -> bool:
     # things to check for:
     # 1. Don't "stop" or "start" any *_automations
     # 2. Don't change generic settings on *_controllers, (Ex: changing target temp on temp_controller is wrong)
@@ -418,7 +446,7 @@ def _verify_experiment_profile(profile: struct.Profile) -> struct.Profile:
                     f"Don't use 'start' for automations. To start automations, use 'start' for controllers with `options`: {action}"
                 )
             case _:
-                raise ValueError("why am i here")
+                pass
         return True
 
     for automation_type in ["temperature_automation", "dosing_automation", "led_automation"]:
@@ -448,7 +476,7 @@ def _verify_experiment_profile(profile: struct.Profile) -> struct.Profile:
             ):
                 raise SyntaxError(f"Syntax error in {action}: `{action.while_}`")
 
-    return profile
+    return True
 
 
 def _load_experiment_profile(profile_filename: str) -> struct.Profile:

@@ -5,6 +5,7 @@ from pioreactor.automations.events import UpdatedHeaterDC
 from pioreactor.automations.temperature.base import TemperatureAutomationJob
 from pioreactor.config import config
 from pioreactor.utils import clamp
+from pioreactor.utils import is_pio_job_running
 from pioreactor.utils.streaming_calculations import PID
 
 
@@ -15,9 +16,7 @@ class Thermostat(TemperatureAutomationJob):
 
     MAX_TARGET_TEMP = 50
     automation_name = "thermostat"
-    published_settings = {
-        "target_temperature": {"datatype": "float", "unit": "℃", "settable": True}
-    }
+    published_settings = {"target_temperature": {"datatype": "float", "unit": "℃", "settable": True}}
 
     def __init__(self, target_temperature: float | str, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -35,6 +34,9 @@ class Thermostat(TemperatureAutomationJob):
             target_name="temperature",
             output_limits=(-25, 25),  # avoid whiplashing
         )
+
+        if not is_pio_job_running("stirring"):
+            self.logger.warning("It's recommended to have stirring on when using the thermostat.")
 
     def execute(self) -> UpdatedHeaterDC:
         while not hasattr(self, "pid"):
@@ -56,7 +58,7 @@ class Thermostat(TemperatureAutomationJob):
             },
         )
 
-    def set_target_temperature(self, target_temperature: float, update_dc_now=True) -> None:
+    def set_target_temperature(self, target_temperature: float, update_dc_now: bool = True) -> None:
         """
 
         Parameters
@@ -90,9 +92,7 @@ class Thermostat(TemperatureAutomationJob):
                 self.update_heater_with_delta(output)
             else:
                 # if another cycle is occurring very soon, don't bother updating the DC too much, as we don't want to "double dip" and change the dc twice quickly.
-                time_to_next_run = (
-                    self.temperature_control_parent.publish_temperature_timer.time_to_next_run
-                )
+                time_to_next_run = self.temperature_control_parent.publish_temperature_timer.time_to_next_run
                 duration_of_cycle = 90.0  # approx...
                 f = time_to_next_run / duration_of_cycle
                 self.update_heater_with_delta((1 - f) * output)

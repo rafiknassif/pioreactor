@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from configparser import NoOptionError
 from functools import partial
 from threading import Event
-from threading import Thread
 from typing import Optional
 
 import click
@@ -20,6 +20,7 @@ from pioreactor import utils
 from pioreactor.config import config
 from pioreactor.hardware import PWM_TO_PIN
 from pioreactor.logging import create_logger
+from pioreactor.logging import CustomLogger
 from pioreactor.pubsub import Client
 from pioreactor.pubsub import QOS
 from pioreactor.utils.pwm import PWM
@@ -44,6 +45,11 @@ DEFAULT_PWM_CALIBRATION = structs.PumpCalibration(
 )
 
 
+# Initialize the thread pool with a worker threads.
+# a pool is needed to avoid eventual memory overflow when multiple threads are created and allocated over time.
+_thread_pool = ThreadPoolExecutor(max_workers=3)  # one for each pump
+
+
 class PWMPump:
     def __init__(
         self,
@@ -52,6 +58,7 @@ class PWMPump:
         pin: pt.GpioPin,
         calibration: Optional[structs.AnyPumpCalibration] = None,
         mqtt_client: Optional[Client] = None,
+        logger: Optional[CustomLogger] = None,
     ) -> None:
         self.pin = pin
         self.calibration = calibration
@@ -63,14 +70,16 @@ class PWMPump:
             experiment=experiment,
             unit=unit,
             pubsub_client=mqtt_client,
+            logger=logger,
         )
 
         self.pwm.lock()
 
     def clean_up(self) -> None:
         self.pwm.clean_up()
+        # self._thread_pool.shutdown(wait=False)  # Shutdown the thread pool
 
-    def continuously(self, block=True) -> None:
+    def continuously(self, block: bool = True) -> None:
         calibration = self.calibration or DEFAULT_PWM_CALIBRATION
         self.interrupt.clear()
 
@@ -86,8 +95,14 @@ class PWMPump:
         self.interrupt.set()
 
     def by_volume(self, ml: pt.mL, block: bool = True) -> None:
-        assert ml >= 0
+        if ml < 0:
+            raise ValueError("ml >= 0")
+
         self.interrupt.clear()
+
+        if ml == 0:
+            return
+
         if self.calibration is None:
             raise exc.CalibrationError(
                 "Calibration not defined. Run pump calibration first to use volume-based dosing."
@@ -96,16 +111,22 @@ class PWMPump:
         seconds = self.ml_to_durations(ml)
         return self.by_duration(seconds, block=block)
 
-    def by_duration(self, seconds: pt.Seconds, block=True) -> None:
-        assert seconds >= 0
+    def by_duration(self, seconds: pt.Seconds, block: bool = True) -> None:
+        if seconds < 0:
+            raise ValueError("seconds >= 0")
+
         self.interrupt.clear()
+
+        if seconds == 0:
+            return
+
         calibration = self.calibration or DEFAULT_PWM_CALIBRATION
         if block:
             self.pwm.start(calibration.dc)
             self.interrupt.wait(seconds)
             self.stop()
         else:
-            Thread(target=self.by_duration, args=(seconds, True), daemon=True).start()
+            _thread_pool.submit(self.by_duration, seconds, True)
             return
 
     def duration_to_ml(self, seconds: pt.Seconds) -> pt.mL:
@@ -154,9 +175,9 @@ def _get_calibration(pump_type: str) -> structs.AnyPumpCalibration:
 def _publish_pump_action(
     pump_action: str,
     ml: pt.mL,
+    unit: str,
+    experiment: str,
     mqtt_client: Client,
-    unit: Optional[str] = None,
-    experiment: Optional[str] = None,
     source_of_event: Optional[str] = None,
 ) -> structs.DosingEvent:
     dosing_event = structs.DosingEvent(
@@ -174,6 +195,32 @@ def _publish_pump_action(
     return dosing_event
 
 
+def _to_human_readable_action(ml: Optional[float], duration: Optional[float], pump_type: str) -> str:
+    if pump_type == "waste":
+        if duration is not None:
+            return f"Removing waste for {round(duration,2)}s."
+        elif ml is not None:
+            return f"Removing {round(ml,3)} mL waste."
+        else:
+            raise ValueError()
+    elif pump_type == "media":
+        if duration is not None:
+            return f"Adding media for {round(duration,2)}s."
+        elif ml is not None:
+            return f"Adding {round(ml,3)} mL media."
+        else:
+            raise ValueError()
+    elif pump_type == "alt_media":
+        if duration is not None:
+            return f"Adding alt-media for {round(duration,2)}s."
+        elif ml is not None:
+            return f"Adding {round(ml,3)} mL alt-media."
+        else:
+            raise ValueError()
+    else:
+        raise ValueError()
+
+
 def _pump_action(
     pump_type: str,
     unit: Optional[str] = None,
@@ -186,6 +233,7 @@ def _pump_action(
     config=config,  # techdebt, don't use
     manually: bool = False,
     mqtt_client: Optional[Client] = None,
+    logger: Optional[CustomLogger] = None,
 ) -> pt.mL:
     """
     Returns the mL cycled. However,
@@ -200,7 +248,9 @@ def _pump_action(
     unit = unit or get_unit_name()
 
     action_name = _get_pump_action(pump_type)
-    logger = create_logger(action_name, experiment=experiment, unit=unit)
+
+    if logger is None:
+        logger = create_logger(action_name, experiment=experiment, unit=unit)
 
     try:
         pin = _get_pin(pump_type, config)
@@ -224,30 +274,35 @@ def _pump_action(
     ) as state:
         mqtt_client = state.mqtt_client
 
-        with PWMPump(unit, experiment, pin, calibration=calibration, mqtt_client=mqtt_client) as pump:
+        with PWMPump(
+            unit, experiment, pin, calibration=calibration, mqtt_client=mqtt_client, logger=logger
+        ) as pump:
             if manually:
                 assert ml is not None
                 ml = float(ml)
-                assert ml >= 0, "ml should be greater than or equal to 0"
+                if ml < 0:
+                    raise ValueError("ml should be greater than or equal to 0")
                 duration = 0.0
-                logger.info(f"{round(ml, 2)}mL (added manually)")
+                logger.info(f"{_to_human_readable_action(ml, None, pump_type)} (exchanged manually)")
             elif ml is not None:
                 ml = float(ml)
                 if calibration is None:
+                    logger.error(f"Calibration not defined. Run {pump_type} pump calibration first.")
                     raise exc.CalibrationError(
                         f"Calibration not defined. Run {pump_type} pump calibration first."
                     )
 
-                assert ml >= 0, "ml should be greater than or equal to 0"
+                if ml < 0:
+                    raise ValueError("ml should be greater than or equal to 0")
                 duration = pump.ml_to_durations(ml)
-                logger.info(f"{round(ml, 2)}mL")
+                logger.info(_to_human_readable_action(ml, None, pump_type))
             elif duration is not None:
                 duration = float(duration)
                 try:
                     ml = pump.duration_to_ml(duration)  # can be wrong if calibration is not defined
                 except exc.CalibrationError:
                     ml = DEFAULT_PWM_CALIBRATION.duration_to_ml(duration)  # naive
-                logger.info(f"{round(duration, 2)}s")
+                logger.info(_to_human_readable_action(None, duration, pump_type))
             elif continuously:
                 duration = 10.0
                 try:
@@ -265,7 +320,7 @@ def _pump_action(
 
             # publish this first, as downstream jobs need to know about it.
             dosing_event = _publish_pump_action(
-                action_name, ml, mqtt_client, unit, experiment, source_of_event
+                action_name, ml, unit, experiment, mqtt_client, source_of_event
             )
 
             pump_start_time = time.monotonic()
@@ -274,7 +329,6 @@ def _pump_action(
                 return 0.0
             elif not continuously:
                 pump.by_duration(duration, block=False)
-
                 # how does this work? What's up with the (or True)?
                 # exit_event.wait returns True iff the event is set, i.e by an interrupt. If we timeout (good path)
                 # then we eval (False or True), hence we break out of this while loop.
@@ -308,6 +362,8 @@ def _liquid_circulation(
     unit: Optional[str] = None,
     experiment: Optional[str] = None,
     config=config,
+    mqtt_client: Optional[Client] = None,
+    logger: Optional[CustomLogger] = None,
     **kwargs,
 ) -> tuple[pt.mL, pt.mL]:
     """
@@ -327,7 +383,9 @@ def _liquid_circulation(
     experiment = experiment or get_latest_experiment_name()
     unit = unit or get_unit_name()
     duration = float(duration)
-    logger = create_logger(action_name, experiment=experiment, unit=unit)
+
+    if logger is None:
+        logger = create_logger(action_name, experiment=experiment, unit=unit)
 
     waste_pin, media_pin = _get_pin("waste", config), _get_pin(pump_type, config)
 
@@ -358,6 +416,7 @@ def _liquid_circulation(
         unit,
         experiment,
         action_name,
+        mqtt_client=mqtt_client,
         exit_on_mqtt_disconnect=True,
         mqtt_client_kwargs={"keepalive": 10},
     ) as state:
@@ -430,7 +489,7 @@ def click_add_alt_media(
     continuously: bool,
     source_of_event: Optional[str],
     manually: bool,
-):
+) -> float:
     """
     Remove waste/media from unit
     """
@@ -465,7 +524,7 @@ def click_remove_waste(
     continuously: bool,
     source_of_event: Optional[str],
     manually: bool,
-):
+) -> float:
     """
     Remove waste/media from unit
     """
@@ -500,7 +559,7 @@ def click_add_media(
     continuously: bool,
     source_of_event: Optional[str],
     manually: bool,
-):
+) -> float:
     """
     Add media to unit
     """

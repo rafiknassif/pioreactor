@@ -5,7 +5,6 @@ import random
 import socket
 import string
 import threading
-from enum import IntEnum
 from time import sleep
 from typing import Any
 from typing import Callable
@@ -13,7 +12,8 @@ from typing import Optional
 
 from paho.mqtt.client import Client as PahoClient
 
-from pioreactor.config import leader_address
+from pioreactor.config import config
+from pioreactor.config import mqtt_address
 from pioreactor.types import MQTTMessage
 
 
@@ -64,14 +64,14 @@ class Client(PahoClient):
         return self
 
 
-class QOS(IntEnum):
+class QOS:
     AT_MOST_ONCE = 0
     AT_LEAST_ONCE = 1
     EXACTLY_ONCE = 2
 
 
 def create_client(
-    hostname: Optional[str] = None,
+    hostname: str = mqtt_address,
     last_will: Optional[dict] = None,
     client_id: str = "",
     keepalive=60,
@@ -81,6 +81,9 @@ def create_client(
     on_disconnect: Optional[Callable] = None,
     on_message: Optional[Callable] = None,
     userdata: Optional[dict] = None,
+    port: int = config.getint("mqtt", "broker_port", fallback=1883),
+    tls: bool = config.getboolean("mqtt", "use_tls", fallback="0"),
+    skip_loop: bool = False,
 ):
     """
     Create a MQTT client and connect to a host.
@@ -95,11 +98,20 @@ def create_client(
             logger.error(f"Connection failed with error code {rc=}: {connack_string(rc)}")
 
     client = Client(
-        client_id=add_hash_suffix(client_id) if client_id else "",
+        client_id=add_hash_suffix(client_id)
+        if client_id
+        else "",  # Note: if empty string, paho or mosquitto will autogenerate a good client id.
         clean_session=clean_session,
         userdata=userdata,
     )
-    client.username_pw_set("pioreactor", "raspberry")
+    client.username_pw_set(
+        config.get("mqtt", "username", fallback="pioreactor"),
+        config.get("mqtt", "password", fallback="raspberry"),
+    )
+    if tls:
+        import ssl
+
+        client.tls_set(tls_version=ssl.PROTOCOL_TLS)
 
     if on_connect:
         client.on_connect = on_connect  # type: ignore
@@ -115,60 +127,54 @@ def create_client(
     if last_will is not None:
         client.will_set(**last_will)
 
-    if hostname is None:
-        hostname = leader_address
-
     for retries in range(1, max_connection_attempts + 1):
         try:
-            client.connect(hostname, keepalive=keepalive)
+            client.connect(hostname, port, keepalive=keepalive)
         except (socket.gaierror, OSError):
             if retries == max_connection_attempts:
                 break
             sleep(retries * 2)
         else:
-            client.loop_start()
+            if not skip_loop:
+                client.loop_start()
             break
-
     return client
 
 
-def publish(
-    topic: str, message, hostname: str = leader_address, retries: int = 10, **mqtt_kwargs
-) -> None:
-    from paho.mqtt import publish as mqtt_publish
-    import socket
-
+def publish(topic: str, message, retries: int = 3, **mqtt_kwargs) -> None:
     for retry_count in range(retries):
         try:
-            mqtt_publish.single(
-                topic,
-                payload=message,
-                hostname=hostname,
-                auth={"username": "pioreactor", "password": "raspberry"},
-                **mqtt_kwargs,
-            )
+            with create_client() as client:
+                msg = client.publish(
+                    topic,
+                    message,
+                    **mqtt_kwargs,
+                )
+                msg.wait_for_publish(timeout=10)
+
+                if not msg.is_published():
+                    raise RuntimeError()
+
             return
-        except (ConnectionRefusedError, socket.gaierror, OSError, socket.timeout):
+        except RuntimeError:
             # possible that leader is down/restarting, keep trying, but log to local machine.
             from pioreactor.logging import create_logger
 
             logger = create_logger("pubsub.publish", to_mqtt=False)
             logger.debug(
-                f"Attempt {retry_count}: Unable to connect to host: {hostname}",
+                f"Attempt {retry_count}: Unable to connect to MQTT",
                 exc_info=True,
             )
             sleep(3 * retry_count)  # linear backoff
 
     else:
         logger = create_logger("pubsub.publish", to_mqtt=False)
-        logger.error(f"Unable to connect to host: {hostname}.")
-        raise ConnectionRefusedError(f"Unable to connect to host: {hostname}.")
+        logger.error("Unable to connect to MQTT.")
+        raise ConnectionRefusedError("Unable to connect to MQTT.")
 
 
 def subscribe(
     topics: str | list[str],
-    hostname: str = leader_address,
-    retries: int = 5,
     timeout: Optional[float] = None,
     allow_retained: bool = True,
     name: Optional[str] = None,
@@ -188,77 +194,53 @@ def subscribe(
         Optional: provide a name, and logging will include it.
     """
 
-    retry_count = 1
-    for retry_count in range(retries):
-        try:
-            lock: Optional[threading.Lock]
+    lock: Optional[threading.Lock]
 
-            def on_connect(client: Client, userdata, flags, rc) -> None:
-                client.subscribe(userdata["topics"])
-                return
+    def on_connect(client: Client, userdata, flags, rc) -> None:
+        client.subscribe(userdata["topics"])
+        return
 
-            def on_message(client: Client, userdata, message: MQTTMessage) -> None:
-                if not allow_retained and message.retain:
-                    return
+    def on_message(client: Client, userdata, message: MQTTMessage) -> None:
+        if not allow_retained and message.retain:
+            return
 
-                userdata["messages"] = message
-                client.disconnect()
+        userdata["messages"] = message
+        client.disconnect()
 
-                if userdata["lock"]:
-                    userdata["lock"].release()
+        if userdata["lock"]:
+            userdata["lock"].release()
 
-                return
+        return
 
-            if timeout:
-                lock = threading.Lock()
-            else:
-                lock = None
-
-            topics = [topics] if isinstance(topics, str) else topics
-            userdata: dict[str, Any] = {
-                "topics": [(topic, mqtt_kwargs.pop("qos", 0)) for topic in topics],
-                "messages": None,
-                "lock": lock,
-            }
-
-            client = Client(userdata=userdata)
-            client.username_pw_set("pioreactor", "raspberry")
-            client.on_connect = on_connect  # type: ignore
-            client.on_message = on_message  # type: ignore
-            client.connect(hostname)
-
-            if timeout is None:
-                client.loop_forever()
-            else:
-                assert lock is not None
-                lock.acquire()
-                client.loop_start()
-                lock.acquire(timeout=timeout)
-                client.loop_stop()
-                client.disconnect()
-
-            return userdata["messages"]
-
-        except (ConnectionRefusedError, socket.gaierror, OSError, socket.timeout):
-            from pioreactor.logging import create_logger
-
-            logger = create_logger(name or "pubsub.subscribe", to_mqtt=False)
-            logger.debug(
-                f"Attempt {retry_count}: Unable to connect to host: {hostname}",
-            )
-
-            sleep(3 * retry_count)  # linear backoff
-
+    if timeout:
+        lock = threading.Lock()
     else:
-        logger = create_logger(name or "pubsub.subscribe", to_mqtt=False)
-        logger.error(f"Unable to connect to host: {hostname}. Exiting.")
-        raise ConnectionRefusedError(f"Unable to connect to host: {hostname}.")
+        lock = None
+
+    topics = [topics] if isinstance(topics, str) else topics
+    userdata: dict[str, Any] = {
+        "topics": [(topic, mqtt_kwargs.pop("qos", QOS.EXACTLY_ONCE)) for topic in topics],
+        "messages": None,
+        "lock": lock,
+    }
+    client = create_client(on_connect=on_connect, on_message=on_message, userdata=userdata, skip_loop=True)
+
+    if timeout is None:
+        client.loop_forever()
+    else:
+        assert lock is not None
+        lock.acquire()
+        client.loop_start()
+        lock.acquire(timeout=timeout)
+        client.loop_stop()
+        client.disconnect()
+
+    return userdata["messages"]
 
 
 def subscribe_and_callback(
     callback: Callable[[MQTTMessage], Any],
     topics: str | list[str],
-    hostname: str = leader_address,
     last_will: Optional[dict] = None,
     name: Optional[str] = None,
     allow_retained: bool = True,
@@ -280,9 +262,7 @@ def subscribe_and_callback(
         subscriber "fresh", it will have retain=False on the client side. More here:
         https://github.com/eclipse/paho.mqtt.python/blob/master/src/paho/mqtt/client.py#L364
     """
-    assert callable(
-        callback
-    ), "callback should be callable - do you need to change the order of arguments?"
+    assert callable(callback), "callback should be callable - do you need to change the order of arguments?"
 
     def wrap_callback(actual_callback: Callable[[MQTTMessage], Any]) -> Callable:
         def _callback(client: Client, userdata: dict, message):
@@ -309,7 +289,7 @@ def subscribe_and_callback(
             client.subscribe(userdata["topics"])
 
         userdata = {
-            "topics": [(topic, mqtt_kwargs.pop("qos", 0)) for topic in topics],
+            "topics": [(topic, mqtt_kwargs.pop("qos", QOS.EXACTLY_ONCE)) for topic in topics],
             "name": name,
         }
 
@@ -330,16 +310,16 @@ def subscribe_and_callback(
     return client
 
 
-def prune_retained_messages(topics_to_prune: str = "#", hostname=leader_address):
+def prune_retained_messages(topics_to_prune: str = "#"):
     topics = []
 
     def on_message(message):
         topics.append(message.topic)
 
-    client = subscribe_and_callback(on_message, topics_to_prune, hostname=hostname, timeout=1)
+    client = subscribe_and_callback(on_message, topics_to_prune, timeout=1)
 
     for topic in topics.copy():
-        publish(topic, None, retain=True, hostname=hostname)
+        publish(topic, None, retain=True)
 
     client.disconnect()
 

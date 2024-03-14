@@ -5,6 +5,7 @@ import atexit
 import signal
 import threading
 import typing as t
+from copy import copy
 from os import getpid
 from time import sleep
 from time import time
@@ -15,7 +16,6 @@ from msgspec.json import encode as dumps
 from pioreactor import structs
 from pioreactor import types as pt
 from pioreactor.config import config
-from pioreactor.config import leader_address
 from pioreactor.config import leader_hostname
 from pioreactor.logging import create_logger
 from pioreactor.pubsub import Client
@@ -46,7 +46,7 @@ DISALLOWED_JOB_NAMES = {
 }
 
 
-def cast_bytes_to_type(value: bytes, type_: str):
+def cast_bytes_to_type(value: bytes, type_: str) -> t.Any:
     try:
         if type_ == "string":
             return value.decode()
@@ -70,20 +70,25 @@ def format_with_optional_units(value: pt.PublishableSettingDataType, units: t.Op
     Ex:
     > format_with_optional_units(25.0, "cm") # returns "25.0 cm"
     > format_with_optional_units(25.0, None) # returns "25.0"
+    > format_with_optional_units("some_very_long_string___", None) # returns "some_very_long_stri..."
     """
+    max_ = 40
+
     if units is None:
-        return f"{value}"
+        s = f"{value}"
     elif units == "%":
-        return f"{value}{units}"
+        s = f"{value}{units}"
     else:
-        return f"{value} {units}"
+        s = f"{value} {units}"
+
+    return s[:max_] + (s[max_:] and "..")
 
 
 class LoggerMixin:
     _logger_name: t.Optional[str] = None
     _logger = None
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
     @property
@@ -258,16 +263,6 @@ class _BackgroundJob(metaclass=PostInitCaller):
         self.unit = unit
         self._source = source
 
-        self.logger = create_logger(
-            self.job_name,
-            unit=self.unit,
-            experiment=self.experiment,
-            source=self._source,
-            mqtt_hostname=leader_address,
-        )
-
-        self._check_for_duplicate_activity()
-
         # why do we need two clients? Paho lib can't publish a message in a callback,
         # but this is critical to our usecase: listen for events, and fire a response (ex: state change)
         # so we split the listening and publishing. I've tried combining them and got stuck a lot
@@ -276,6 +271,18 @@ class _BackgroundJob(metaclass=PostInitCaller):
         # The order we add them to the list is important too, as disconnects occur async,
         # we want to give the sub_client (has the will msg) as much time as possible to disconnect.
         self.pub_client = self._create_pub_client()
+
+        self.logger = create_logger(
+            self.job_name,
+            unit=self.unit,
+            experiment=self.experiment,
+            source=self._source,
+            pub_client=self.pub_client,
+        )
+
+        self._check_for_duplicate_activity()
+
+        # if we no-op in the _check_for_duplicate_activity, we don't want to fire the LWT, so we delay subclient until after.
         self.sub_client = self._create_sub_client()
 
         # add state
@@ -287,6 +294,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
             }
         }
 
+        # this comes _after_ adding state to published settings
         self.set_state(self.INIT)
 
         self._set_up_exit_protocol()
@@ -308,7 +316,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
             raise e
 
         # this should happen _after_ pub clients are set up
-        self.start_general_passive_listeners()
+        self._start_general_passive_listeners()
 
         # next thing that run is the subclasses __init__
 
@@ -426,7 +434,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
         callback: t.Callable[[pt.MQTTMessage], None],
         subscriptions: list[str | MQTT_TOPIC] | str | MQTT_TOPIC,
         allow_retained: bool = True,
-        qos: int = QOS.AT_MOST_ONCE,
+        qos: int = QOS.EXACTLY_ONCE,
     ) -> None:
         """
         Parameters
@@ -524,7 +532,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
             error_code,
         )
 
-    def clean_up(self):
+    def clean_up(self) -> None:
         """
         Disconnect from brokers, set state to "disconnected", stop any activity.
         """
@@ -570,7 +578,6 @@ class _BackgroundJob(metaclass=PostInitCaller):
     def _create_pub_client(self) -> Client:
         # see note above as to why we split pub and sub.
         client = create_client(
-            hostname=leader_address,
             client_id=f"{self.job_name}-pub-{self.unit}-{self.experiment}",
             keepalive=15 * 60,
         )
@@ -587,7 +594,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
         def reconnect_protocol(client: Client, userdata, flags, rc: int, properties=None):
             self.logger.info("Reconnected to the MQTT broker on leader.")  # type: ignore
             self._publish_attr("state")
-            self.start_general_passive_listeners()
+            self._start_general_passive_listeners()
             self.start_passive_listeners()
 
         def on_disconnect(client, userdata, rc: int) -> None:
@@ -603,10 +610,9 @@ class _BackgroundJob(metaclass=PostInitCaller):
         }
 
         client = create_client(
-            hostname=leader_address,
             client_id=f"{self.job_name}-sub-{self.unit}-{self.experiment}",
             last_will=last_will,
-            keepalive=60,
+            keepalive=120,
             clean_session=False,  # this, in theory, will reconnect to old subs when we reconnect.
         )
         # we catch exceptions and report them in our software
@@ -779,7 +785,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
         # we "set" the internal event, which will cause any event.waits to finishing blocking.
         self._blocking_event.set()
 
-    def _remove_from_cache(self):
+    def _remove_from_cache(self) -> None:
         with local_intermittent_storage(f"job_metadata_{self.job_name}") as cache:
             cache["is_running"] = "0"
             cache["ended_at"] = current_utc_timestamp()
@@ -787,7 +793,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
         with local_intermittent_storage("pio_jobs_running") as cache:
             cache.pop(self.job_name)
 
-    def _disconnect_from_loggers(self):
+    def _disconnect_from_loggers(self) -> None:
         # clean up logger handlers
 
         handlers = self.logger.logger.handlers[:]
@@ -795,7 +801,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
             self.logger.logger.removeHandler(handler)
             handler.close()
 
-    def _disconnect_from_mqtt_clients(self):
+    def _disconnect_from_mqtt_clients(self) -> None:
         # disconnect from MQTT
         self.sub_client.loop_stop()
         self.sub_client.disconnect()
@@ -804,7 +810,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
         self.pub_client.loop_stop()  # pretty sure this doesn't close the thread if in a thread: https://github.com/eclipse/paho.mqtt.python/blob/master/src/paho/mqtt/client.py#L1835
         self.pub_client.disconnect()
 
-    def _clean_up_resources(self):
+    def _clean_up_resources(self) -> None:
         self._remove_from_cache()
         # Explicitly cleanup MQTT resources...
         self._disconnect_from_mqtt_clients()
@@ -864,14 +870,18 @@ class _BackgroundJob(metaclass=PostInitCaller):
             self.logger.warning(f"Unable to set `{attr}` in {self.job_name}. `{attr}` is read-only.")
             return
 
-        previous_value = getattr(self, attr)
+        if not hasattr(self, attr):
+            # for some reason, the attr isn't on the object yet. Could be a race condition, or the author forgot something.
+            self.logger.debug(f"attribute `{attr}` is not a property of {self}.")
+            return
+
+        previous_value = copy(getattr(self, attr))
         new_value = cast_bytes_to_type(message.payload, self.published_settings[attr]["datatype"])
 
         # a subclass may want to define a `set_<attr>` method that will be used instead
         # for example, see Stirring.set_target_rpm, and `set_state` here
         if hasattr(self, f"set_{attr}"):
             getattr(self, f"set_{attr}")(new_value)
-
         else:
             setattr(self, attr, new_value)
 
@@ -880,7 +890,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
             f"Updated {attr} from {format_with_optional_units(previous_value, units)} to {format_with_optional_units(getattr(self, attr), units)}."
         )
 
-    def start_general_passive_listeners(self) -> None:
+    def _start_general_passive_listeners(self) -> None:
         # listen to changes in editable properties
         self.subscribe_and_callback(
             self._set_attr_from_message,
@@ -891,6 +901,20 @@ class _BackgroundJob(metaclass=PostInitCaller):
             ],
             allow_retained=False,
         )
+
+        self.subscribe_and_callback(
+            self._confirm_state_in_broker,
+            f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/$state",
+        )
+
+    def _confirm_state_in_broker(self, message: pt.MQTTMessage) -> None:
+        if message.payload is None:
+            return
+
+        state_in_broker = message.payload.decode()
+        if state_in_broker == self.LOST and state_in_broker != self.state:
+            self.logger.debug(f"Wrong state {state_in_broker} in broker - fixing by publishing {self.state}")
+            self._publish_attr("state")
 
     def _clear_mqtt_cache(self) -> None:
         """
@@ -929,8 +953,8 @@ class _BackgroundJob(metaclass=PostInitCaller):
 
     def _check_for_duplicate_activity(self) -> None:
         if is_pio_job_running(self.job_name) and not is_testing_env():
-            self.logger.error(f"{self.job_name} is already running.")
-            raise RuntimeError(f"{self.job_name} is already running.")
+            self.logger.warning(f"{self.job_name} is already running. Skipping")
+            raise RuntimeError(f"{self.job_name} is already running. Skipping")
         # elif is_pio_job_running("self_test"):
         #     # don't ever run anything while self_test runs.
         #     self.logger.error("self_test is running.")

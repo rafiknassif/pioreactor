@@ -43,8 +43,8 @@ from json import loads
 from typing import Generator
 from typing import Optional
 
-from click import command
-from click import option
+import click
+from msgspec import DecodeError
 from msgspec.json import decode
 
 from pioreactor import structs
@@ -77,7 +77,7 @@ class GrowthRateCalculator(BackgroundJob):
             "datatype": "GrowthRate",
             "settable": False,
             "unit": "h⁻¹",
-            "persist": True,  # why persist?
+            "persist": True,  # TODO: why persist?
         },
         "od_filtered": {"datatype": "ODFiltered", "settable": False, "persist": True},
         "kalman_filter_outputs": {
@@ -180,6 +180,17 @@ class GrowthRateCalculator(BackgroundJob):
         ]
 
         self.logger.debug(f"{angles=}")
+        ekf_outlier_std_threshold = config.getfloat(
+            "growth_rate_calculating.config",
+            "ekf_outlier_std_threshold",
+            fallback=5.0,
+        )
+        if ekf_outlier_std_threshold <= 2.0:
+            raise ValueError(
+                "outlier_std_threshold should not be less than 2.0 - that's eliminating too many data points."
+            )
+
+        self.logger.debug(f"{ekf_outlier_std_threshold=}")
 
         return CultureGrowthEKF(
             initial_state,
@@ -187,9 +198,10 @@ class GrowthRateCalculator(BackgroundJob):
             process_noise_covariance,
             observation_noise_covariance,
             angles,
+            ekf_outlier_std_threshold,
         )
 
-    def create_obs_noise_covariance(self, obs_std):  # typing: ignore
+    def create_obs_noise_covariance(self, obs_std):  # type: ignore
         """
         Our sensor measurements have initial variance V, but in our KF, we scale them their
         initial mean, M. Hence the observed variance of the _normalized_ measurements is
@@ -215,15 +227,8 @@ class GrowthRateCalculator(BackgroundJob):
 
             obs_variances = obs_std**2 * np.diag(scaling_obs_variances)
             return obs_variances
-        except ZeroDivisionError as e:
-            self.logger.debug(
-                "Is there an OD Reading that is 0? Maybe there's a loose photodiode connection?",
-                exc_info=True,
-            )
-            self.logger.error(
-                "Is there an OD Reading that is 0? Maybe there's a loose photodiode connection?"
-            )
-
+        except ZeroDivisionError:
+            self.logger.debug(exc_info=True)
             # we should clear the cache here...
 
             with local_persistant_storage("od_normalization_mean") as cache:
@@ -232,7 +237,9 @@ class GrowthRateCalculator(BackgroundJob):
             with local_persistant_storage("od_normalization_variance") as cache:
                 del cache[self.experiment]
 
-            raise e
+            raise ZeroDivisionError(
+                "Is there an OD Reading that is 0? Maybe there's a loose photodiode connection?"
+            )
 
     def _compute_and_cache_od_statistics(
         self,
@@ -320,17 +327,15 @@ class GrowthRateCalculator(BackgroundJob):
         # then this could be a different value.
         msg = subscribe(
             f"pioreactor/{self.unit}/{self.experiment}/od_reading/ods",
-            allow_retained=True,
+            allow_retained=True,  # maybe?
             timeout=10,
         )
-
         if msg is None:
             return 1.0  # default?
 
         od_readings = decode(msg.payload, type=structs.ODReadings)
         scaled_ods = self.scale_raw_observations(self._batched_raw_od_readings_to_dict(od_readings.ods))
         assert scaled_ods is not None
-
         return mean(scaled_ods.values())
 
     def get_od_normalization_from_cache(self) -> dict[pt.PdChannel, float]:
@@ -360,7 +365,7 @@ class GrowthRateCalculator(BackgroundJob):
     def update_ekf_variance_after_event(self, minutes: float, factor: float) -> None:
         if whoami.is_testing_env():
             msg = subscribe(  # needs to be pubsub.subscribe (ie not sub_client.subscribe) since this is called in a callback
-                f"pioreactor/{self.unit}/{self.experiment}/adc_reader/interval",
+                f"pioreactor/{self.unit}/{self.experiment}/od_reading/interval",
                 timeout=1.0,
             )
             if msg:
@@ -371,15 +376,14 @@ class GrowthRateCalculator(BackgroundJob):
         else:
             self.ekf.scale_OD_variance_for_next_n_seconds(factor, minutes * 60)
 
-    @staticmethod
-    def _scale_and_shift(obs, shift, scale) -> float:
-        return (obs - shift) / (scale - shift)
-
     def scale_raw_observations(
         self, observations: dict[pt.PdChannel, float]
     ) -> Optional[dict[pt.PdChannel, float]]:
+        def _scale_and_shift(obs, shift, scale) -> float:
+            return (obs - shift) / (scale - shift)
+
         scaled_signals = {
-            channel: self._scale_and_shift(
+            channel: _scale_and_shift(
                 raw_signal, self.od_blank[channel], self.od_normalization_factors[channel]
             )
             for channel, raw_signal in observations.items()
@@ -399,9 +403,11 @@ class GrowthRateCalculator(BackgroundJob):
         if self.state != self.READY:
             return
 
-        od_readings = decode(message.payload, type=structs.ODReadings)
-
-        self.update_state_from_observation(od_readings)
+        try:
+            od_readings = decode(message.payload, type=structs.ODReadings)
+            self.update_state_from_observation(od_readings)
+        except DecodeError:
+            pass
 
         return
 
@@ -411,11 +417,17 @@ class GrowthRateCalculator(BackgroundJob):
         """
         this is like _update_state_from_observation, but also updates attributes, caches, mqtt
         """
-        (
-            self.growth_rate,
-            self.od_filtered,
-            self.kalman_filter_outputs,
-        ) = self._update_state_from_observation(od_readings)
+        try:
+            (
+                self.growth_rate,
+                self.od_filtered,
+                self.kalman_filter_outputs,
+            ) = self._update_state_from_observation(od_readings)
+        except Exception as e:
+            self.logger.debug(e, exc_info=True)
+            self.logger.warning(f"Updating Kalman Filter failed with {str(e)}")
+            # just return the previous data
+            return self.growth_rate, self.od_filtered, self.kalman_filter_outputs
 
         # save to cache
         with local_persistant_storage("growth_rate") as cache:
@@ -435,7 +447,7 @@ class GrowthRateCalculator(BackgroundJob):
         )
         if scaled_observations is None:
             # exit early
-            return self.growth_rate, self.od_filtered, self.kalman_filter_outputs
+            raise ValueError()
 
         if whoami.is_testing_env():
             # when running a mock script, we run at an accelerated rate, but want to mimic
@@ -451,40 +463,32 @@ class GrowthRateCalculator(BackgroundJob):
                     self.logger.debug(
                         f"Late arriving data: {timestamp=}, {self.time_of_previous_observation=}"
                     )
-                    return self.growth_rate, self.od_filtered, self.kalman_filter_outputs
+                    raise ValueError()
 
             else:
                 dt = 0.0
 
             self.time_of_previous_observation = timestamp
 
-        try:
-            updated_state = self.ekf.update(list(scaled_observations.values()), dt)
-        except Exception as e:
-            self.logger.debug(e, exc_info=True)
-            self.logger.error(f"Updating Kalman Filter failed with {str(e)}")
-            return self.growth_rate, self.od_filtered, self.kalman_filter_outputs
-        else:
-            # TODO: EKF values can be nans...
+        updated_state_, covariance_ = self.ekf.update(list(scaled_observations.values()), dt)
+        latest_od_filtered, latest_growth_rate = float(updated_state_[0]), float(updated_state_[1])
 
-            latest_od_filtered, latest_growth_rate = float(updated_state[0]), float(updated_state[1])
+        growth_rate = structs.GrowthRate(
+            growth_rate=latest_growth_rate,
+            timestamp=timestamp,
+        )
+        od_filtered = structs.ODFiltered(
+            od_filtered=latest_od_filtered,
+            timestamp=timestamp,
+        )
 
-            growth_rate = structs.GrowthRate(
-                growth_rate=latest_growth_rate,
-                timestamp=timestamp,
-            )
-            od_filtered = structs.ODFiltered(
-                od_filtered=latest_od_filtered,
-                timestamp=timestamp,
-            )
+        kf_outputs = structs.KalmanFilterOutput(
+            state=self.ekf.state_.tolist(),
+            covariance_matrix=covariance_.tolist(),
+            timestamp=timestamp,
+        )
 
-            kf_outputs = structs.KalmanFilterOutput(
-                state=self.ekf.state_.tolist(),
-                covariance_matrix=self.ekf.covariance_.tolist(),
-                timestamp=timestamp,
-            )
-
-            return growth_rate, od_filtered, kf_outputs
+        return growth_rate, od_filtered, kf_outputs
 
     def respond_to_dosing_event_from_mqtt(self, message: pt.MQTTMessage) -> None:
         dosing_event = decode(message.payload, type=structs.DosingEvent)
@@ -538,7 +542,7 @@ class GrowthRateCalculator(BackgroundJob):
             msg = subscribe(
                 f"pioreactor/{self.unit}/{self.experiment}/od_reading/ods",
                 allow_retained=False,
-                timeout=10,
+                timeout=5,
             )
 
             if self.state not in (self.READY, self.INIT):
@@ -554,19 +558,35 @@ class GrowthRateCalculator(BackgroundJob):
             yield decode(msg.payload, type=structs.ODReadings)
 
 
-@command(name="growth_rate_calculating")
-@option("--ignore-cache", is_flag=True, help="Ignore the cached values (rerun)")
-def click_growth_rate_calculating(ignore_cache):
+@click.group(invoke_without_command=True, name="growth_rate_calculating")
+@click.option("--ignore-cache", is_flag=True, help="Ignore the cached values (rerun)")
+@click.pass_context
+def click_growth_rate_calculating(ctx, ignore_cache):
     """
     Start calculating growth rate
     """
-    import os
+    if ctx.invoked_subcommand is None:
+        import os
 
-    os.nice(1)
+        os.nice(1)
 
-    calculator = GrowthRateCalculator(  # noqa: F841
-        ignore_cache=ignore_cache,
-        unit=whoami.get_unit_name(),
-        experiment=whoami.get_latest_experiment_name(),
-    )
-    calculator.block_until_disconnected()
+        calculator = GrowthRateCalculator(  # noqa: F841
+            ignore_cache=ignore_cache,
+            unit=whoami.get_unit_name(),
+            experiment=whoami.get_latest_experiment_name(),
+        )
+        calculator.block_until_disconnected()
+
+
+@click_growth_rate_calculating.command(name="clear_cache")
+def click_clear_cache() -> None:
+    experiment = whoami.get_latest_experiment_name()
+
+    with local_persistant_storage("od_filtered") as cache:
+        cache.pop(experiment)
+    with local_persistant_storage("growth_rate") as cache:
+        cache.pop(experiment)
+    with local_persistant_storage("od_normalization_mean") as cache:
+        cache.pop(experiment)
+    with local_persistant_storage("od_normalization_variance") as cache:
+        cache.pop(experiment)

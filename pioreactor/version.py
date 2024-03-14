@@ -4,10 +4,10 @@ from __future__ import annotations
 import os
 
 # pioreactor version
-# Append "dev" if a dev version
+# Append ".dev0" if a dev version
 # Append "rc0" if a rc version
 # No zero padding!
-__version__ = "24.1.30"
+__version__ = "24.3.10"
 
 
 def get_hardware_version() -> tuple[int, int] | tuple[int, int, str]:
@@ -50,7 +50,7 @@ def get_serial_number() -> str:
 def get_rpi_machine() -> str:
     try:
         with open("/proc/device-tree/model") as f:
-            return f.read().strip()
+            return f.read().strip().rstrip("\x00")
     except FileNotFoundError:
         return "Raspberry Pi 3 - testing"
 

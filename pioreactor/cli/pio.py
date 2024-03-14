@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from json import dumps
 from json import loads
+from os import geteuid
 from shlex import quote
 from sys import exit
 from time import sleep
@@ -30,12 +32,12 @@ from pioreactor.config import get_leader_hostname
 from pioreactor.logging import create_logger
 from pioreactor.mureq import get
 from pioreactor.mureq import HTTPException
-from pioreactor.utils import is_pio_job_running
 from pioreactor.utils import local_intermittent_storage
 from pioreactor.utils import local_persistant_storage
 from pioreactor.utils.networking import add_local
 from pioreactor.utils.networking import is_using_local_access_point
 from pioreactor.utils.timing import catchtime
+from pioreactor.utils.timing import current_utc_timestamp
 
 
 JOBS_TO_SKIP_KILLING = [
@@ -81,6 +83,9 @@ def pio(ctx) -> None:
         raise SystemError(
             "/usr/local/bin/firstboot.sh found on disk. firstboot.sh likely failed. Try looking for errors in `sudo systemctl status firstboot.service`."
         )
+
+    if geteuid() == 0:
+        raise SystemError("Don't run as root!")
 
 
 @pio.command(name="logs", short_help="show recent logs")
@@ -251,9 +256,6 @@ def run() -> None:
         click.echo(
             f"Running `pio` on a non-active Pioreactor. Do you need to change `{whoami.get_unit_name()}` in `cluster.inventory` section in `config.ini`?"
         )
-        raise click.Abort()
-    if is_pio_job_running("self_test"):
-        click.echo("Can't run jobs while self-test is running")
         raise click.Abort()
 
 
@@ -605,6 +607,11 @@ def update_app(
             logger.debug(p.stdout)
 
     logger.notice(f"Updated {whoami.get_unit_name()} to version {version_installed}.")  # type: ignore
+    # everything work? Let's publish to MQTT. This is a terrible hack, as monitor should do this.
+    pubsub.publish(
+        f"pioreactor/{whoami.get_unit_name()}/{whoami.UNIVERSAL_EXPERIMENT}/monitor/versions/set",
+        dumps({"app": version_installed, "timestamp": current_utc_timestamp()}),
+    )
 
 
 @update.command(name="firmware")

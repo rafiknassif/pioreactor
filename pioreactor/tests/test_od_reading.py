@@ -16,6 +16,7 @@ from pioreactor.background_jobs.od_reading import NullCalibrationTransformer
 from pioreactor.background_jobs.od_reading import ODReader
 from pioreactor.background_jobs.od_reading import PhotodiodeIrLedReferenceTrackerStaticInit
 from pioreactor.background_jobs.od_reading import start_od_reading
+from pioreactor.config import config
 from pioreactor.pubsub import collect_all_logs_of_level
 from pioreactor.utils import local_persistant_storage
 from pioreactor.utils.timing import current_utc_datetime
@@ -760,6 +761,8 @@ def test_calibration_multi_modal() -> None:
 def test_calibration_errors_when_ir_led_differs() -> None:
     experiment = "test_calibration_errors_when_ir_led_differs"
 
+    config["od_config"]["ir_led_intensity"] = "90"
+
     with local_persistant_storage("current_od_calibration") as c:
         c["90"] = encode(
             structs.OD90Calibration(
@@ -787,6 +790,8 @@ def test_calibration_errors_when_ir_led_differs() -> None:
 
     with local_persistant_storage("current_od_calibration") as c:
         del c["90"]
+
+    config["od_config"]["ir_led_intensity"] = "auto"
 
 
 def test_calibration_errors_when_pd_channel_differs() -> None:
@@ -956,3 +961,16 @@ def test_calibration_data_from_user2() -> None:
 
     with local_persistant_storage("current_od_calibration") as c:
         del c["90"]
+
+
+def test_auto_ir_led_intensity() -> None:
+    existing_intensity = config["od_config"]["ir_led_intensity"]
+
+    config["od_config"]["ir_led_intensity"] = "auto"
+
+    experiment = "test_auto_ir_led_intensity"
+
+    with start_od_reading("REF", "90", interval=None, fake_data=True, experiment=experiment) as od:
+        assert od.ir_led_intensity == 20.0
+
+    config["od_config"]["ir_led_intensity"] = existing_intensity

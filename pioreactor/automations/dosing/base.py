@@ -31,6 +31,10 @@ from pioreactor.utils.timing import current_utc_datetime
 from pioreactor.utils.timing import RepeatedTimer
 
 
+def close(x: float, y: float) -> bool:
+    return abs(x - y) < 1e-9
+
+
 def brief_pause() -> float:
     d = 5.0
     time.sleep(d)
@@ -207,10 +211,10 @@ class DosingAutomationJob(AutomationJob):
         "dosing_automation.config", "max_volume_to_stop", fallback=18.0
     )
     MAX_SUBDOSE = config.getfloat(
-        "dosing_automation.config", "max_subdose", fallback=0.75
+        "dosing_automation.config", "max_subdose", fallback=1.0
     )  # arbitrary, but should be some value that the pump is well calibrated for.
 
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
 
         # this registers all subclasses of DosingAutomationJob back to DosingController, so the subclass
@@ -379,9 +383,11 @@ class DosingAutomationJob(AutomationJob):
         all_pumps_ml = {**{"media_ml": media_ml, "alt_media_ml": alt_media_ml}, **other_pumps_ml}
 
         sum_of_volumes = sum(ml for ml in all_pumps_ml.values())
-
-        if not (waste_ml >= sum_of_volumes):
-            raise ValueError("Not removing enough waste: waste_ml should be greater than sum of dosed ml")
+        if not (waste_ml >= sum_of_volumes - 1e-9):
+            # why close? account for floating point imprecision, ex: .6299999999999999 != 0.63
+            raise ValueError(
+                "Not removing enough waste: waste_ml should be greater than or equal to sum of all dosed ml"
+            )
 
         volumes_moved = SummableDict(waste_ml=0.0, **{p: 0.0 for p in all_pumps_ml})
         source_of_event = f"{self.job_name}:{self.automation_name}"
@@ -414,6 +420,7 @@ class DosingAutomationJob(AutomationJob):
                         ml=volume_ml,
                         source_of_event=source_of_event,
                         mqtt_client=self.pub_client,
+                        logger=self.logger,
                     )
                     volumes_moved[pump] += volume_moved_ml
                     pause_between_subdoses()  # allow time for the addition to mix, and reduce the step response that can cause ringing in the output V.
@@ -426,6 +433,7 @@ class DosingAutomationJob(AutomationJob):
                     ml=waste_ml,
                     source_of_event=source_of_event,
                     mqtt_client=self.pub_client,
+                    logger=self.logger,
                 )
                 volumes_moved["waste_ml"] += waste_moved_ml
 
@@ -435,18 +443,22 @@ class DosingAutomationJob(AutomationJob):
                     )
 
                 briefer_pause()
+
                 # run remove_waste for an additional few seconds to keep volume constant (determined by the length of the waste tube)
-                self.remove_waste_from_bioreactor(
-                    unit=self.unit,
-                    experiment=self.experiment,
-                    ml=waste_ml
-                    * config.getfloat(
-                        "dosing_automation.config", "waste_removal_multiplier", fallback=2.0
-                    ),  # fmt: skip
-                    source_of_event=source_of_event,
-                    mqtt_client=self.pub_client,
+                extra_waste_ml = waste_ml * config.getfloat(
+                    "dosing_automation.config", "waste_removal_multiplier", fallback=2.0
                 )
-                briefer_pause()
+                # fmt: skip
+                if extra_waste_ml > 0:
+                    self.remove_waste_from_bioreactor(
+                        unit=self.unit,
+                        experiment=self.experiment,
+                        ml=extra_waste_ml,
+                        source_of_event=source_of_event,
+                        mqtt_client=self.pub_client,
+                        logger=self.logger,
+                    )
+                    briefer_pause()
 
         return volumes_moved
 
@@ -547,6 +559,9 @@ class DosingAutomationJob(AutomationJob):
         self.latest_normalized_od_at = payload.timestamp
 
     def _set_ods(self, message: pt.MQTTMessage) -> None:
+        if not message.payload:
+            return
+
         self.previous_od = self._latest_od
         payload = decode(message.payload, type=structs.ODReadings)
         self._latest_od: dict[pt.PdChannel, float] = {c: payload.ods[c].od for c in payload.ods}
@@ -606,11 +621,12 @@ class DosingAutomationJob(AutomationJob):
 
         if self.vial_volume >= self.MAX_VIAL_VOLUME_TO_WARN:
             self.logger.warning(
-                f"Vial is calculated to have a volume of {self.vial_volume} mL. Is this expected?"
+                f"Vial is calculated to have a volume of {self.vial_volume:.2f} mL. Is this expected?"
             )
         elif self.vial_volume >= self.MAX_VIAL_VOLUME_TO_STOP:
             pass
             # TODO: this should publish to pumps to stop them.
+            # but it is checked elsewhere
 
     def _update_throughput(self, dosing_event: structs.DosingEvent) -> None:
         (
@@ -640,7 +656,7 @@ class DosingAutomationJob(AutomationJob):
 
         return
 
-    def _init_vial_volume(self, initial_vial_volume: float):
+    def _init_vial_volume(self, initial_vial_volume: float) -> None:
         assert initial_vial_volume >= 0
 
         self.add_to_published_settings(
@@ -657,7 +673,7 @@ class DosingAutomationJob(AutomationJob):
 
         return
 
-    def _init_volume_throughput(self):
+    def _init_volume_throughput(self) -> None:
         self.add_to_published_settings(
             "alt_media_throughput",
             {

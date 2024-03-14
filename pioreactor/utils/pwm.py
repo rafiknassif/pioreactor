@@ -15,7 +15,7 @@ from pioreactor import types as pt
 from pioreactor.exc import PWMError
 from pioreactor.hardware import GPIOCHIP
 from pioreactor.logging import create_logger
-from pioreactor.logging import Logger
+from pioreactor.logging import CustomLogger
 from pioreactor.pubsub import Client
 from pioreactor.pubsub import create_client
 from pioreactor.types import GpioPin
@@ -80,7 +80,7 @@ class HardwarePWMOutputDevice(HardwarePWM):
 class SoftwarePWMOutputDevice:
     _started = False
 
-    def __init__(self, pin: GpioPin, frequency=100):
+    def __init__(self, pin: GpioPin, frequency: float = 100) -> None:
         self.pin = pin
         self.frequency = frequency
         self._handle = lgpio.gpiochip_open(GPIOCHIP)
@@ -88,12 +88,12 @@ class SoftwarePWMOutputDevice:
         lgpio.gpio_claim_output(self._handle, self.pin)
         lgpio.tx_pwm(self._handle, self.pin, self.frequency, 0)
 
-    def start(self, initial_dc: pt.FloatBetween0and100):
+    def start(self, initial_dc: pt.FloatBetween0and100) -> None:
         self._started = True
         self.dc = initial_dc
         lgpio.tx_pwm(self._handle, self.pin, self.frequency, self.dc)
 
-    def off(self):
+    def off(self) -> None:
         try:
             self.dc = 0.0
         except lgpio.error:
@@ -109,7 +109,12 @@ class SoftwarePWMOutputDevice:
         dc = clamp(0.0, dc, 100.0)
         self._dc = dc
         if self._started:
-            lgpio.tx_pwm(self._handle, self.pin, self.frequency, self.dc)
+            try:
+                lgpio.tx_pwm(self._handle, self.pin, self.frequency, self.dc)
+            except lgpio.error:
+                # see issue #435
+                pass
+
         else:
             raise ValueError("must call .start() first!")
 
@@ -169,7 +174,7 @@ class PWM:
         experiment: Optional[str] = None,
         always_use_software: bool = False,
         pubsub_client: Optional[Client] = None,
-        logger: Optional[Logger] = None,
+        logger: Optional[CustomLogger] = None,
     ) -> None:
         self.unit = unit or get_unit_name()
         self.experiment = experiment or get_latest_experiment_name()
@@ -226,7 +231,7 @@ class PWM:
         except AttributeError:
             return False
 
-    def _serialize(self):
+    def _serialize(self) -> None:
         # don't send 0 values to MQTT - waste of space and time
         if self.duty_cycle > 0:
             current_values = {self.pin: self.duty_cycle}

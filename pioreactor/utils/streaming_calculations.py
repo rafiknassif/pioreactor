@@ -151,33 +151,6 @@ class CultureGrowthEKF:
     2. Part of https://github.com/Pioreactor/pioreactor/issues/74
 
 
-    Tuning
-    --------
-
-    *Note*: the below didn't work, I just trial-and-error it
-
-    Because I had such a pain tuning this, lets talk about what worked.
-
-    So, to start our mental model, we are estimating the following:
-
-    p(x_t | y_t, z_t), where x_t is our unknown state vector, and y_t is our prediction, and z_t is our
-    latest observation. This is a Bayesian update:
-
-    y_t ~ Normal( F(x_{t-1}), Prediction Uncertainty + Q), where F is the dynamical system
-    z_t ~ Normal(mu, R)
-
-    First, note the covariance of y_t. If Q is large, then we are _less_ confident in our prediction. How should we pick values of
-    Q? Because our model says that r_t = r_{t-1} + var, we should choose var s.t. it is the expected movement in one
-    time step. Back of the envelope: in 1 hour, a rate change of 0.05 is exceptional => a 2 std. movement.
-    => hourly std = 0.025
-    => per observation-interval std =  0.025 * (5 / 3600)
-    => per observation-interval var = (0.025 * (5 / 3600)) ** 2
-
-    The paper above suggests to make the process variance of OD equal to a small number. This means we (almost) fully trust the dynamic model to tell us what
-    OD is. However, this means that changes in observed OD are due to changes in rate. What happens when there is a large jump due to noise? We can apply the same
-    idea above to the observation variance, R. A 0.1 jump is not unexpected, but in the tails, => 2std = 0.1 => 1std = 0.05 => ....
-
-
     Note on 180°
     -------------
     The measurement model for 180 is obs_t = exp(-(od_t - 1)), which comes from the beer lambert model:
@@ -219,6 +192,8 @@ class CultureGrowthEKF:
      is trusted less and less, while the predicted measurement is trusted more and more
     """
 
+    handle_outliers = True
+
     def __init__(
         self,
         initial_state,
@@ -226,6 +201,7 @@ class CultureGrowthEKF:
         process_noise_covariance,
         observation_noise_covariance,
         angles: list[str],
+        outlier_std_threshold: float,
     ) -> None:
         import numpy as np
 
@@ -247,6 +223,7 @@ class CultureGrowthEKF:
         self.n_sensors = observation_noise_covariance.shape[0]
         self.n_states = initial_state.shape[0]
         self.angles = angles
+        self.outlier_std_threshold = outlier_std_threshold
 
         self._currently_scaling_covariance = False
         self._currently_scaling_process_covariance = False
@@ -261,27 +238,39 @@ class CultureGrowthEKF:
 
         # Predict
         state_prediction = self.update_state_from_previous_state(self.state_, dt)
-        covariance_prediction = self.update_covariance_from_old_covariance(
-            self.state_, self.covariance_, dt
-        )
+        covariance_prediction = self.update_covariance_from_old_covariance(self.state_, self.covariance_, dt)
 
         # Update
         ### innovation
         residual_state = observation - self.update_observations_from_state(state_prediction)
+
         H = self._J_update_observations_from_state(state_prediction)
+
+        ### optimal gain
         residual_covariance = (
             # see Scaling note above for why we multiple by state_[0]
             H @ covariance_prediction @ H.T
             + self.state_[0] * self.observation_noise_covariance
         )
 
-        ### optimal gain
-        kalman_gain_ = np.linalg.solve(residual_covariance.T, (H @ covariance_prediction.T)).T
+        huber_threshold = self.outlier_std_threshold * np.sqrt(residual_covariance[0, 0])
+        currently_is_outlier = abs(residual_state[0]) > huber_threshold
+
+        if self.handle_outliers and (currently_is_outlier):
+            covariance_prediction[0, 0] = 2 * covariance_prediction[0, 0]
+            kalman_gain_ = np.linalg.solve(residual_covariance.T, (H @ covariance_prediction.T)).T
+
+            # adjust the gain s.t. we freeze acc and gr, and scale the nOD inversely by the size of the outlier.
+            kalman_gain_[0, 0] *= huber_threshold / abs(residual_state[0])
+            kalman_gain_[1:, 0] = 0
+        else:
+            kalman_gain_ = np.linalg.solve(residual_covariance.T, (H @ covariance_prediction.T)).T
 
         ### update estimates
         self.state_ = state_prediction + kalman_gain_ @ residual_state
         self.covariance_ = (np.eye(self.n_states) - kalman_gain_ @ H) @ covariance_prediction
-        return self.state_
+
+        return self.state_, self.covariance_
 
     def scale_OD_variance_for_next_n_seconds(self, factor: float, seconds: float):
         """
@@ -299,6 +288,7 @@ class CultureGrowthEKF:
             self._currently_scaling_covariance = False
             self.covariance_ = self._covariance_pre_scale
             self._covariance_pre_scale = None
+            self.handle_outliers = True
 
         def forward_scale_covariance():
             if not self._currently_scaling_covariance:
@@ -307,6 +297,7 @@ class CultureGrowthEKF:
             self._currently_scaling_covariance = True
             self.covariance_ = np.diag(self._covariance_pre_scale.diagonal())
             self.covariance_[0, 0] *= factor
+            self.handle_outliers = False
 
         if self._currently_scaling_covariance:
             assert self._scale_covariance_timer is not None
@@ -469,9 +460,7 @@ class PID:
         self.experiment = experiment
         self.target_name = target_name
         self.job_name = job_name
-        self.client = create_client(
-            client_id=f"pid-{self.unit}-{self.experiment}-{self.target_name}"
-        )
+        self.client = create_client(client_id=f"pid-{self.unit}-{self.experiment}-{self.target_name}")
 
     def reset(self) -> None:
         """

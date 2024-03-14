@@ -1,13 +1,82 @@
+### 24.3.10
+
+#### Enhancements
+ - For better consistency between Pioreactors, we've introduced a new configuration option that will automatically adjust the IR LED intensity to match a target value in the reference photodiode, at the start of OD reading. This means that if your IR LEDs are slightly different between Pioreactors, the IR LED output will be adjusted to match a hardcoded value. To enable this feature, change the `[od_config]` config parameter `ir_led_intensity` value to `auto`. For new installs, this is the default configuration. This _shouldn't_ change your actual OD readings very much (since we normalize raw PD by REF, and increase or decrease in REF is balanced by increase or decrease in PD), but it will make analysis easier.
+ - Significant UI performance improvements: we are use less MQTT clients, which should mean faster loading, less network overhead, and overall lower resource-usage.
+
+#### Bug fixes
+ - Fixes updating automations in experiment profiles
+
+### 24.3.4
+
+#### Enhancements
+ - reusing more MQTT clients internally => faster job startup and less network overhead
+
+#### Bug fixes
+ - using the archive upload method to update Pioreactors had a bug when distributing the archive to workers on the cluster. That has been fixed. The first time, you archive update may fail. But it should succeed the second time.
+ - fix UI bug that was preventing real-time data from showing up in some custom charts.
+ - fix UI bug that was causing a stale datum to appear in charts.
+ - To avoid downstream permission issues, `pio` can't be run as root. That is, `sudo pio ...` will fail.
+ - a typo prevented `od_config.smoothing_penalizer` from being used internally. This is fixed.
+ - some retry logic for fixing "lost" state in the UI.
+ - fixed numerous MQTT connections from accumulating in the UI
+
+### 24.2.26
+
+#### Highlights
+ - **Experimental** introducing outlier filtering in growth rate calculations. This is tunable with the new `ekf_outlier_std_threshold` parameter under `[growth_rate_calculating.config]`. To turn off outlier filtering, set this parameter to some very large number (1000s). Don't put it less than 3.0 - that's silly.
+ - With this new filtering, we can provide more reasonable values for the parameters of the growth rate Kalman filter. We previously had to artificially _increase_ the measurement std. deviation (`obs_std`) to allow for some outliers. This had the knock-on effect of hiding growth-rate changes, so we had to also increase that parameter `rate_std`. With better outlier protection in the model, we can move these values back. New installs will have the following parameters, and we encourage existing users to try these values if you plan to use the outlier filtering.
+  ```
+  [growth_rate_kalman]
+  acc_std=0.0008
+  obs_std=1.5
+  od_std=0.0025
+  rate_std=0.1
+  ```
+ - added configuration for alternative mqtt brokers with the new configuration
+   ```
+   [mqtt]
+   username=pioreactor
+   password=raspberry
+   broker_address=
+   broker_ws_port=9001
+   broker_port=1883
+   ws_protocol=ws
+   use_tls=0
+   ```
+
+#### Enhancements
+ - clear the growth-rate cache with `pio run growth_rate_cacluating clear_cache`
+ - added Pioreactor specific software version to the UI: Page *Pioreactors -> Manage -> System -> Version*. **this requires a restart to display correctly**
+ - new UI MQTT library. Is it faster? Maybe!
+ - increased the default `max_subdose` to 1.0.
+
+#### Bug fixes
+ - fixed a case where dosing automation IO execution would not run due to a floating point rounding error.  Sorry!
+ - fixed a memory leak in long running dosing automations that had thousands of dosing events.  Sorry!
+ - fixed a race condition that caused an error to occur when a software PWM channel was closed too quickly.  Sorry!
+ - fixed bug that was partially crashing the UI if some bad syntax was entered into a custom yaml file. Sorry!
+ - fixed bug that was causing bad json from the server, causing empty / non-loading areas in the UI. Sorry!
+ - fixed `datum` bug in the Overview that was crashing the UI. Sorry!
+
+
+### 24.2.11
+ - boot-up performance improvements
+ - job start performance improvements
+ - improved RPM calculation for lower RPMs.
+ - Added buttons to the Overview UI to change common settings.
+
 ### 24.1.30
 
 #### Enhancements
-  - profiles in the UI are sorted by their last edit time.
-  - Jobs can't run if `self_test` is running
-  - exporting `pioreactor_unit_activity_data` no longer requires an experiment name to be included.
-  - new config option: `samples_for_od_statistics` in `[growth_rate_calculating.config]` for specifying the number of OD samples to take for initial statistics.
-  - `$` can be used in expressions (this is used to specify the `$state` setting).
-  - `repeat` directive in experiment profiles.
-    ```yaml
+
+ - profiles in the UI are sorted by their last edit time.
+ - Jobs can't run if `self_test` is running
+ - exporting `pioreactor_unit_activity_data` no longer requires an experiment name to be included.
+ - new config option: `samples_for_od_statistics` in `[growth_rate_calculating.config]` for specifying the number of OD samples to take for initial statistics.
+ - `$` can be used in expressions (this is used to specify the `$state` setting).
+ - `repeat` directive in experiment profiles.
+   ```yaml
     experiment_profile_name: demo_stirring_repeat
 
     common:
@@ -28,9 +97,9 @@
                   hours_elapsed: 0.0
                   options:
                     target_rpm: ${{::stirring:target_rpm + 100}}
-    ```
-  - use expressions in `common` block. Instead of the usual `unit:job:setting` syntax, use `::job:setting`. For example:
-    ```yaml
+   ```
+ - use expressions in `common` block. Instead of the usual `unit:job:setting` syntax, use `::job:setting`. For example:
+   ```yaml
     common:
       jobs:
         stirring:
@@ -40,7 +109,7 @@
               if: ::stirring:target_rpm > 600
               options:
                 target_rpm: ${{::stirring:target_rpm - 100}}
-    ```
+   ```
 
 #### Bug fixes
  - fixed a bug in the chart of OD reading that was causing historical and realtime data to be different lines.
@@ -79,7 +148,7 @@
 ```
 
 
-### Breaking changes
+#### Breaking changes
 Breaking changes to experiment profiles:
   1. the `common` block requires a `jobs` block. Previously:
      ```
@@ -155,7 +224,7 @@ Breaking changes to experiment profiles:
  - removed the topic `pioreactor/{unit}/.../od_readings/od/{channel}`. Use `pioreactor/{unit}/.../od_readings/od1` or `pioreactor/{unit}/.../od_readings/od2`. This change was made to fit more and more published data into the same format (and it makes `od1` and `od2` published settings on `ODReader`)
 
 
-### Enhancements
+#### Enhancements
  - `ods`, `od1`, `od2` now a published settings of `ODReadings`.
  - when a worker is first turned on, and pre-connected to a cluster, the LED is turned on to give _some_ feedback to the user.
  - using the 2023-12-11 RPi base image
@@ -163,7 +232,7 @@ Breaking changes to experiment profiles:
 #### Bug fixes
  - fixed the UI crashing if trying to edit a blank experiment profile
 
-### Experimental builds
+#### Experimental builds
 
 We've released new 64 bit builds, and a 64 bit "headful" build. These builds are experimental, and require a RPi4, RPi5, or RPi400 due to their larger memory requirements.
 

@@ -24,7 +24,7 @@ class _ADC:
     def from_raw_to_voltage(self, raw: pt.AnalogValue) -> pt.Voltage:
         raise NotImplementedError
 
-    def check_on_gain(self, value: pt.Voltage, tol=0.85) -> None:
+    def check_on_gain(self, value: pt.Voltage, tol: float = 0.85) -> None:
         raise NotImplementedError
 
 
@@ -67,7 +67,7 @@ class ADS1115_ADC(_ADC):
         for channel in (0, 1, 2, 3):
             self.analog_in[channel] = AnalogIn(self._ads, channel)
 
-    def check_on_gain(self, value: pt.Voltage, tol=0.85) -> None:
+    def check_on_gain(self, value: pt.Voltage, tol: float = 0.85) -> None:
         for gain, (lb, ub) in self.ADS1X15_GAIN_THRESHOLDS.items():
             if (tol * lb <= value < tol * ub) and (self.gain != gain):
                 self.gain = gain
@@ -111,10 +111,13 @@ class Pico_ADC(_ADC):
     def from_voltage_to_raw(self, voltage: pt.Voltage) -> pt.AnalogValue:
         return int((voltage / 3.3) * 4095 * 16)
 
+    def from_voltage_to_raw_precise(self, voltage: pt.Voltage) -> float:
+        return (voltage / 3.3) * 4095 * 16
+
     def from_raw_to_voltage(self, raw: pt.AnalogValue) -> pt.Voltage:
         return (raw / 4095 / 16) * 3.3
 
-    def check_on_gain(self, value: pt.Voltage, tol=0.85) -> None:
+    def check_on_gain(self, value: pt.Voltage, tol: float = 0.85) -> None:
         # pico has no gain.
         pass
 

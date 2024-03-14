@@ -8,6 +8,7 @@ from msgspec import Meta
 
 if t.TYPE_CHECKING:
     from pioreactor.pubsub import Client
+    from pioreactor.logging import CustomLogger
 
 
 class DosingProgram(t.Protocol):
@@ -16,7 +17,13 @@ class DosingProgram(t.Protocol):
     """
 
     def __call__(
-        self, unit: str, experiment: str, ml: float, source_of_event: str, mqtt_client: Client
+        self,
+        unit: str,
+        experiment: str,
+        ml: float,
+        source_of_event: str,
+        mqtt_client: t.Optional[Client] = None,
+        logger: t.Optional[CustomLogger] = None,
     ) -> float:
         # don't forget to return a float!
         ...
@@ -100,6 +107,7 @@ PdAngleOrREF = t.Union[PdAngle, t.Literal["REF"]]
 AnalogValue = t.Union[int, float]
 Voltage = float  # maybe should be non-negative?
 OD = t.Annotated[float, Meta(ge=0)]
+OD600 = t.Annotated[float, Meta(ge=0)]
 
 AdcChannel = t.Literal[0, 1, 2, 3]
 

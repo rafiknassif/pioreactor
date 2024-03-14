@@ -99,7 +99,7 @@ class RpmCalculator:
     def callback(self, *args) -> None:
         pass
 
-    def sleep_for(self, seconds) -> None:
+    def sleep_for(self, seconds: float) -> None:
         sleep(seconds)
 
     def __enter__(self) -> RpmCalculator:
@@ -222,7 +222,7 @@ class Stirrer(BackgroundJob):
         channel: Optional[pt.PwmChannel] = config.get("PWM_reverse", "stirring")
 
         if channel is None:
-            self.logger.error(f"Add stirring to `PWM` section to config_{self.unit}.ini.")
+            self.logger.error("Add stirring to [PWM] section to configuration file.")
             self.clean_up()
             return
 
@@ -258,9 +258,6 @@ class Stirrer(BackgroundJob):
             job_name=self.job_name,
             run_immediately=True,
             run_after=6,
-            kwargs={
-                "poll_for_seconds": 4
-            },  # technically should be a function of the RPM: lower RPM, longer to get sufficient estimate with low variance.
         )
 
     def initialize_rpm_to_dc_lookup(self) -> Callable:
@@ -374,7 +371,15 @@ class Stirrer(BackgroundJob):
 
         return self.measured_rpm
 
-    def poll_and_update_dc(self, poll_for_seconds: float = 4) -> None:
+    def poll_and_update_dc(self, poll_for_seconds: Optional[float] = None) -> None:
+        if poll_for_seconds is None:
+            if self.target_rpm is None:
+                poll_for_seconds = 4.0  # this never runs? If target_rpm is None, what are we polling for?
+            else:
+                target_n_data_points = 12
+                rps = self.target_rpm / 60.0
+                poll_for_seconds = target_n_data_points / rps
+
         self.poll(poll_for_seconds)
 
         if self._measured_rpm is None or self.state != self.READY:
@@ -399,6 +404,7 @@ class Stirrer(BackgroundJob):
 
     def set_target_rpm(self, value: float) -> None:
         if self.rpm_calculator is None:
+            # probably use_rpm=0 is in config.ini
             raise ValueError("Can't set target RPM when no RPM measurement is being made")
 
         self.target_rpm = clamp(0.0, value, 5_000.0)
@@ -491,7 +497,7 @@ def start_stirring(
     type=click.FloatRange(0, 1500, clamp=True),
 )
 @click.option("--use-rpm/--ignore-rpm", default=config.getboolean("stirring", "use_rpm", fallback="true"))
-def click_stirring(target_rpm: float, use_rpm: bool):
+def click_stirring(target_rpm: float, use_rpm: bool) -> None:
     """
     Start the stirring of the Pioreactor.
     """

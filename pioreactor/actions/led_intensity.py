@@ -70,7 +70,7 @@ def is_led_channel_locked(channel: LedChannel) -> bool:
 
 
 def _update_current_state(
-    new_state,
+    state: dict[LedChannel, LedIntensityValue],
 ) -> tuple[structs.LEDsIntensity, structs.LEDsIntensity]:
     """
     TODO: Eventually I should try to modify the UI to not even need this `state` variable,
@@ -84,7 +84,7 @@ def _update_current_state(
 
         # update cache
         with led_cache.transact():
-            for channel, intensity in new_state.items():
+            for channel, intensity in state.items():
                 led_cache[channel] = intensity
 
         new_state = structs.LEDsIntensity(
@@ -135,7 +135,7 @@ def led_intensity(
     experiment = experiment or get_latest_experiment_name()
     unit = unit or get_unit_name()
 
-    logger = create_logger("led_intensity", experiment=experiment, unit=unit)
+    logger = create_logger("led_intensity", experiment=experiment, unit=unit, pub_client=pubsub_client)
     updated_successfully = True
 
     if not is_testing_env():
