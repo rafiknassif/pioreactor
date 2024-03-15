@@ -57,7 +57,7 @@ from pioreactor.config import config
 from pioreactor.pubsub import QOS
 from pioreactor.pubsub import subscribe
 from pioreactor.utils import local_persistant_storage
-from pioreactor.utils.streaming_calculations import CultureGrowthEKF
+from pioreactor.utils.streaming_calculations import CultureGrowthUKF
 
 
 class GrowthRateCalculator(BackgroundJob):
@@ -77,7 +77,7 @@ class GrowthRateCalculator(BackgroundJob):
             "datatype": "GrowthRate",
             "settable": False,
             "unit": "h⁻¹",
-            "persist": True,  # TODO: why persist?
+            "persist": True,  #TODO: why persist?
         },
         "od_filtered": {"datatype": "ODFiltered", "settable": False, "persist": True},
         "kalman_filter_outputs": {
@@ -108,7 +108,7 @@ class GrowthRateCalculator(BackgroundJob):
         # Note that this function runs in the __post__init__, i.e. in the same frame as __init__, i.e.
         # when we initialize the class. Thus, we need to handle errors and cleanup resources gracefully.
 
-        if hasattr(self, "ekf"):
+        if hasattr(self, "ukf"):
             # we've already done this, don't do it again. Ex: pause to resume
             return
 
@@ -133,19 +133,22 @@ class GrowthRateCalculator(BackgroundJob):
         self.logger.debug(f"od_blank={dict(self.od_blank)}")
         self.logger.debug(f"od_normalization_mean={self.od_normalization_factors}")
         self.logger.debug(f"od_normalization_variance={self.od_variances}")
-        self.ekf = self.initialize_extended_kalman_filter(
+        self.ukf = self.initialize_unscented_kalman_filter(
             acc_std=config.getfloat("growth_rate_kalman", "acc_std"),
             od_std=config.getfloat("growth_rate_kalman", "od_std"),
             rate_std=config.getfloat("growth_rate_kalman", "rate_std"),
             obs_std=config.getfloat("growth_rate_kalman", "obs_std"),
+            alpha=config.getfloat("growth_rate_kalman", "alpha"),
+            beta=config.getfloat("growth_rate_kalman", "beta"),
+            kappa=config.getfloat("growth_rate_kalman", "kappa"),
         )
 
         if self.source_obs_from_mqtt:
             self.start_passive_listeners()
 
-    def initialize_extended_kalman_filter(
-        self, acc_std: float, od_std: float, rate_std: float, obs_std: float
-    ) -> CultureGrowthEKF:
+    def initialize_unscented_kalman_filter(
+        self, acc_std: float, od_std: float, rate_std: float, obs_std: float, alpha:float, beta: float, kappa: float
+    ) -> CultureGrowthUKF:
         import numpy as np
 
         initial_state = np.array(
@@ -180,25 +183,29 @@ class GrowthRateCalculator(BackgroundJob):
         ]
 
         self.logger.debug(f"{angles=}")
-        ekf_outlier_std_threshold = config.getfloat(
+        ukf_outlier_std_threshold = config.getfloat(
             "growth_rate_calculating.config",
-            "ekf_outlier_std_threshold",
+            "ukf_outlier_std_threshold",
             fallback=5.0,
         )
-        if ekf_outlier_std_threshold <= 2.0:
+        if ukf_outlier_std_threshold <= 2.0:
             raise ValueError(
                 "outlier_std_threshold should not be less than 2.0 - that's eliminating too many data points."
             )
 
-        self.logger.debug(f"{ekf_outlier_std_threshold=}")
+        self.logger.debug(f"{ukf_outlier_std_threshold=}")
 
-        return CultureGrowthEKF(
+
+        return CultureGrowthUKF(
             initial_state,
             initial_covariance,
             process_noise_covariance,
             observation_noise_covariance,
             angles,
-            ekf_outlier_std_threshold,
+            ukf_outlier_std_threshold,
+            alpha,
+            beta,
+            kappa
         )
 
     def create_obs_noise_covariance(self, obs_std):  # type: ignore
@@ -362,7 +369,7 @@ class GrowthRateCalculator(BackgroundJob):
 
         return variances
 
-    def update_ekf_variance_after_event(self, minutes: float, factor: float) -> None:
+    def update_ukf_variance_after_event(self, minutes: float, factor: float) -> None:
         if whoami.is_testing_env():
             msg = subscribe(  # needs to be pubsub.subscribe (ie not sub_client.subscribe) since this is called in a callback
                 f"pioreactor/{self.unit}/{self.experiment}/od_reading/interval",
@@ -372,9 +379,9 @@ class GrowthRateCalculator(BackgroundJob):
                 interval = float(msg.payload)
             else:
                 interval = 5
-            self.ekf.scale_OD_variance_for_next_n_seconds(factor, minutes * (12 * interval))
+            self.ukf.scale_OD_variance_for_next_n_seconds(factor, minutes * (12 * interval))
         else:
-            self.ekf.scale_OD_variance_for_next_n_seconds(factor, minutes * 60)
+            self.ukf.scale_OD_variance_for_next_n_seconds(factor, minutes * 60)
 
     def scale_raw_observations(
         self, observations: dict[pt.PdChannel, float]
@@ -470,7 +477,7 @@ class GrowthRateCalculator(BackgroundJob):
 
             self.time_of_previous_observation = timestamp
 
-        updated_state_, covariance_ = self.ekf.update(list(scaled_observations.values()), dt)
+        updated_state_, covariance_ = self.ukf.update(list(scaled_observations.values()), dt)
         latest_od_filtered, latest_growth_rate = float(updated_state_[0]), float(updated_state_[1])
 
         growth_rate = structs.GrowthRate(
@@ -483,7 +490,7 @@ class GrowthRateCalculator(BackgroundJob):
         )
 
         kf_outputs = structs.KalmanFilterOutput(
-            state=self.ekf.state_.tolist(),
+            state=self.ukf.state_.tolist(),
             covariance_matrix=covariance_.tolist(),
             timestamp=timestamp,
         )
@@ -498,15 +505,15 @@ class GrowthRateCalculator(BackgroundJob):
         # here we can add custom logic to handle dosing events.
         # an improvement to this: the variance factor is proportional to the amount exchanged.
         if dosing_event.event != "remove_waste":
-            self.update_ekf_variance_after_event(
+            self.update_ukf_variance_after_event(
                 minutes=config.getfloat(
                     "growth_rate_calculating.config",
-                    "ekf_variance_shift_post_dosing_minutes",
+                    "ukf_variance_shift_post_dosing_minutes",
                     fallback=0.40,
                 ),
                 factor=config.getfloat(
                     "growth_rate_calculating.config",
-                    "ekf_variance_shift_post_dosing_factor",
+                    "ukf_variance_shift_post_dosing_factor",
                     fallback=2500,
                 ),
             )
