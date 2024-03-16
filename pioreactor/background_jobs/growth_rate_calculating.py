@@ -490,7 +490,7 @@ class GrowthRateCalculator(BackgroundJob):
         )
 
         kf_outputs = structs.KalmanFilterOutput(
-            state=self.ukf.state_.tolist(),
+            state=updated_state_.tolist(),
             covariance_matrix=covariance_.tolist(),
             timestamp=timestamp,
         )
