@@ -916,11 +916,11 @@ class ODReader(BackgroundJob):
                 # clear the history in adc_reader, so that we don't blank readings in later inference.
                 self.adc_reader.clear_batched_readings()
                 
-        self.start_ir_led()
-        sleep(3)
-
                 if determine_best_ir_led_intensity:
                     self.ir_led_intensity = self._determine_best_ir_led_intensity(on_reading, blank_reading)
+                    
+        self.start_ir_led()
+        sleep(3)
 
         if (self.interval is not None) and self.interval > 0:
             if self.interval <= 1.0:
