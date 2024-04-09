@@ -897,6 +897,7 @@ class ODReader(BackgroundJob):
             pubsub_client=self.pub_client,
             verbose=False,
         ):
+            sleep(2)
             with led_utils.lock_leds_temporarily(self.non_ir_led_channels):
                 # IR led is on
                 self.start_ir_led()
@@ -1023,17 +1024,22 @@ class ODReader(BackgroundJob):
         # we put a soft lock on the LED channels - it's up to the
         # other jobs to make sure they check the locks.
         with led_utils.change_leds_intensities_temporarily(
-            desired_state=self.ir_led_on_and_rest_off_state,
+            #desired_state=self.ir_led_on_and_rest_off_state, #changed in orded not to turn on ir light source for duration it takes to disable light source. may need to bring back when i calculate offset for every measurement
+            {ch: 0.0 for ch in led_utils.ALL_LED_CHANNELS},
             unit=self.unit,
             experiment=self.experiment,
             source_of_event=self.job_name,
             pubsub_client=self.pub_client,
             verbose=False,
         ):
+            sleep(2)
             with led_utils.lock_leds_temporarily(self.non_ir_led_channels):
+                self.start_ir_led()
                 sleep(0.1)
                 timestamp_of_readings = timing.current_utc_datetime()
                 od_reading_by_channel = self._read_from_adc_and_transform()
+                self.stop_ir_led()
+                sleep(0.1)
                 od_readings = structs.ODReadings(
                     timestamp=timestamp_of_readings,
                     ods={

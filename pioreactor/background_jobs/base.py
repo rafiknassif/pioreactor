@@ -1029,7 +1029,7 @@ class BackgroundJobWithDodging(_BackgroundJob):
     """
 
     OD_READING_DURATION = (
-        1.0  # WARNING: this may change slightly in the future, don't depend on this too much.
+        3.0  # WARNING: this may change slightly in the future, don't depend on this too much.
     )
     sneak_in_timer: RepeatedTimer
     is_after_period: bool = False
