@@ -40,8 +40,8 @@ from collections import defaultdict
 from datetime import datetime
 from json import dumps
 from json import loads
+from time import sleep
 from typing import Generator
-from typing import Optional
 
 import click
 from msgspec import DecodeError
@@ -79,7 +79,7 @@ class GrowthRateCalculator(BackgroundJob):
             "unit": "h⁻¹",
             "persist": True,  #TODO: why persist?
         },
-        "od_filtered": {"datatype": "ODFiltered", "settable": False, "persist": True},
+        "od_filtered": {"datatype": "ODFiltered", "settable": False},
         "kalman_filter_outputs": {
             "datatype": "KalmanFilterOutput",
             "settable": False,
@@ -99,7 +99,7 @@ class GrowthRateCalculator(BackgroundJob):
         self.source_obs_from_mqtt = source_obs_from_mqtt
         self.ignore_cache = ignore_cache
         self.time_of_previous_observation: datetime | None = None
-        self.expected_dt = 1 / (60 * 60 * config.getfloat("od_config", "samples_per_second"))
+        self.expected_dt = 1 / (60 * 60 * config.getfloat("od_reading.config", "samples_per_second"))
 
     def on_ready(self) -> None:
         # this is here since the below is long running, and if kept in the init(), there is a large window where
@@ -185,8 +185,8 @@ class GrowthRateCalculator(BackgroundJob):
         self.logger.debug(f"{angles=}")
         ukf_outlier_std_threshold = config.getfloat(
             "growth_rate_calculating.config",
-            "ukf_outlier_std_threshold",
-            fallback=5.0,
+            "ekf_outlier_std_threshold",
+            fallback=3.0,
         )
         if ukf_outlier_std_threshold <= 2.0:
             raise ValueError(
@@ -251,6 +251,8 @@ class GrowthRateCalculator(BackgroundJob):
     def _compute_and_cache_od_statistics(
         self,
     ) -> tuple[dict[pt.PdChannel, float], dict[pt.PdChannel, float]]:
+        # why sleep? Users sometimes spam jobs, and if stirring and gr start closely there can be a race to secure HALL_SENSOR. This gives stirring priority.
+        sleep(5)
         means, variances = od_statistics(
             self._yield_od_readings_from_mqtt(),
             action_name="od_normalization",
@@ -383,9 +385,7 @@ class GrowthRateCalculator(BackgroundJob):
         else:
             self.ukf.scale_OD_variance_for_next_n_seconds(factor, minutes * 60)
 
-    def scale_raw_observations(
-        self, observations: dict[pt.PdChannel, float]
-    ) -> Optional[dict[pt.PdChannel, float]]:
+    def scale_raw_observations(self, observations: dict[pt.PdChannel, float]) -> dict[pt.PdChannel, float]:
         def _scale_and_shift(obs, shift, scale) -> float:
             return (obs - shift) / (scale - shift)
 
@@ -397,12 +397,7 @@ class GrowthRateCalculator(BackgroundJob):
         }
 
         if any(v <= 0.0 for v in scaled_signals.values()):
-            self.logger.warning(
-                f"Negative normalized value(s) observed: {scaled_signals}. Did your blank have inoculant in it?"
-            )
-            self.logger.debug(f"od_normalization_factors: {self.od_normalization_factors}")
-            self.logger.debug(f"od_blank: {dict(self.od_blank)}")
-            return None
+            raise ValueError(f"Negative normalized value(s) observed: {scaled_signals}.")
 
         return scaled_signals
 
@@ -414,7 +409,7 @@ class GrowthRateCalculator(BackgroundJob):
             od_readings = decode(message.payload, type=structs.ODReadings)
             self.update_state_from_observation(od_readings)
         except DecodeError:
-            pass
+            self.logger.debug(f"Decode error in `{message.payload.decode()}` to structs.ODReadings")
 
         return
 
@@ -431,8 +426,7 @@ class GrowthRateCalculator(BackgroundJob):
                 self.kalman_filter_outputs,
             ) = self._update_state_from_observation(od_readings)
         except Exception as e:
-            self.logger.debug(e, exc_info=True)
-            self.logger.warning(f"Updating Kalman Filter failed with {str(e)}")
+            self.logger.debug(f"Updating Kalman Filter failed with {e}", exc_info=True)
             # just return the previous data
             return self.growth_rate, self.od_filtered, self.kalman_filter_outputs
 
@@ -449,12 +443,10 @@ class GrowthRateCalculator(BackgroundJob):
         self, od_readings: structs.ODReadings
     ) -> tuple[structs.GrowthRate, structs.ODFiltered, structs.KalmanFilterOutput]:
         timestamp = od_readings.timestamp
+
         scaled_observations = self.scale_raw_observations(
             self._batched_raw_od_readings_to_dict(od_readings.ods)
         )
-        if scaled_observations is None:
-            # exit early
-            raise ValueError()
 
         if whoami.is_testing_env():
             # when running a mock script, we run at an accelerated rate, but want to mimic
@@ -470,7 +462,7 @@ class GrowthRateCalculator(BackgroundJob):
                     self.logger.debug(
                         f"Late arriving data: {timestamp=}, {self.time_of_previous_observation=}"
                     )
-                    raise ValueError()
+                    raise ValueError("Late arriving data: {timestamp=}, {self.time_of_previous_observation=}")
 
             else:
                 dt = 0.0
@@ -573,21 +565,21 @@ def click_growth_rate_calculating(ctx, ignore_cache):
     Start calculating growth rate
     """
     if ctx.invoked_subcommand is None:
-        import os
-
-        os.nice(1)
+        unit = whoami.get_unit_name()
+        experiment = whoami.get_assigned_experiment_name(unit)
 
         calculator = GrowthRateCalculator(  # noqa: F841
             ignore_cache=ignore_cache,
-            unit=whoami.get_unit_name(),
-            experiment=whoami.get_latest_experiment_name(),
+            unit=unit,
+            experiment=experiment,
         )
         calculator.block_until_disconnected()
 
 
 @click_growth_rate_calculating.command(name="clear_cache")
 def click_clear_cache() -> None:
-    experiment = whoami.get_latest_experiment_name()
+    unit = whoami.get_unit_name()
+    experiment = whoami.get_assigned_experiment_name(unit)
 
     with local_persistant_storage("od_filtered") as cache:
         cache.pop(experiment)

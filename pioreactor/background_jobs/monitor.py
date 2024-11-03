@@ -3,35 +3,35 @@ from __future__ import annotations
 
 import subprocess
 from contextlib import suppress
-from shlex import join  # https://docs.python.org/3/library/shlex.html#shlex.quote
+from pathlib import Path
 from threading import Thread
 from time import sleep
-from typing import Any
 from typing import Callable
 from typing import Optional
 
 import click
-import lgpio
-from msgspec.json import decode as loads
 
 from pioreactor import error_codes
 from pioreactor import utils
 from pioreactor import version
 from pioreactor import whoami
-from pioreactor.background_jobs.base import BackgroundJob
+from pioreactor.background_jobs.base import LongRunningBackgroundJob
+from pioreactor.cluster_management import get_workers_in_inventory
 from pioreactor.config import config
-from pioreactor.config import get_config
-from pioreactor.config import mqtt_address
+from pioreactor.config import get_leader_hostname
+from pioreactor.config import get_mqtt_address
 from pioreactor.hardware import GPIOCHIP
 from pioreactor.hardware import is_HAT_present
 from pioreactor.hardware import PCB_BUTTON_PIN as BUTTON_PIN
 from pioreactor.hardware import PCB_LED_PIN as LED_PIN
 from pioreactor.hardware import TEMP
-from pioreactor.mureq import get
+from pioreactor.mureq import HTTPException
+from pioreactor.pubsub import get_from
 from pioreactor.pubsub import QOS
 from pioreactor.structs import Voltage
 from pioreactor.types import MQTTMessage
 from pioreactor.utils.gpio_helpers import set_gpio_availability
+from pioreactor.utils.networking import discover_workers_on_network
 from pioreactor.utils.networking import get_ip
 from pioreactor.utils.timing import current_utc_datetime
 from pioreactor.utils.timing import current_utc_timestamp
@@ -43,7 +43,7 @@ if whoami.is_testing_env():
     from pioreactor.utils.mock import MockHandle
 
 
-class Monitor(BackgroundJob):
+class Monitor(LongRunningBackgroundJob):
     """
     This job starts at Rpi startup, and isn't connected to any experiment. It has the following roles:
 
@@ -54,13 +54,8 @@ class Monitor(BackgroundJob):
      5. Use the LED blinks to report error codes to the user, see error_codes module
         can also be invoked with the MQTT topic:
          pioreactor/{unit}/+/monitor/flicker_led_with_error_code   error_code as message
-     6. Listens to MQTT for job to start, on the topic
-         pioreactor/{unit}/$experiment/run/{job_name}   json-encoded args as message
-     7. Checks for connection to leader
+     6. Checks for connection to leader
 
-
-     TODO: start a watchdog job on all pioreactors (currently only on leader), and let it monitor the network activity.
-     OR merge the watchdog with monitor
 
 
     Notes
@@ -82,7 +77,13 @@ class Monitor(BackgroundJob):
 
     """
 
-    MAX_TEMP_TO_SHUTDOWN = 66.0
+    if whoami.get_pioreactor_version() == (1, 0):
+        # made from PLA
+        MAX_TEMP_TO_SHUTDOWN = 66.0
+    elif whoami.get_pioreactor_version() >= (1, 1):
+        # made from PC-CF
+        MAX_TEMP_TO_SHUTDOWN = 85.0  # risk damaging PCB components
+
     job_name = "monitor"
     published_settings = {
         "computer_statistics": {"datatype": "json", "settable": False},
@@ -91,6 +92,7 @@ class Monitor(BackgroundJob):
         "voltage_on_pwm_rail": {"datatype": "Voltage", "settable": False},
         "ipv4": {"datatype": "string", "settable": False},
         "wlan_mac_address": {"datatype": "string", "settable": False},
+        "eth_mac_address": {"datatype": "string", "settable": False},
     }
     computer_statistics: Optional[dict] = None
     led_in_use: bool = False
@@ -110,22 +112,24 @@ class Monitor(BackgroundJob):
             "hat_serial": version.serial_number,
             "rpi_machine": version.rpi_version_info,
             "timestamp": current_utc_timestamp(),
+            "pioreactor_version": version.tuple_to_text(whoami.get_pioreactor_version()),
+            "pioreactor_model": whoami.get_pioreactor_model() or None,
+            "ui": None,
         }
 
         self.logger.debug(f"Pioreactor software version: {self.versions['app']}")
         self.logger.debug(f"Raspberry Pi: {self.versions['rpi_machine']}")
-
-        if whoami.am_I_active_worker():
-            self.logger.debug(f"Pioreactor HAT version: {self.versions['hat']}")
-
-            self.logger.debug(f"Pioreactor firmware version: {self.versions['firmware']}")
-
-            self.logger.debug(f"Pioreactor HAT serial number: {self.versions['hat_serial']}")
+        self.logger.debug(f"Pioreactor HAT version: {self.versions['hat']}")
+        self.logger.debug(f"Pioreactor firmware version: {self.versions['firmware']}")
+        self.logger.debug(f"Pioreactor HAT serial number: {self.versions['hat_serial']}")
+        self.logger.debug(
+            f"Pioreactor: {self.versions['pioreactor_model']} v{self.versions['pioreactor_version']}"
+        )
 
         self.button_down = False
-        # set up GPIO for accessing the button and changing the LED
 
         try:
+            # set up GPIO for accessing the button and changing the LED
             # if these fail, don't kill the entire job - sucks for onboarding.
             self._setup_GPIO()
         except Exception as e:
@@ -162,6 +166,8 @@ class Monitor(BackgroundJob):
         cls._post_button.append(function)
 
     def _setup_GPIO(self) -> None:
+        import lgpio
+
         set_gpio_availability(BUTTON_PIN, False)
         set_gpio_availability(LED_PIN, False)
 
@@ -188,41 +194,82 @@ class Monitor(BackgroundJob):
         if whoami.is_testing_env():
             self.ipv4 = "127.0.0.1"
             self.wlan_mac_address = "d8:3a:dd:61:01:59"
-        else:
+            self.eth_mac_address = "d8:3a:dd:61:01:60"
+            return
+
+        def did_find_network() -> bool:
             ipv4 = get_ip()
-            while ipv4 == "127.0.0.1" or ipv4 is None:
-                # no wifi connection? Sound the alarm.
-                self.logger.warning("Unable to connect to network...")
+
+            if ipv4 == "127.0.0.1" or ipv4 == "":
+                # no connection? Sound the alarm.
+                self.logger.warning("Unable to find a network...")
                 self.flicker_led_with_error_code(error_codes.NO_NETWORK_CONNECTION)
-                sleep(1)
-                ipv4 = get_ip()
+                return False
+            else:
+                return True
 
-            self.ipv4 = ipv4
+        utils.boolean_retry(did_find_network, retries=3, sleep_for=2)
+        self.ipv4 = get_ip()
 
-            with open("/sys/class/net/wlan0/address", "r") as f:
-                self.wlan_mac_address = f.read().strip()
+        def get_mac_addresses(interface_type: str) -> str:
+            """
+            Finds all network interfaces of the given type (wireless or wired) and retrieves their MAC addresses.
+            Returns a comma-separated string of MAC addresses.
+            """
+            net_path = Path("/sys/class/net")
+            mac_addresses = []
+
+            for iface_path in net_path.iterdir():
+                if iface_path.is_dir():
+                    try:
+                        iface_type_path = iface_path / "type"
+                        is_wireless = (iface_path / "wireless").exists()
+
+                        if iface_type_path.exists():
+                            iface_type = iface_type_path.read_text().strip()
+
+                            # Collect MAC addresses for specified type
+                            if interface_type == "wireless" and is_wireless:
+                                mac_addresses.append((iface_path / "address").read_text().strip())
+                            elif interface_type == "wired" and iface_type == "1" and not is_wireless:
+                                mac_addresses.append((iface_path / "address").read_text().strip())
+                    except (FileNotFoundError, ValueError):
+                        continue
+
+            return ", ".join(mac_addresses) if mac_addresses else "Not available"
+
+        # Get MAC addresses for all wireless and wired interfaces
+        self.wlan_mac_address = get_mac_addresses("wireless")
+        self.eth_mac_address = get_mac_addresses("wired")
 
         self.logger.debug(f"IPv4 address: {self.ipv4}")
         self.logger.debug(f"WLAN MAC address: {self.wlan_mac_address}")
+        self.logger.debug(f"Ethernet MAC address: {self.eth_mac_address}")
 
     def self_checks(self) -> None:
         # check active network connection
         self.check_for_network()
 
-        # watch for undervoltage problems
-        self.check_for_power_problems()
-
         # report on CPU usage, memory, disk space
         self.check_and_publish_self_statistics()
+        sleep(0 if whoami.is_testing_env() else 5)  # wait for other processes to catch up
+        self.check_for_webserver()
 
         if whoami.am_I_leader():
             self.check_for_last_backup()
-            sleep(0 if whoami.is_testing_env() else 5)  # wait for other processes to catch up
-            self.check_for_required_jobs_running()
-            self.check_for_webserver()
             self.check_for_correct_permissions()
+            self.check_for_required_jobs_running()
 
-        if whoami.am_I_active_worker():
+        try:
+            am_I_a_worker = whoami.am_I_a_worker()
+        except Exception:
+            # can error out due to a network failure
+            am_I_a_worker = False
+
+        if am_I_a_worker:
+            # watch for undervoltage problems
+            self.check_for_power_problems()
+            # workers need a HAT
             self.check_for_HAT()
             # check the PCB temperature
             self.check_heater_pcb_temperature()
@@ -241,9 +288,9 @@ class Monitor(BackgroundJob):
 
         for file in [
             storage_path / "pioreactor.sqlite",
-            # shm and wal sometimes aren't present at when monitor starts
-            storage_path / "pioreactor.sqlite-shm",
-            storage_path / "pioreactor.sqlite-wal",
+            # shm and wal sometimes aren't present at when monitor starts - removed too many false positives
+            # storage_path / "pioreactor.sqlite-shm",
+            # storage_path / "pioreactor.sqlite-wal",
         ]:
             if file.exists() and (file.owner() != "pioreactor" or file.group() != "www-data"):
                 self.logger.warning(
@@ -256,93 +303,23 @@ class Monitor(BackgroundJob):
     def check_for_webserver(self) -> None:
         if whoami.is_testing_env():
             return
-
-        attempt = 0
-        retries = 5
         try:
-            while attempt < retries:
-                attempt += 1
-                # Run the command 'systemctl is-active lighttpd' and capture the output
-                result = subprocess.run(
-                    ["systemctl", "is-active", "lighttpd"], capture_output=True, text=True
-                )
-                status = result.stdout.strip()
-
-                # Check stderr if stdout is empty
-                if not status:
-                    status = result.stderr.strip()
-
-                # Handle case where status is still empty
-                if not status:
-                    raise ValueError("No output from systemctl command")
-
-                # Check if the output is okay
-                if status == "failed" or status == "inactive" or status == "deactivating":
-                    self.logger.error("lighttpd is not running. Check `systemctl status lighttpd`.")
-                    self.flicker_led_with_error_code(error_codes.WEBSERVER_OFFLINE)
-                elif status == "activating" or status == "reloading":
-                    # try again
-                    pass
-                elif status == "active":
-                    # okay
-                    break
-                else:
-                    raise ValueError(status)
-                sleep(1.0)
+            r = get_from("localhost", "/unit_api/versions/ui")
+            r.raise_for_status()
+            ui_version = r.json()["version"]
+        except HTTPException:
+            self.logger.warning("Webserver isn't online.")
+            ui_version = "Unknown"
         except Exception as e:
-            self.logger.debug(f"Error checking lighttpd status: {e}", exc_info=True)
-            self.logger.error(f"Error checking lighttpd status: {e}")
-
-        attempt = 0
-        retries = 5
-        try:
-            while attempt < retries:
-                attempt += 1
-                # Run the command 'systemctl is-active huey' and capture the output
-                result = subprocess.run(["systemctl", "is-active", "huey"], capture_output=True, text=True)
-                status = result.stdout.strip()
-
-                # Check stderr if stdout is empty
-                if not status:
-                    status = result.stderr.strip()
-
-                # Handle case where status is still empty
-                if not status:
-                    raise ValueError("No output from systemctl command")
-
-                # Check if the output is okay
-                if status == "failed" or status == "inactive" or status == "deactivating":
-                    self.logger.error("huey is not running. Check `systemctl status huey`.")
-                    self.flicker_led_with_error_code(error_codes.WEBSERVER_OFFLINE)
-                elif status == "activating" or status == "reloading":
-                    # try again
-                    pass
-                elif status == "active":
-                    # okay
-                    break
-                else:
-                    raise ValueError(status)
-                sleep(1.0)
-        except Exception as e:
-            self.logger.debug(f"Error checking huey status: {e}", exc_info=True)
-            self.logger.error(f"Error checking huey status: {e}")
-
-        attempt = 0
-        retries = 5
-        while attempt < retries:
-            attempt += 1
-            res = get("http://localhost/api/experiments/latest")
-            if res.ok:
-                break
-            sleep(1.0)
-        else:
-            self.logger.debug(f"Error pinging UI: {res.status_code}")
-            self.logger.error(f"Error pinging UI: {res.status_code}")
-            self.flicker_led_with_error_code(error_codes.WEBSERVER_OFFLINE)
+            self.logger.warning(e)
+            ui_version = "Unknown"
+        finally:
+            self.set_versions({"ui": ui_version})
+            self.logger.debug(f"Pioreactor UI version: {self.versions['ui']}")
 
     def check_for_required_jobs_running(self) -> None:
-        if not all(utils.is_pio_job_running(["watchdog", "mqtt_to_db_streaming"])):
-            self.logger.debug("watchdog and mqtt_to_db_streaming should be running on leader. Double check.")
+        if not utils.is_pio_job_running("mqtt_to_db_streaming"):
+            self.logger.warning("mqtt_to_db_streaming should be running on leader. Double check.")
 
     def check_for_HAT(self) -> None:
         if not is_HAT_present():
@@ -356,10 +333,10 @@ class Monitor(BackgroundJob):
             from pioreactor.utils.mock import MockTMP1075 as TMP1075
         else:
             try:
-                from TMP1075 import TMP1075  # type: ignore
+                from pioreactor.utils.temps import TMP1075  # type: ignore
             except ImportError:
                 # leader-only is a worker?
-                self.logger.warning(
+                self.logger.debug(
                     f"{self.unit} doesn't have TMP1075 software installed, but is acting as a worker."
                 )
                 return
@@ -368,13 +345,13 @@ class Monitor(BackgroundJob):
             tmp_driver = TMP1075(address=TEMP)
         except ValueError:
             # No PCB detected using i2c - fine to exit.
-            self.logger.warning("Heater PCB is not detected.")
+            self.logger.debug("Heater PCB is not detected.")
             return
 
         observed_tmp = tmp_driver.get_temperature()
 
         if observed_tmp >= self.MAX_TEMP_TO_SHUTDOWN:
-            # something is wrong - temperature_control should have detected this, but didn't, so it must have failed / incorrectly cleaned up.
+            # something is wrong - temperature_automation should have detected this, but didn't, so it must have failed / incorrectly cleaned up.
             # we're going to just shutdown to be safe.
             self.logger.error(
                 f"Detected an extremely high temperature, {observed_tmp} ℃ on the heating PCB - shutting down for safety."
@@ -385,25 +362,35 @@ class Monitor(BackgroundJob):
 
     def check_for_mqtt_connection_to_leader(self) -> None:
         while (not self.pub_client.is_connected()) or (not self.sub_client.is_connected()):
-            try:
-                error_code_pc = self.pub_client.reconnect()
-            except Exception:
-                pass
-            try:
-                error_code_sc = self.sub_client.reconnect()
-            except Exception:
-                pass
-
             self.logger.warning(
                 f"""Not able to connect MQTT clients to leader.
-1. Is the {mqtt_address=}, in config.ini correct?
+1. Is the mqtt_adress={get_mqtt_address()} in configuration correct?
 2. Is the Pioreactor leader online and responsive?
 """
             )  # remember, this doesn't get published to leader...
-            self.logger.debug(f"{error_code_pc=}, {error_code_sc=}")
+            self.flicker_led_with_error_code(error_codes.MQTT_CLIENT_NOT_CONNECTED_TO_LEADER)
+
+            try:
+                self.pub_client.disconnect()
+                error_code_pc = (
+                    self.pub_client.reconnect()
+                )  # this may return a MQTT_ERR_SUCCESS, but that only means the CONNECT message is sent, still waiting for a CONNACK.
+                self.pub_client.loop_start()
+                self.logger.debug(f"{error_code_pc=}")
+            except Exception as e:
+                self.logger.debug(f"{e=}")
+
+            try:
+                self.sub_client.disconnect()
+                error_code_sc = self.sub_client.reconnect()
+                self.sub_client.loop_start()
+                self.logger.debug(f"{error_code_sc=}")
+            except Exception as e:
+                self.logger.debug(f"{e=}")
+
+            sleep(2)
 
             # self.set_state(self.LOST)
-            self.flicker_led_with_error_code(error_codes.MQTT_CLIENT_NOT_CONNECTED_TO_LEADER)
 
     def check_for_last_backup(self) -> None:
         with utils.local_persistant_storage("database_backups") as cache:
@@ -411,65 +398,40 @@ class Monitor(BackgroundJob):
                 latest_backup_at = to_datetime(cache["latest_backup_timestamp"])
 
                 if (current_utc_datetime() - latest_backup_at).days > 30:
-                    self.logger.warning("Database hasn't been backed up in over 30 days.")
-
-    def check_state_of_jobs_on_machine(self) -> None:
-        """
-        This compares jobs that are current running on the machine, vs
-        what MQTT says. In the case of a restart on leader, MQTT can get out
-        of sync. We only need to run this check on startup.
-
-        See answer here: https://iot.stackexchange.com/questions/5784/does-mosquito-broker-persist-lwt-messages-to-disk-so-they-may-be-recovered-betw
-        """
-        latest_exp = whoami._get_latest_experiment_name()
-
-        def check_against_processes_running(msg: MQTTMessage) -> None:
-            job = msg.topic.split("/")[3]
-            if (msg.payload.decode() in (self.READY, self.INIT, self.SLEEPING)) and (
-                not utils.is_pio_job_running(job)
-            ):
-                self.publish(
-                    f"pioreactor/{self.unit}/{latest_exp}/{job}/$state",
-                    self.LOST,
-                    retain=True,
-                )
-                self.logger.debug(f"Manually changing {job} state in MQTT.")
-
-        self.subscribe_and_callback(
-            check_against_processes_running,
-            f"pioreactor/{self.unit}/{latest_exp}/+/$state",
-        )
-
-        # let the above code run...
-        sleep(2.5)
-
-        # unsubscribe
-        self.sub_client.message_callback_remove(f"pioreactor/{self.unit}/{latest_exp}/+/$state")
-        self.sub_client.unsubscribe(f"pioreactor/{self.unit}/{latest_exp}/+/$state")
-
-        return
+                    self.logger.warning(
+                        "Database hasn't been backed up in over 30 days. Try running `pio run backup_database` between experiments."
+                    )
 
     def on_ready(self) -> None:
         self.flicker_led_response_okay()
         self.logger.notice(f"{self.unit} is online and ready.")  # type: ignore
 
         # we can delay this check until ready.
-        self.check_state_of_jobs_on_machine()
+
+    def on_init_to_ready(self) -> None:
+        if whoami.am_I_leader():
+            Thread(target=self.announce_new_workers, daemon=True).start()
 
     def on_disconnected(self) -> None:
+        import lgpio
+
         self.led_off()
         with suppress(AttributeError):
-            lgpio.gpiochip_close(self._handle)
             self._button_callback.cancel()
+            lgpio.gpiochip_close(self._handle)
 
         set_gpio_availability(BUTTON_PIN, True)
         set_gpio_availability(LED_PIN, True)
 
     def led_on(self) -> None:
+        import lgpio
+
         if not whoami.is_testing_env():
             lgpio.gpio_write(self._handle, LED_PIN, 1)
 
     def led_off(self) -> None:
+        import lgpio
+
         if not whoami.is_testing_env():
             lgpio.gpio_write(self._handle, LED_PIN, 0)
 
@@ -509,6 +471,10 @@ class Monitor(BackgroundJob):
             return False, voltage_read
 
     def check_for_power_problems(self) -> None:
+        # don't bother checking if hat isn't present
+        if not is_HAT_present():
+            return
+
         is_rpi_having_power_probems, voltage = self.rpi_is_having_power_problems()
         self.logger.debug(f"PWM power supply at ~{voltage:.2f}V.")
         self.voltage_on_pwm_rail = Voltage(voltage=round(voltage, 2), timestamp=current_utc_datetime())
@@ -521,9 +487,14 @@ class Monitor(BackgroundJob):
             self.logger.debug("Power status okay.")
 
     def check_and_publish_self_statistics(self) -> None:
-        import psutil  # type: ignore
+        import os
 
-        disk_usage_percent = round(psutil.disk_usage("/").percent)
+        # Disk usage percentage
+        statvfs = os.statvfs("/")
+        total_disk_space = statvfs.f_frsize * statvfs.f_blocks
+        available_disk_space = statvfs.f_frsize * statvfs.f_bavail
+        disk_usage_percent = round((1 - available_disk_space / total_disk_space) * 100)
+
         if disk_usage_percent <= 80:
             self.logger.debug(f"Disk space at {disk_usage_percent}%.")
         else:
@@ -531,47 +502,26 @@ class Monitor(BackgroundJob):
             self.logger.warning(f"Disk space at {disk_usage_percent}%.")
             self.flicker_led_with_error_code(error_codes.DISK_IS_ALMOST_FULL)
 
-        cpu_usage_percent = round(
-            (psutil.cpu_percent() + psutil.cpu_percent() + psutil.cpu_percent()) / 3
-        )  # this is a noisy process, and we average it over a small window.
-        if cpu_usage_percent <= 85:
-            self.logger.debug(f"CPU usage at {cpu_usage_percent}%.")
-        else:
-            # TODO: add documentation
-            self.logger.warning(f"CPU usage at {cpu_usage_percent}%.")
-
-        memory_usage_percent = 100 - round(
-            100 * psutil.virtual_memory().available / psutil.virtual_memory().total
-        )
-        if memory_usage_percent <= 75:
-            self.logger.debug(f"Memory usage at {memory_usage_percent}%.")
-        else:
-            # TODO: add documentation
-            self.logger.warning(f"Memory usage at {memory_usage_percent}%.")
-
         cpu_temperature_celcius = round(utils.get_cpu_temperature())
         if cpu_temperature_celcius <= 70:
             self.logger.debug(f"CPU temperature at {cpu_temperature_celcius} ℃.")
         else:
             # TODO: add documentation
             self.logger.warning(f"CPU temperature at {cpu_temperature_celcius} ℃.")
+            self.flicker_led_with_error_code(error_codes.PCB_TEMPERATURE_TOO_HIGH)
 
         self.computer_statistics = {
             "disk_usage_percent": disk_usage_percent,
-            "cpu_usage_percent": cpu_usage_percent,
-            "memory_usage_percent": memory_usage_percent,
             "cpu_temperature_celcius": cpu_temperature_celcius,
             "timestamp": current_utc_timestamp(),
         }
         return
 
     def flicker_led_response_okay_and_publish_state(self, *args) -> None:
-        # force the job to publish it's state, so that users can use this to "reset" state.
         self.flicker_led_response_okay()
-        self._republish_state()
 
     def _republish_state(self) -> None:
-        self._publish_attr("state")
+        self._publish_setting("state")
 
     def flicker_led_response_okay(self, *args) -> None:
         if self.led_in_use:
@@ -611,100 +561,6 @@ class Monitor(BackgroundJob):
 
         self.led_in_use = False
 
-    def run_job_on_machine(self, msg: MQTTMessage) -> None:
-        """
-        Listens to messages on pioreactor/{self.unit}/+/run/job_name
-
-        Payload should look like:
-        {
-          "options": {
-            "option_A": "value1",
-            "option_B": "value2"
-            "flag": None
-          },
-          "args": ["arg1", "arg2"]
-        }
-
-
-        effectively runs:
-        > pio run job_name arg1 arg2 --option-A value1 --option-B value2 --flag
-
-        """
-
-        # we use a thread below since we want to exit this callback without blocking it.
-        # a blocked callback can disconnect from MQTT broker, prevent other callbacks, etc.
-
-        job_name = msg.topic.split("/")[-1]
-        payload = loads(msg.payload) if msg.payload else {"options": {}, "args": []}
-
-        # if "options" not in payload:
-        #    self.logger.debug("`options` key missing from payload. You should provide an empty dictionary.")
-
-        options = payload.get("options", {})
-
-        # if "args" not in payload:
-        #    self.logger.debug("`args` key missing from payload. You should provide an empty list.")
-
-        args = payload.get("args", [])
-
-        # this is a performance hack and should be changed later...
-        if job_name == "led_intensity":
-            from pioreactor.actions.led_intensity import led_intensity, ALL_LED_CHANNELS
-
-            state = {ch: options.pop(ch) for ch in ALL_LED_CHANNELS if ch in options}
-            options["pubsub_client"] = self.pub_client
-            options["unit"] = self.unit
-            options["experiment"] = whoami._get_latest_experiment_name()  # techdebt
-            Thread(
-                target=utils.boolean_retry,
-                args=(led_intensity, (state,), options),
-                kwargs={"sleep_for": 0.4, "retries": 5},
-            ).start()
-
-        elif job_name in {
-            "add_media",
-            "add_alt_media",
-            "remove_waste",
-            "circulate_media",
-            "circulate_alt_media",
-        }:
-            from pioreactor.actions import pump as pump_actions
-
-            pump_action = getattr(pump_actions, job_name)
-
-            options["unit"] = self.unit
-            options["experiment"] = whoami._get_latest_experiment_name()  # techdebt
-            options["config"] = get_config()  # techdebt
-            Thread(target=pump_action, kwargs=options, daemon=True).start()
-            self.logger.debug(f"Running `{job_name}` from monitor job.")
-
-        else:
-            command = self._job_options_and_args_to_shell_command(job_name, args, options)
-            Thread(
-                target=subprocess.run,
-                args=(command,),
-                kwargs={"shell": True, "start_new_session": True},
-                daemon=True,
-            ).start()
-            self.logger.debug(f"Running `{command}` from monitor job.")
-
-    @staticmethod
-    def _job_options_and_args_to_shell_command(
-        job_name: str, args: list[str], options: dict[str, Any]
-    ) -> str:
-        core_command = ["pio", "run", job_name]
-
-        list_of_options: list[str] = []
-        for option, value in options.items():
-            list_of_options.append(f"--{option.replace('_', '-')}")
-            if value is not None:
-                # this handles flag arguments, like --dry-run
-                list_of_options.append(str(value))
-
-        # shell-escaped to protect against injection vulnerabilities, see join docs
-        # we don't escape the suffix.
-        return f"nohup {join(core_command + args + list_of_options)} >/dev/null 2>&1 &"
-
     def flicker_error_code_from_mqtt(self, message: MQTTMessage) -> None:
         if self.led_in_use:
             return
@@ -720,6 +576,26 @@ class Monitor(BackgroundJob):
 
         self.versions = self.versions | data
 
+    def watch_for_lost_state(self, state_message: MQTTMessage) -> None:
+        unit = state_message.topic.split("/")[1]
+
+        # ignore if leader is "lost"
+        if (
+            (state_message.payload.decode() == self.LOST)
+            and (unit != self.unit)
+            and (unit in get_workers_in_inventory())
+        ):
+            self.logger.warning(f"{unit} seems to be lost.")
+
+    def announce_new_workers(self) -> None:
+        sleep(10)  # wait for the web server to be available
+        for worker in discover_workers_on_network():
+            # not in current cluster, and not leader
+            if (worker not in get_workers_in_inventory()) and (worker != get_leader_hostname()):
+                self.logger.notice(  # type: ignore
+                    f"Pioreactor worker, {worker}, is available to be added to your cluster."
+                )
+
     def start_passive_listeners(self) -> None:
         self.subscribe_and_callback(
             self.flicker_led_response_okay_and_publish_state,
@@ -734,16 +610,12 @@ class Monitor(BackgroundJob):
             qos=QOS.AT_LEAST_ONCE,
         )
 
-        # one can also start jobs via MQTT, using the following topics.
-        # The payload provided is a json dict of options for the command line invocation of the job.
-        self.subscribe_and_callback(
-            self.run_job_on_machine,
-            [
-                f"pioreactor/{self.unit}/+/run/+",
-                f"pioreactor/{whoami.UNIVERSAL_IDENTIFIER}/+/run/+",
-            ],
-            allow_retained=False,
-        )
+        if whoami.am_I_leader():
+            self.subscribe_and_callback(
+                self.watch_for_lost_state,
+                "pioreactor/+/+/monitor/$state",
+                allow_retained=False,
+            )
 
 
 @click.command(name="monitor")

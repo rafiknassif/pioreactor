@@ -11,29 +11,26 @@ from __future__ import annotations
 
 import contextlib
 import io
-import json as jsonlib
 import os.path
-import socket
-import ssl
 import urllib.parse
-from base64 import b64encode
 from http.client import HTTPConnection
 from http.client import HTTPException
 from http.client import HTTPMessage
 from http.client import HTTPResponse
 from http.client import HTTPSConnection
 from typing import Generator
-from typing import Optional
 
-from pioreactor.config import config
+from msgspec.json import decode as loads
+from msgspec.json import encode as dumps
 
 
 DEFAULT_TIMEOUT = 15.0
 DEFAULT_UA = "Python/Pioreactor"
-DEFAULT_AUTH = f'Basic {config.get("ui_basic_auth", "api_key", fallback="")}'
 
 
-def basic_auth(username: str, password: str):
+def basic_auth(username: str, password: str) -> str:
+    from base64 import b64encode
+
     # get(..., headers={ 'Authorization' : f'Basic {basic_auth(username, password)}'})
     token = b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     return token
@@ -71,7 +68,7 @@ def get(url, **kwargs) -> Response:
     return request("GET", url=url, **kwargs)
 
 
-def post(url, body: Optional[bytes] = None, **kwargs) -> Response:
+def post(url, body: bytes | None = None, **kwargs) -> Response:
     """post performs an HTTP POST request."""
     return request("POST", url=url, body=body, **kwargs)
 
@@ -81,12 +78,12 @@ def head(url, **kwargs) -> Response:
     return request("HEAD", url=url, **kwargs)
 
 
-def put(url, body: Optional[bytes] = None, **kwargs) -> Response:
+def put(url, body: bytes | None = None, **kwargs) -> Response:
     """put performs an HTTP PUT request."""
     return request("PUT", url=url, body=body, **kwargs)
 
 
-def patch(url, body: Optional[bytes] = None, **kwargs) -> Response:
+def patch(url, body: bytes | None = None, **kwargs) -> Response:
     """patch performs an HTTP PATCH request."""
     return request("PATCH", url=url, body=body, **kwargs)
 
@@ -225,15 +222,15 @@ class Response:
         alias for compatibility with requests.Response."""
         return self.body
 
-    def raise_for_status(self):
+    def raise_for_status(self) -> None:
         """raise_for_status checks the response's success code, raising an
         exception for error codes."""
         if not self.ok:
             raise HTTPErrorStatus(self.status_code)
 
-    def json(self):
+    def json(self) -> dict:
         """Attempts to deserialize the response body as UTF-8 encoded JSON."""
-        return jsonlib.loads(self.body)
+        return loads(self.body)
 
     def _debugstr(self):
         buf = io.StringIO()
@@ -273,26 +270,6 @@ class HTTPErrorStatus(HTTPException):
 
 _JSON_CONTENTTYPE = "application/json"
 _FORM_CONTENTTYPE = "application/x-www-form-urlencoded"
-
-
-class UnixHTTPConnection(HTTPConnection):
-    """UnixHTTPConnection is a subclass of HTTPConnection that connects to a
-    Unix domain stream socket instead of a TCP address.
-    """
-
-    def __init__(self, path, timeout=DEFAULT_TIMEOUT):
-        super(UnixHTTPConnection, self).__init__("localhost", timeout=timeout)
-        self._unix_path = path
-
-    def connect(self):
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            sock.settimeout(self.timeout)
-            sock.connect(self._unix_path)
-        except Exception:
-            sock.close()
-            raise
-        self.sock = sock
 
 
 def _check_redirect(url, status, response_headers):
@@ -337,6 +314,10 @@ def _check_redirect(url, status, response_headers):
 
 
 def _prepare_outgoing_headers(headers):
+    from pioreactor.config import config
+
+    DEFAULT_AUTH = f'Basic {config.get("ui_basic_auth", "api_key", fallback="")}'
+
     if headers is None:
         headers = HTTPMessage()
     elif not isinstance(headers, HTTPMessage):
@@ -380,7 +361,7 @@ def _prepare_body(body, form, json, headers):
 
     if json is not None:
         _setdefault_header(headers, "Content-Type", _JSON_CONTENTTYPE)
-        return jsonlib.dumps(json).encode("utf-8")
+        return dumps(json)
 
     if form is not None:
         _setdefault_header(headers, "Content-Type", _FORM_CONTENTTYPE)
@@ -406,6 +387,8 @@ def _prepare_request(
     verify=True,
     ssl_context=None,
 ):
+    import ssl
+
     """Parses the URL, returns the path and the right HTTPConnection subclass."""
     parsed_url = urllib.parse.urlparse(url)
 
@@ -429,7 +412,8 @@ def _prepare_request(
     if is_unix and unix_socket is None:
         unix_socket = urllib.parse.unquote(parsed_url.netloc)
 
-    path = parsed_url.path
+    path = urllib.parse.quote(parsed_url.path)
+
     if parsed_url.query:
         if enc_params:
             path = f"{path}?{parsed_url.query}&{enc_params}"
@@ -445,7 +429,7 @@ def _prepare_request(
         source_address = (source_address, 0)
 
     if is_unix:
-        conn = UnixHTTPConnection(unix_socket, timeout=timeout)
+        raise NotImplementedError("Need this? Get it from https://github.com/slingamn/mureq")
     elif is_https:
         if ssl_context is None:
             ssl_context = ssl.create_default_context()

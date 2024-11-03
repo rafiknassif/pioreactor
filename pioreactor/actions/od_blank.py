@@ -18,10 +18,11 @@ from pioreactor import types as pt
 from pioreactor import whoami
 from pioreactor.config import config
 from pioreactor.logging import create_logger
+from pioreactor.pubsub import prune_retained_messages
 from pioreactor.utils import is_pio_job_running
 from pioreactor.utils import local_persistant_storage
+from pioreactor.utils import managed_lifecycle
 from pioreactor.utils import math_helpers
-from pioreactor.utils import publish_ready_to_disconnected_state
 from pioreactor.utils.timing import current_utc_datetime
 
 
@@ -41,10 +42,10 @@ def od_statistics(
 
     logger = logger or create_logger(action_name)
     unit = unit or whoami.get_unit_name()
-    experiment = experiment or whoami.get_latest_experiment_name()
+    experiment = experiment or whoami.get_assigned_experiment_name(unit)
 
     logger.info(
-        f"Starting to compute statistics from OD readings. Collecting {n_samples} data points."
+        f"Starting to compute statistics from OD readings. Collecting {n_samples} data points. This may take a while."
     )
 
     # turn on stirring if not already on 
@@ -77,6 +78,9 @@ def od_statistics(
             int(count / n_samples * 100),
         )
         logger.debug(f"Progress: {count/n_samples:.0%}")
+        st.block_until_rpm_is_close_to_target(timeout=40)  # wait for stirring to be reasonable.
+    else:
+        st = nullcontext()  # type: ignore
 
         if count == n_samples:
             break
@@ -100,8 +104,26 @@ def od_statistics(
 
         # warn users that a blank is 0 - maybe this should be an error instead? TODO: link this to a docs page.
         if means[channel] == 0.0:
-            logger.warning(
-                f"OD reading for PD Channel {channel} is 0.0 - that shouldn't be. Is there a loose connection, or an extra channel in the configuration's [od_config.photodiode_channel] section?"
+            logger.warning(f"OD reading for PD Channel {channel} is 0.0 - that shouldn't be. Is there a loose connection, or an extra channel in the configuration's [od_config.photodiode_channel] section?")
+            if count == n_samples:
+                break
+
+        means = {}
+        variances = {}
+        autocorrelations = {}  # lag 1
+
+        for channel, od_reading_series in readings.items():
+            # measure the mean and publish. The mean will be used to normalize the readings in downstream jobs
+            assert len(od_reading_series) == n_samples
+            means[channel] = math_helpers.trimmed_mean(od_reading_series, cut_off_n=2)
+            variances[channel] = math_helpers.trimmed_variance(
+                math_helpers.residuals_of_simple_linear_regression(
+                    list(range(n_samples)), od_reading_series, trimmed=True
+                ),
+                cut_off_n=2,
+            )  # see issue #206
+            autocorrelations[channel] = math_helpers.correlation(
+                od_reading_series[:-1], od_reading_series[1:]
             )
 
     logger.debug(f"observed data: {od_reading_series}")
@@ -115,7 +137,7 @@ def od_statistics(
 def delete_od_blank(unit=None, experiment=None):
     action_name = "od_blank"
     unit = unit or whoami.get_unit_name()
-    experiment = experiment or whoami.get_latest_experiment_name()
+    experiment = experiment or whoami.get_assigned_experiment_name(unit)
 
     with local_persistant_storage(action_name) as cache:
         if experiment not in cache:
@@ -150,19 +172,19 @@ def od_blank(
     action_name = "od_blank"
     logger = create_logger(action_name)
     unit = unit or whoami.get_unit_name()
-    experiment = experiment or whoami.get_latest_experiment_name()
-    testing_experiment = whoami.get_latest_testing_experiment_name()
+    experiment = experiment or whoami.get_assigned_experiment_name(unit)
+    testing_experiment = whoami.get_testing_experiment_name()
 
     from pioreactor.background_jobs.od_reading import start_od_reading
     from pioreactor.background_jobs.stirring import start_stirring
 
-    with publish_ready_to_disconnected_state(unit, experiment, action_name):
+    with managed_lifecycle(unit, experiment, action_name):
         with start_od_reading(
             od_angle_channel1,
             od_angle_channel2,
             unit=unit,
             interval=1.5,
-            experiment=testing_experiment,
+            experiment=testing_experiment,  # use testing experiment to not pollute the database (and they would show up in the UI)
             fake_data=whoami.is_testing_env(),
         ) as od_stream, start_stirring(
             unit=unit,
@@ -195,9 +217,7 @@ def od_blank(
                             timestamp=current_utc_datetime(),
                             channel=channel,
                             od=means[channel],
-                            angle=config.get(
-                                "od_config.photodiode_channel", channel, fallback=None
-                            ),
+                            angle=config.get("od_config.photodiode_channel", channel, fallback=None),
                         )
                     ),
                     qos=pubsub.QOS.AT_LEAST_ONCE,
@@ -213,6 +233,7 @@ def od_blank(
             )
 
             logger.info("Finished reading blank OD.")
+            prune_retained_messages(f"pioreactor/{unit}/{testing_experiment}/#")
 
     return means
 
@@ -244,7 +265,7 @@ def click_od_blank(ctx, od_angle_channel1, od_angle_channel2, n_samples: int) ->
     Compute statistics about the blank OD time series
     """
     unit = whoami.get_unit_name()
-    experiment = whoami.get_latest_experiment_name()
+    experiment = whoami.get_assigned_experiment_name(unit)
 
     if ctx.invoked_subcommand is None:
         od_blank(
@@ -263,6 +284,6 @@ def click_od_blank(ctx, od_angle_channel1, od_angle_channel2, n_samples: int) ->
 )
 def click_delete_od_blank(experiment):
     unit = whoami.get_unit_name()
-    experiment = experiment or whoami.get_latest_experiment_name()
+    experiment = experiment or whoami.get_assigned_experiment_name(unit)
 
     delete_od_blank(unit, experiment)

@@ -104,7 +104,6 @@ from pioreactor.config import config
 from pioreactor.hardware import ADC_CHANNEL_FUNCS
 from pioreactor.pubsub import publish
 from pioreactor.utils import argextrema
-from pioreactor.utils import clamp
 from pioreactor.utils import local_intermittent_storage
 from pioreactor.utils import local_persistant_storage
 from pioreactor.utils import timing
@@ -145,7 +144,7 @@ class ADCReader(LoggerMixin):
     from pioreactor.background_jobs.od_reading import ADCReader
 
     adc = ADCReader(["1", "2"], fake_data=False)
-    adc.setup_adc()
+    adc.tune_adc()
 
     while True:
         print(adc.take_reading())
@@ -174,12 +173,12 @@ class ADCReader(LoggerMixin):
         self.penalizer = penalizer
         self.oversampling_count = oversampling_count
 
-        if "local_ac_hz" in config["od_config"]:
-            self.most_appropriate_AC_hz: Optional[float] = config.getfloat("od_config", "local_ac_hz")
+        if "local_ac_hz" in config["od_reading.config"]:
+            self.most_appropriate_AC_hz: Optional[float] = config.getfloat("od_reading.config", "local_ac_hz")
         else:
             self.most_appropriate_AC_hz = None
 
-    def setup_adc(self) -> PdChannelToVoltage:
+    def tune_adc(self) -> PdChannelToVoltage:
         """
         This configures the ADC for reading, performs an initial read, and sets variables based on that reading.
 
@@ -237,12 +236,15 @@ class ADCReader(LoggerMixin):
         )
 
     def check_on_max(self, value: pt.Voltage) -> None:
-        if value > 3.2:
+        unit = whoami.get_unit_name()
+        exp = whoami.get_assigned_experiment_name(unit)
+
+        if value <= 3.0:
+            return
+        elif value > 3.2:
             self.logger.error(
                 f"An ADC channel is recording a very high voltage, {round(value, 2)}V. We are shutting down components and jobs to keep the ADC safe."
             )
-
-            unit, exp = whoami.get_unit_name(), whoami.get_latest_experiment_name()
 
             with local_intermittent_storage("led_locks") as cache:
                 for c in led_utils.ALL_LED_CHANNELS:
@@ -275,7 +277,7 @@ class ADCReader(LoggerMixin):
                 f"An ADC channel is recording a very high voltage, {round(value, 2)}V. It's recommended to keep it less than 3.0V. Suggestion: decrease the IR intensity, or change the PD angle to a lower angle."
             )
             publish(
-                f"pioreactor/{whoami.get_unit_name()}/{whoami.get_latest_experiment_name()}/monitor/flicker_led_with_error_code",
+                f"pioreactor/{unit}/{exp}/monitor/flicker_led_with_error_code",
                 error_codes.ADC_INPUT_TOO_HIGH,
             )
             return
@@ -405,7 +407,9 @@ class ADCReader(LoggerMixin):
         self.batched_readings = {}
 
     @staticmethod
-    def _remove_offset_from_signal(signals: list[pt.AnalogValue], offset: float) -> list[float]:
+    def _remove_offset_from_signal(
+        signals: list[pt.AnalogValue], offset: pt.AnalogValue
+    ) -> list[pt.AnalogValue]:
         return [x - offset for x in signals]
 
     def take_reading(self) -> PdChannelToVoltage:
@@ -422,27 +426,30 @@ class ADCReader(LoggerMixin):
 
         """
         if not self._setup_complete:
-            raise ValueError("Must call setup_adc() first.")
+            raise ValueError("Must call tune_adc() first.")
 
         max_signal = -1.0
         oversampling_count = self.oversampling_count
 
+        channels = self.channels
+        read_from_channel = self.adc.read_from_channel
+
         # we pre-allocate these arrays to make the for loop faster => more accurate
         aggregated_signals: dict[pt.PdChannel, list[pt.AnalogValue]] = {
-            channel: [0.0] * oversampling_count for channel in self.channels
+            channel: [0.0] * oversampling_count for channel in channels
         }
         timestamps: dict[pt.PdChannel, list[float]] = {
-            channel: [0.0] * oversampling_count for channel in self.channels
+            channel: [0.0] * oversampling_count for channel in channels
         }
 
         try:
             with catchtime() as time_since_start:
                 for counter in range(oversampling_count):
                     with catchtime() as time_sampling_took_to_run:
-                        for pd_channel in self.channels:
+                        for pd_channel in channels:
                             adc_channel = ADC_CHANNEL_FUNCS[pd_channel]
                             timestamps[pd_channel][counter] = time_since_start()
-                            aggregated_signals[pd_channel][counter] = self.adc.read_from_channel(adc_channel)
+                            aggregated_signals[pd_channel][counter] = read_from_channel(adc_channel)
 
                     sleep(
                         max(
@@ -523,7 +530,7 @@ class ADCReader(LoggerMixin):
         timestamps: dict[pt.PdChannel, list[float]],
         aggregated_signals: dict[pt.PdChannel, list[pt.AnalogValue]],
     ) -> float:
-        def _compute_best_freq(timestamps, aggregated_signals):
+        def _compute_best_freq(timestamps: list[float], aggregated_signals: list[float]) -> float:
             FREQS_TO_TRY = [60.0, 50.0]
             argmin_freq = FREQS_TO_TRY[0]
             min_AIC = float("inf")
@@ -597,10 +604,12 @@ class PhotodiodeIrLedReferenceTrackerStaticInit(IrLedReferenceTracker):
 
     def __init__(self, channel: pt.PdChannel) -> None:
         super().__init__()
-        self.led_output_ema = ExponentialMovingAverage(config.getfloat("od_config", "pd_reference_ema"))
+        self.led_output_ema = ExponentialMovingAverage(
+            config.getfloat("od_reading.config", "pd_reference_ema")
+        )
         self.led_output_emstd = ExponentialMovingStd(alpha=0.95, ema_alpha=0.8)
         self.channel = channel
-        self.logger.debug(f"Using PD channel {channel} as IR LED reference.")
+        # self.logger.debug(f"Using PD channel {channel} as IR LED reference.")
 
     def update(self, ir_output_reading: pt.Voltage) -> None:
         # check if funky things are happening by std. banding
@@ -639,7 +648,6 @@ class PhotodiodeIrLedReferenceTrackerStaticInit(IrLedReferenceTracker):
 class NullIrLedReferenceTracker(IrLedReferenceTracker):
     def __init__(self) -> None:
         super().__init__()
-        self.logger.debug("Not using any IR LED reference.")
 
     def pop_reference_reading(self, batched_readings: PdChannelToVoltage) -> pt.Voltage:
         return 1.0
@@ -658,24 +666,43 @@ class CalibrationTransformer(LoggerMixin):
 class NullCalibrationTransformer(CalibrationTransformer):
     def __init__(self) -> None:
         super().__init__()
-        self.logger.debug("Not using any calibration.")
+
+    def hydate_models_from_disk(self, channel_angle_map: dict[pt.PdChannel, pt.PdAngle]) -> None:
+        self.models: dict[pt.PdChannel, Callable] = {}
+        return
+
+
+def closest_point_to_domain(P: list[float], D: tuple[float, float]) -> float:
+    # Unpack the domain D into its lower and upper bounds
+    a, b = D
+
+    # Initialize the closest point and minimum distance
+    closest_point = None
+    min_distance = float("inf")
+
+    for p in P:
+        if a <= p <= b:  # Check if p is within the domain D
+            return p  # If p is within D, it's the closest point with distance 0
+
+        # Calculate the distance to the closest boundary of D
+        distance = min(abs(p - a), abs(p - b))
+
+        # Update the closest point if this distance is smaller than the current min_distance
+        if distance < min_distance:
+            min_distance = distance
+            closest_point = p
+
+    assert closest_point is not None
+    return closest_point
 
 
 class CachedCalibrationTransformer(CalibrationTransformer):
-    def __init__(self, channel_angle_map: dict[pt.PdChannel, pt.PdAngle]) -> None:
+    def __init__(self) -> None:
         super().__init__()
         self.has_logged_warning = False
-        try:
-            self.models = self.get_models_from_disk(channel_angle_map)
-        except Exception as e:
-            self.logger.debug(e, exc_info=True)
-            self.logger.error("Unable to load calibration models", exc_info=True)
-            raise e
 
-    def get_models_from_disk(
-        self, channel_angle_map: dict[pt.PdChannel, pt.PdAngle]
-    ) -> dict[pt.PdChannel, Callable]:
-        models: dict[pt.PdChannel, Callable] = {}
+    def hydate_models_from_disk(self, channel_angle_map: dict[pt.PdChannel, pt.PdAngle]) -> None:
+        self.models: dict[pt.PdChannel, Callable] = {}
 
         with local_persistant_storage("current_od_calibration") as c:
             for channel, angle in channel_angle_map.items():
@@ -683,10 +710,11 @@ class CachedCalibrationTransformer(CalibrationTransformer):
                     calibration_data = decode(c[angle], type=structs.AnyODCalibration)  # type: ignore
                     name = calibration_data.name
 
-                    if config.get("od_config", "ir_led_intensity") != "auto" and (
-                        calibration_data.ir_led_intensity != config.getfloat("od_config", "ir_led_intensity")
+                    if config.get("od_reading.config", "ir_led_intensity") != "auto" and (
+                        calibration_data.ir_led_intensity
+                        != config.getfloat("od_reading.config", "ir_led_intensity")
                     ):
-                        msg = f"The calibration `{name}` was calibrated with a different IR LED intensity ({calibration_data.ir_led_intensity} vs current: {config.getfloat('od_config', 'ir_led_intensity')}). Either re-calibrate, turn off calibration, or change the ir_led_intensity in the config.ini."
+                        msg = f"The calibration `{name}` was calibrated with a different IR LED intensity ({calibration_data.ir_led_intensity} vs current: {config.getfloat('od_reading.config', 'ir_led_intensity')}). Either re-calibrate, turn off calibration, or change the ir_led_intensity in the config.ini."
                         self.logger.error(msg)
                         raise exc.CalibrationError(msg)
                     # confirm that PD channel is the same as when calibration was performed
@@ -694,21 +722,17 @@ class CachedCalibrationTransformer(CalibrationTransformer):
                         msg = f"The calibration `{name}` was calibrated with a different PD channel ({calibration_data.pd_channel} vs current: {channel})."
                         self.logger.error(msg)
                         raise exc.CalibrationError(msg)
-                    else:
-                        models[channel] = self._hydrate_model(calibration_data)
-                        self.logger.debug(f"Using calibration `{name}` for channel {channel}")
 
-                    # confirm that PD channel is the same as when calibration was performed
-                    if calibration_data.pd_channel != channel:
-                        msg = f"The calibration `{name}` was calibrated with a different PD channel ({calibration_data.pd_channel} vs current: {channel})."
-                        self.logger.error(msg)
-                        raise exc.CalibrationError(msg)
+                    self.models[channel] = self._hydrate_model(calibration_data)
+                    self.logger.info(f"Using OD calibration `{name}` for channel {channel}.")
+                    self.logger.debug(
+                        f"Using OD calibration `{name}` for channel {channel}, {calibration_data.curve_type=}, {calibration_data.curve_data_=}"
+                    )
 
                 else:
                     self.logger.debug(
                         f"No calibration available for channel {channel}, angle {angle}, skipping."
                     )
-        return models
 
     def _hydrate_model(self, calibration_data: structs.ODCalibration) -> Callable[[float], float]:
         if calibration_data.curve_type == "poly":
@@ -719,7 +743,7 @@ class CachedCalibrationTransformer(CalibrationTransformer):
             this procedure effectively ignores it.
 
             """
-            from numpy import roots, zeros_like, real
+            from numpy import roots, zeros_like, real, imag
 
             def calibration(observed_voltage: pt.Voltage) -> pt.OD:
                 poly = calibration_data.curve_data_
@@ -733,34 +757,43 @@ class CachedCalibrationTransformer(CalibrationTransformer):
                 coef_shift[-1] = observed_voltage
                 solve_for_poly = poly - coef_shift
                 roots_ = roots(solve_for_poly)
-                plausible_roots_ = sorted(
-                    [real(r) for r in roots_ if (r.imag == 0) and (min_OD <= real(r) <= max_OD)]
-                )
+                plausible_ODs_ = sorted([real(r) for r in roots_ if (imag(r) == 0)])
 
-                try:
-                    # Q: when do I pick the second root? (for unimodal calibration curves)
-                    ideal_root = float(plausible_roots_[0])
-                    return ideal_root
-
-                except IndexError:
+                if len(plausible_ODs_) == 0:
                     if observed_voltage <= min_voltage:
-                        # voltage less than the blank recorded during the calibration and the calibration curve doesn't have solutions (ex even-deg poly)
-                        # this isn't great, as there is nil noise in the signal.
-
-                        if not self.has_logged_warning:
-                            self.logger.warning(
-                                f"Signal below suggested calibration range. Trimming signal. Calibrated for OD=[{min_OD:0.3g}, {max_OD:0.3g}], V=[{min_voltage:0.3g}, {max_voltage:0.3g}]. Observed {observed_voltage:0.3f}V."
-                            )
-                            self.has_logged_warning = True
                         return min_OD
-
-                    else:
-                        if not self.has_logged_warning:
-                            self.logger.warning(
-                                f"Signal outside suggested calibration range. Trimming signal. Calibrated for OD=[{min_OD:0.3g}, {max_OD:0.3g}], V=[{min_voltage:0.3g}, {max_voltage:0.3g}]. Observed {observed_voltage:0.3f}V."
-                            )
-                            self.has_logged_warning = True
+                    elif observed_voltage > max_voltage:
                         return max_OD
+                    else:
+                        raise ValueError(
+                            f"Can't compute calibrated data from curve {poly} and point {observed_voltage}"
+                        )
+
+                # more than 0 possibilities...
+                # find the closest root to our OD domain (or in the OD domain)
+                ideal_OD = float(closest_point_to_domain(plausible_ODs_, (min_OD, max_OD)))
+
+                if ideal_OD < min_OD:
+                    # voltage less than the blank recorded during the calibration and the calibration curve doesn't have solutions (ex even-deg poly)
+                    # this isn't great, as there is nil noise in the signal.
+
+                    if not self.has_logged_warning:
+                        self.logger.warning(
+                            f"Signal outside suggested calibration range. Trimming signal. Calibrated for OD=[{min_OD:0.3g}, {max_OD:0.3g}], V=[{min_voltage:0.3g}, {max_voltage:0.3g}]. Observed {observed_voltage:0.3f}V."
+                        )
+                        self.has_logged_warning = True
+                    return min_OD
+
+                elif ideal_OD > max_OD:
+                    if not self.has_logged_warning:
+                        self.logger.warning(
+                            f"Signal outside suggested calibration range. Trimming signal. Calibrated for OD=[{min_OD:0.3g}, {max_OD:0.3g}], V=[{min_voltage:0.3g}, {max_voltage:0.3g}]. Observed {observed_voltage:0.3f}V."
+                        )
+                        self.has_logged_warning = True
+                    return max_OD
+                else:
+                    # happy path
+                    return ideal_OD
 
         else:
 
@@ -785,13 +818,9 @@ class ODReader(BackgroundJob):
         seconds between readings. If None or 0, then don't periodically read.
     adc_reader: ADCReader
     ir_led_reference_tracker: IrLedReferenceTracker
-
-    Attributes
-    ------------
-    adc_reader: ADCReader
-    ir_led_reference_tracker: ir_led_reference_tracker
-    ods:
-        represents the most recent readings (post transformations)
+    calibration_transformer:
+    unit:
+    experie
 
 
     Examples
@@ -830,7 +859,6 @@ class ODReader(BackgroundJob):
     od1: structs.ODReading
     od2: structs.ODReading
     ods: structs.ODReadings
-    TARGET_REF_VOLTAGE = 0.1
 
     def __init__(
         self,
@@ -844,30 +872,47 @@ class ODReader(BackgroundJob):
     ) -> None:
         super(ODReader, self).__init__(unit=unit, experiment=experiment)
 
+        if len(channel_angle_map) == 0:
+            self.logger.error(
+                "Need to supply a signal channel. Check `[od_config.photodiode_channel]` in your config."
+            )
+            self.clean_up()
+            raise ValueError(
+                "Need to supply a signal channel. Check `[od_config.photodiode_channel]` in your config."
+            )
+
         self.adc_reader = adc_reader
-        self.channel_angle_map = channel_angle_map
-        self.interval = interval
 
         if ir_led_reference_tracker is None:
+            self.logger.debug("Not tracking IR intensity.")
             self.ir_led_reference_tracker = NullIrLedReferenceTracker()
         else:
             self.ir_led_reference_tracker = ir_led_reference_tracker  # type: ignore
 
         if calibration_transformer is None:
+            self.logger.debug("Not using any calibration.")
             self.calibration_transformer = NullCalibrationTransformer()
         else:
             self.calibration_transformer = calibration_transformer  # type: ignore
 
+        self.adc_reader.add_external_logger(self.logger)
+        self.calibration_transformer.add_external_logger(self.logger)
+        self.ir_led_reference_tracker.add_external_logger(self.logger)
+
+        self.calibration_transformer.hydate_models_from_disk(channel_angle_map)
+
+        self.channel_angle_map = channel_angle_map
+        self.interval = interval
         self.first_od_obs_time: Optional[float] = None
         self._set_for_iterating = threading.Event()
 
         self.ir_channel: pt.LedChannel = self._get_ir_led_channel_from_configuration()
-        config_ir_led_intensity = config.get("od_config", "ir_led_intensity")
+        config_ir_led_intensity = config.get("od_reading.config", "ir_led_intensity")
 
         self.ir_led_intensity: pt.LedIntensityValue
         if config_ir_led_intensity == "auto":
             determine_best_ir_led_intensity = True
-            self.ir_led_intensity = 50.0  # start here, and we'll optimize later.
+            self.ir_led_intensity = 70.0  # start here, and we'll optimize later.
         else:
             determine_best_ir_led_intensity = False
             self.ir_led_intensity = float(config_ir_led_intensity)
@@ -901,8 +946,9 @@ class ODReader(BackgroundJob):
             with led_utils.lock_leds_temporarily(self.non_ir_led_channels):
                 # IR led is on
                 self.start_ir_led()
-                sleep(0.1)
-                self.adc_reader.setup_adc()  # determine best gain, max-signal, etc.
+                sleep(0.10)
+
+                on_reading = self.adc_reader.tune_adc()  # determine best gain, max-signal, etc.
 
                 # IR led is off so we can set blanks
                 self.stop_ir_led()
@@ -916,9 +962,11 @@ class ODReader(BackgroundJob):
 
                 # clear the history in adc_reader, so that we don't blank readings in later inference.
                 self.adc_reader.clear_batched_readings()
-                
-                if determine_best_ir_led_intensity:
-                    self.ir_led_intensity = self._determine_best_ir_led_intensity(on_reading, blank_reading)
+
+        if determine_best_ir_led_intensity:
+            self.ir_led_intensity = self._determine_best_ir_led_intensity(
+                self.channel_angle_map, self.ir_led_intensity, on_reading, blank_reading
+            )
 
         #self.start_ir_led()
         #sleep(3)
@@ -937,42 +985,50 @@ class ODReader(BackgroundJob):
             ).start()
 
         self.logger.debug(
-            f"Starting od_reading with PD channels {channel_angle_map}, with IR LED intensity {self.ir_led_intensity}% from channel {self.ir_channel}."
+            f"Starting od_reading with PD channels {channel_angle_map}, with IR LED intensity {self.ir_led_intensity}% from channel {self.ir_channel}, every {self.interval} seconds"
         )
 
+    @staticmethod
     def _determine_best_ir_led_intensity(
-        self, on_reading: PdChannelToVoltage, blank_reading: PdChannelToVoltage
+        channel_angle_map: dict[pt.PdChannel, pt.PdAngle],
+        initial_ir_intensity: float,
+        on_reading: PdChannelToVoltage,
+        blank_reading: PdChannelToVoltage,
     ) -> float:
-        for pd_channel in self.channel_angle_map:
-            culture_on_signal = on_reading.pop(pd_channel)
-            blank_on_signal = blank_reading.pop(pd_channel)
+        """
+        What do we want for a good value?
 
-            # if the blank signal is too close to the culture signal, its possible the culture is very sparse
-            # this could create poor lower sensitivity, so we bump up the IR LED slightly.
-            # 1.5 and 0.1 are arbitrary!
-            if culture_on_signal / blank_on_signal < 1.5:
-                sparse_signal_factor = 0.1
-            else:
-                sparse_signal_factor = 0.0
+         - [REF] is less than 0.256
+         - [90] gets lots of light, but less than 3.0, even at a full culture
+         - IR intensity is less than 90%, maybe even 80%
+         - [90] is "far away" from it's blank signal (TODO: how do we quantify this?)
+
+        """
+
+        if len(channel_angle_map) != 1:
+            # multiple signals?
+            return 70.0
+
+        pd_channel = list(channel_angle_map.keys())[0]
+
+        culture_on_signal = on_reading.pop(pd_channel)
 
         if len(on_reading) == 0:
-            # no op, didn't specify a REF, so we can't do much.
-            return self.ir_led_intensity
-        elif len(on_reading) > 1:
-            raise ValueError("Too many REFs?")
-        else:
-            # only element of the dict is our REF signal
-            _, signal_voltage = on_reading.popitem()
-            return clamp(
-                20.0,
-                round(
-                    self.TARGET_REF_VOLTAGE
-                    * (self.ir_led_intensity / signal_voltage)
-                    * (1 + sparse_signal_factor),
-                    2,
-                ),
-                80.0,
-            )  # more than 80% is a bad idea for IR LED
+            # no REF
+            return 70.0
+
+        _, REF_on_signal = on_reading.popitem()
+
+        ir_intensity_argmax_REF_can_be = initial_ir_intensity / REF_on_signal * 0.240
+
+        ir_intensity_argmax_ANGLE_can_be = (
+            initial_ir_intensity / culture_on_signal * 3.0
+        ) / 50  # divide by N since the culture is unlikely to Nx.
+
+        ir_intensity_max = 80.0
+        return round(
+            min(ir_intensity_max, ir_intensity_argmax_ANGLE_can_be, ir_intensity_argmax_REF_can_be), 2
+        )
 
     def _prepare_post_callbacks(self) -> list[Callable]:
         callbacks: list[Callable] = []
@@ -993,19 +1049,22 @@ class ODReader(BackgroundJob):
         return callbacks
 
     @classmethod
-    def add_pre_read_callback(cls, function: Callable):
+    def add_pre_read_callback(cls, function: Callable) -> None:
         cls._pre_read.append(function)
 
     @classmethod
-    def add_post_read_callback(cls, function: Callable):
+    def add_post_read_callback(cls, function: Callable) -> None:
         cls._post_read.append(function)
 
     @property
     def ir_led_on_and_rest_off_state(self) -> dict[pt.LedChannel, pt.LedIntensityValue]:
-        return {
-            channel: (self.ir_led_intensity if channel == self.ir_channel else 0.0)
-            for channel in led_utils.ALL_LED_CHANNELS
-        }
+        if config.getboolean("od_reading.config", "turn_off_leds_during_reading", fallback="True"):
+            return {
+                channel: (self.ir_led_intensity if channel == self.ir_channel else 0.0)
+                for channel in led_utils.ALL_LED_CHANNELS
+            }
+        else:
+            return {self.ir_channel: self.ir_led_intensity}
 
     def record_from_adc(self) -> structs.ODReadings:
         """
@@ -1078,6 +1137,7 @@ class ODReader(BackgroundJob):
             verbose=False,
         )
         if not r:
+            self.clean_up()
             raise OSError("IR LED could not be started. Stopping OD reading.")
 
         return
@@ -1128,6 +1188,7 @@ class ODReader(BackgroundJob):
         A=IR
             """
             )
+            self.clean_up()
             raise KeyError("`IR` value not found in section.")
 
     def _read_from_adc_and_transform(self) -> PdChannelToVoltage:
@@ -1169,7 +1230,9 @@ class ODReader(BackgroundJob):
         assert False  # we never reach here - this is to silence mypy
 
 
-def find_ir_led_reference(od_angle_channel1, od_angle_channel2) -> Optional[pt.PdChannel]:
+def find_ir_led_reference(
+    od_angle_channel1: Optional[pt.PdAngleOrREF], od_angle_channel2: Optional[pt.PdAngleOrREF]
+) -> Optional[pt.PdChannel]:
     if od_angle_channel1 == REF_keyword:
         return "1"
     elif od_angle_channel2 == REF_keyword:
@@ -1204,11 +1267,11 @@ def create_channel_angle_map(
 def start_od_reading(
     od_angle_channel1: Optional[pt.PdAngleOrREF] = None,
     od_angle_channel2: Optional[pt.PdAngleOrREF] = None,
-    interval: Optional[float] = 1 / config.getfloat("od_config", "samples_per_second"),
+    interval: Optional[float] = 1 / config.getfloat("od_reading.config", "samples_per_second"),
     fake_data: bool = False,
     unit: Optional[str] = None,
     experiment: Optional[str] = None,
-    use_calibration: bool = config.getboolean("od_config", "use_calibration"),
+    use_calibration: bool = config.getboolean("od_reading.config", "use_calibration"),
 ) -> ODReader:
     """
     This function prepares ODReader and other necessary transformation objects. It's a higher level API than using ODReader.
@@ -1225,11 +1288,14 @@ def start_od_reading(
     then the correct syntax is `start_od_reading("REF", "90").
 
     """
-    if interval is not None:
-        assert interval > 0, "interval must be positive."
+    if interval is not None and interval <= 0:
+        raise ValueError("interval must be positive.")
+
+    if od_angle_channel2 is None and od_angle_channel1 is None:
+        raise ValueError("Atleast one of od_angle_channel2 or od_angle_channel1 should be populated")
 
     unit = unit or whoami.get_unit_name()
-    experiment = experiment or whoami.get_latest_experiment_name()
+    experiment = experiment or whoami.get_assigned_experiment_name(unit)
 
     ir_led_reference_channel = find_ir_led_reference(od_angle_channel1, od_angle_channel2)
     channel_angle_map = create_channel_angle_map(od_angle_channel1, od_angle_channel2)
@@ -1246,12 +1312,12 @@ def start_od_reading(
 
     # use an OD calibration?
     if use_calibration:
-        calibration_transformer = CachedCalibrationTransformer(channel_angle_map)
+        calibration_transformer = CachedCalibrationTransformer()
     else:
         calibration_transformer = NullCalibrationTransformer()  # type: ignore
 
     if interval is not None:
-        penalizer = config.getfloat("od_config", "smoothing_penalizer", fallback=700.0) / interval
+        penalizer = config.getfloat("od_reading.config", "smoothing_penalizer", fallback=700.0) / interval
     else:
         penalizer = 0.0
 
@@ -1288,7 +1354,7 @@ def click_od_reading(
     od_angle_channel1: pt.PdAngleOrREF,
     od_angle_channel2: pt.PdAngleOrREF,
     fake_data: bool,
-):
+) -> None:
     """
     Start the optical density reading job
     """

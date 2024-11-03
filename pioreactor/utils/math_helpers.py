@@ -18,29 +18,23 @@ def mean(x: Sequence):
     return mean(x)
 
 
-def trimmed_variance(x: Sequence) -> float:
+def trimmed_variance(x: Sequence, cut_off_n=1) -> float:
     from statistics import variance
 
     x = list(x)  # copy it
-    max_, min_ = max(x), min(x)
-    x.remove(max_)
-    x.remove(min_)
-    return variance(x)
+    x.sort()
+    return variance(x[cut_off_n:-cut_off_n])
 
 
-def trimmed_mean(x: Sequence) -> float:
+def trimmed_mean(x: Sequence, cut_off_n=1) -> float:
     from statistics import mean
 
     x = list(x)  # copy it
-    max_, min_ = max(x), min(x)
-    x.remove(max_)  # even if there is a tie, this only removes the first max_ encountered.
-    x.remove(min_)
-    return mean(x)
+    x.sort()
+    return mean(x[cut_off_n:-cut_off_n])
 
 
-def simple_linear_regression(
-    x: Sequence, y: Sequence
-) -> tuple[tuple[float, float], tuple[float, float]]:
+def simple_linear_regression(x: Sequence, y: Sequence) -> tuple[tuple[float, float], tuple[float, float]]:
     from statistics import linear_regression
 
     n = len(x)
@@ -71,7 +65,7 @@ def simple_linear_regression_with_forced_nil_intercept(
     from statistics import linear_regression
 
     n = len(x)
-    assert n > 2, "not enough data points for linear regression"
+    assert n >= 2, "not enough data points for linear regression"
     assert n == len(y), "Array sizes are not equal."
 
     # Compute the regression using statistics.linear_regression

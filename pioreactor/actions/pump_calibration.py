@@ -12,6 +12,7 @@ from typing import Optional
 from typing import Type
 
 import click
+from click import Abort
 from click import clear
 from click import confirm
 from click import echo
@@ -29,24 +30,29 @@ from pioreactor.config import config
 from pioreactor.config import leader_address
 from pioreactor.hardware import voltage_in_aux
 from pioreactor.logging import create_logger
-from pioreactor.mureq import patch
-from pioreactor.mureq import put
+from pioreactor.mureq import HTTPErrorStatus
+from pioreactor.pubsub import patch_into_leader
+from pioreactor.pubsub import put_into_leader
 from pioreactor.utils import local_persistant_storage
-from pioreactor.utils import publish_ready_to_disconnected_state
+from pioreactor.utils import managed_lifecycle
 from pioreactor.utils.math_helpers import correlation
 from pioreactor.utils.math_helpers import simple_linear_regression_with_forced_nil_intercept
 from pioreactor.utils.timing import current_utc_datestamp
 from pioreactor.utils.timing import current_utc_datetime
-from pioreactor.whoami import get_latest_experiment_name
-from pioreactor.whoami import get_latest_testing_experiment_name
+from pioreactor.whoami import get_assigned_experiment_name
+from pioreactor.whoami import get_testing_experiment_name
 from pioreactor.whoami import get_unit_name
 
 
-def green(string):
+def green(string: str) -> str:
     return style(string, fg="green")
 
 
-def bold(string):
+def red(string: str) -> str:
+    return style(string, fg="red")
+
+
+def bold(string: str) -> str:
     return style(string, bold=True)
 
 
@@ -166,8 +172,12 @@ def setup(pump_type: str, execute_pump: Callable, hz: float, dc: float, unit: st
     try:
         channel_pump_is_configured_for = config.get("PWM_reverse", pump_type)
     except KeyError:
-        echo(f"❌ {pump_type} is not present in config.ini. Please add it to the [PWM] section and try again.")
-        raise click.Abort()
+        echo(
+            red(
+                f"❌ {pump_type} is not present in config.ini. Please add it to the [PWM] section and try again."
+            )
+        )
+        raise Abort()
     clear()
     echo()
     echo(green(bold("Step 2")))
@@ -199,7 +209,7 @@ def setup(pump_type: str, execute_pump: Callable, hz: float, dc: float, unit: st
             continuously=True,
             source_of_event="pump_calibration",
             unit=get_unit_name(),
-            experiment=get_latest_testing_experiment_name(),
+            experiment=get_testing_experiment_name(),
             calibration=structs.PumpCalibration(
                 name="calibration",
                 created_at=current_utc_datetime(),
@@ -259,6 +269,9 @@ def plot_data(x, y, title, x_min=None, x_max=None, interpolation_curve=None, hig
     plt.xlabel("Duration")
     plt.ylabel("Volume")
     plt.xlim(x_min, x_max)
+    plt.yfrequency(6)
+    plt.xfrequency(6)
+
     plt.show()
 
 
@@ -327,7 +340,7 @@ def run_tests(
                 duration=duration,
                 source_of_event="pump_calibration",
                 unit=get_unit_name(),
-                experiment=get_latest_testing_experiment_name(),
+                experiment=get_testing_experiment_name(),
                 calibration=empty_calibration,
             )
 
@@ -346,7 +359,7 @@ def run_tests(
                 echo()
                 break
             except ValueError:
-                echo("Not a number - retrying.")
+                echo(red("Not a number - retrying."))
 
     return durations_to_test, results
 
@@ -407,23 +420,21 @@ def publish_to_leader(name: str) -> bool:
         )
 
     try:
-        res = put(
-            f"http://{leader_address}/api/calibrations",
-            encode(calibration_result),
-            headers={"Content-Type": "application/json"},
-        )
+        res = put_into_leader("/api/calibrations", json=calibration_result)
         res.raise_for_status()
-    except Exception:
+        echo("✅ Published to leader.")
+    except Exception as e:
         success = False
-    if not success:
+        print(e)
         echo(f"❌ Could not publish on leader at http://{leader_address}/api/calibrations")
+
     return success
 
 
 def get_data_from_data_file(data_file: str) -> tuple[list[float], list[float], float, float]:
     import json
 
-    click.echo(f"Pulling data from {data_file}...")
+    echo(f"Pulling data from {data_file}...")
 
     with open(data_file, "r") as f:
         data = json.loads(f.read())
@@ -436,12 +447,12 @@ def get_data_from_data_file(data_file: str) -> tuple[list[float], list[float], f
 
 def pump_calibration(min_duration: float, max_duration: float, json_file: str | None) -> None:
     unit = get_unit_name()
-    experiment = get_latest_experiment_name()
+    experiment = get_assigned_experiment_name(unit)
 
     logger = create_logger("pump_calibration", unit=unit, experiment=experiment)
     logger.info("Starting pump calibration.")
 
-    with publish_ready_to_disconnected_state(unit, experiment, "pump_calibration"):
+    with managed_lifecycle(unit, experiment, "pump_calibration"):
         clear()
         if json_file is None:
             introduction()
@@ -556,15 +567,15 @@ def display(name: str | None) -> None:
                 echo()
 
 
-def change_current(name: str) -> bool:
+def change_current(name: str) -> None:
     with local_persistant_storage("pump_calibrations") as all_calibrations:
         try:
             new_calibration = decode(
                 all_calibrations[name], type=structs.subclass_union(structs.PumpCalibration)
             )  # decode name from list of all names
         except KeyError:
-            create_logger("pump_calibration").error(f"Failed to swap. Calibration `{name}` not found.")
-            raise click.Abort()
+            echo(red(f"Failed to swap. Calibration `{name}` not found."))
+            raise Abort()
 
         pump_type_from_new_calibration = new_calibration.pump  # retrieve the pump type
 
@@ -580,22 +591,23 @@ def change_current(name: str) -> bool:
             current_calibrations[pump_type_from_new_calibration] = encode(new_calibration)
 
         try:
-            res = patch(
-                f"http://{leader_address}/api/calibrations/{get_unit_name()}/{new_calibration.type}/{new_calibration.name}",
+            res = patch_into_leader(
+                f"/api/calibrations/{get_unit_name()}/{new_calibration.type}/{new_calibration.name}",
                 json={"current": 1},
             )
             res.raise_for_status()
-        except Exception:
-            echo(
-                f"❌ Could not update on leader at http://{leader_address}/api/calibrations/{get_unit_name()}/{new_calibration.type}/{new_calibration.name}"
-            )
-            return False
-
-        if old_calibration:
-            echo(f"Replaced {old_calibration.name} with {new_calibration.name} as current calibration.")
+        except HTTPErrorStatus as e:
+            if e.status_code == 404:
+                # it doesn't exist in leader, so lets put it there.
+                publish_to_leader(name)
+                change_current(name)
+            else:
+                echo(red("Could not update in database on leader ❌"))
         else:
-            echo(f"Set {new_calibration.name} to current calibration.")
-        return True
+            if old_calibration:
+                echo(f"Replaced `{old_calibration.name}` with `{new_calibration.name}`   ✅")
+            else:
+                echo(f"Set `{new_calibration.name}` to current calibration  ✅")
 
 
 def list_():
@@ -641,7 +653,8 @@ def click_pump_calibration(
         elif (max_duration is not None) and (min_duration is not None):
             assert min_duration < max_duration, "min_duration >= max_duration"
         else:
-            raise ValueError("min_duration and max_duration must both be set.")
+            echo(red("min_duration and max_duration must both be set."))
+            raise Abort()
 
         pump_calibration(min_duration, max_duration, json_file)
 

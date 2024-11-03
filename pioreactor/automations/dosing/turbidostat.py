@@ -5,8 +5,10 @@ from typing import Optional
 
 from pioreactor.automations import events
 from pioreactor.automations.dosing.base import DosingAutomationJob
+from pioreactor.config import config
 from pioreactor.exc import CalibrationError
 from pioreactor.utils import local_persistant_storage
+from pioreactor.utils.streaming_calculations import ExponentialMovingAverage
 
 
 class Turbidostat(DosingAutomationJob):
@@ -50,6 +52,9 @@ class Turbidostat(DosingAutomationJob):
             self.target_od = float(target_od)
 
         self.volume = float(volume)
+        self.ema_od = ExponentialMovingAverage(
+            config.getfloat("turbidostat.config", "od_smoothing_ema", fallback=0.5)
+        )
 
     @property
     def is_targeting_nOD(self) -> bool:
@@ -75,8 +80,12 @@ class Turbidostat(DosingAutomationJob):
 
     def _execute_target_od(self) -> Optional[events.DilutionEvent]:
         assert self.target_od is not None
-        if self.latest_od["2"] >= self.target_od:
-            latest_od_before_dosing = self.latest_od["2"]
+        smoothed_od = self.ema_od.update(
+            self.latest_od[config.get("turbidostat.config", "signal_channel", fallback="2")]
+        )
+        if smoothed_od >= self.target_od:
+            self.ema_od.clear()  # clear the ema so that we don't cause a second dosing to occur right after.
+            latest_od_before_dosing = smoothed_od
             target_od_before_dosing = self.target_od
             results = self.execute_io_action(media_ml=self.volume, waste_ml=self.volume)
             media_moved = results["media_ml"]

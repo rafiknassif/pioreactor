@@ -135,7 +135,7 @@ common:
           hours_elapsed: 0.0
           options:
             target_rpm: 400.0
-    temperature_control:
+    temperature_automation:
       actions:
         - type: start
           hours_elapsed: 0.0
@@ -188,7 +188,7 @@ common:
 pioreactors:
   bioreactor_A:
     jobs:
-      dosing_control:
+      dosing_automation:
         actions:
           - type: start
             hours_elapsed: 1.0
@@ -210,11 +210,16 @@ metadata:
   author: Alex Doe
   description: Very complex experiment with multiple jobs and bioreactors, different jobs on different bioreactors
 
+inputs:
+  dummy: 1
+  dummy_truth: 2
+
 common:
   jobs:
     stirring:
       actions:
         - type: start
+          if: ${{dummy > 0}}
           hours_elapsed: 0.0
           options:
             target_rpm: 200.0
@@ -231,7 +236,7 @@ pioreactors:
   bioreactor_A:
     label: BR-001
     jobs:
-      dosing_control:
+      dosing_automation:
         actions:
           - type: start
             hours_elapsed: 1.0
@@ -299,50 +304,7 @@ pioreactors:
     assert decode(file, type=structs.Profile) is not None
 
 
-def test_stop_on_exit() -> None:
-    file = """
-experiment_profile_name: minimal
-
-stop_on_exit: True
-"""
-    assert decode(file, type=structs.Profile) is not None
-
-    file = """
-experiment_profile_name: minimal
-
-stop_on_exit: False
-"""
-    assert decode(file, type=structs.Profile) is not None
-
-    file = """
-experiment_profile_name: minimal
-"""
-    assert decode(file, type=structs.Profile) is not None
-
-
-def test_profiles_in_github_repo() -> None:
-    from pioreactor.mureq import get
-
-    # Set the API endpoint URL
-    owner = "Pioreactor"
-    repo = "experiment_profile_examples"
-    path = ""  # Top level directory
-    api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-
-    # Make a GET request to the GitHub API
-    response = get(api_url)
-    response.raise_for_status()  # Will raise an HTTPError if the HTTP request returned an unsuccessful status code
-
-    # Check for YAML files
-    yaml_files = [file for file in response.json() if file["name"].endswith(".yaml")]
-
-    # Print the list of YAML files
-    for file in yaml_files:
-        content = get(file["download_url"]).content
-        decode(content, type=structs.Profile)
-
-
-def test_fails_on_extra_top_level_field():
+def test_fails_on_extra_top_level_field() -> None:
     # common mistake
     file = """
 experiment_profile_name: demo_of_logging
@@ -364,7 +326,7 @@ worker1:
         decode(file, type=structs.Profile)
 
 
-def test_fails_on_adding_options_where_they_shouldnt_be():
+def test_fails_on_adding_options_where_they_shouldnt_be() -> None:
     file = """
 experiment_profile_name: demo_of_logging
 
@@ -485,7 +447,7 @@ pioreactors:
     assert decode(file, type=structs.Profile) is not None
 
 
-def test_no_repeats_in_repeats():
+def test_no_repeats_in_repeats() -> None:
     bad_file = """
   experiment_profile_name: demo_stirring_repeat
 

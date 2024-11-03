@@ -6,6 +6,7 @@ from shlex import quote
 
 import click
 
+from pioreactor.exc import BashScriptError
 from pioreactor.logging import create_logger
 from pioreactor.plugin_management.utils import discover_plugins_in_local_folder
 from pioreactor.whoami import UNIVERSAL_EXPERIMENT
@@ -38,11 +39,12 @@ def uninstall_plugin(name_of_plugin: str) -> None:
         logger.error(f"Failed to uninstall plugin {name_of_plugin}. See logs.")
         logger.debug(result.stdout)
         logger.debug(result.stderr)
+        raise BashScriptError(f"Failed to uninstall plugin {name_of_plugin}. See logs.")
 
     return
 
 
-@click.command(name="uninstall-plugin", short_help="uninstall an existing plugin")
+@click.command(name="uninstall", short_help="uninstall an existing plugin")
 @click.argument("name-of-plugin")
 def click_uninstall_plugin(name_of_plugin: str) -> None:
     uninstall_plugin(name_of_plugin)

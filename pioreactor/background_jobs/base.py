@@ -6,6 +6,7 @@ import signal
 import threading
 import typing as t
 from copy import copy
+from os import environ
 from os import getpid
 from time import sleep
 from time import time
@@ -17,17 +18,17 @@ from pioreactor import structs
 from pioreactor import types as pt
 from pioreactor.config import config
 from pioreactor.config import leader_hostname
+from pioreactor.exc import NotActiveWorkerError
 from pioreactor.logging import create_logger
 from pioreactor.pubsub import Client
 from pioreactor.pubsub import create_client
-from pioreactor.pubsub import MQTT_TOPIC
 from pioreactor.pubsub import QOS
 from pioreactor.pubsub import subscribe
 from pioreactor.utils import append_signal_handlers
 from pioreactor.utils import is_pio_job_running
-from pioreactor.utils import local_intermittent_storage
-from pioreactor.utils.timing import current_utc_timestamp
+from pioreactor.utils import JobManager
 from pioreactor.utils.timing import RepeatedTimer
+from pioreactor.whoami import is_active
 from pioreactor.whoami import is_testing_env
 from pioreactor.whoami import UNIVERSAL_IDENTIFIER
 
@@ -85,11 +86,12 @@ def format_with_optional_units(value: pt.PublishableSettingDataType, units: t.Op
 
 
 class LoggerMixin:
-    _logger_name: t.Optional[str] = None
-    _logger = None
-
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self._logger = None
+
+    def add_external_logger(self, logger) -> None:
+        self._logger = logger
 
     @property
     def logger(self):
@@ -171,13 +173,6 @@ class _BackgroundJob(metaclass=PostInitCaller):
     Hooks can be set up when property `p` changes. The function `set_p(self, new_value)`
     will be called (if defined) whenever `p` changes over MQTT.
 
-    On __init__, attributes are broadcast under `pioreactor/<unit>/<experiment>/<job_name>/$properties`,
-    and each has
-     - `pioreactor/<unit>/<experiment>/<job_name>/$settable` set to True or False
-     - `pioreactor/<unit>/<experiment>/<job_name>/$datatype` set to its datatype
-     - `pioreactor/<unit>/<experiment>/<job_name>/$unit` set to its unit (optional)
-
-
     Best code practices of background jobs
     ---------------------------------------
 
@@ -205,7 +200,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
     >     st = Stirrer(duty_cycle=50, unit=unit, experiment=experiment)
     >     ...
     >     st.clean_up()
-    >    return
+    >     return
 
     When Python exits, jobs will also clean themselves up, so this also works as a script:
 
@@ -241,10 +236,11 @@ class _BackgroundJob(metaclass=PostInitCaller):
     SLEEPING: pt.JobState = "sleeping"
     LOST: pt.JobState = "lost"
 
-    # initial state is disconnected
-    state: pt.JobState = DISCONNECTED
-    job_name: str = "background_job"
-    _clean: bool = False
+    # initial state is disconnected, set other metadata
+    state = DISCONNECTED
+    job_name = "background_job"  # this should be overwritten in subclasses
+    _is_cleaned_up = False  # mqtt connections closed, JM cache is empty, logger closed, etc.
+    _IS_LONG_RUNNING = False  # by default, jobs aren't long running (persistent over experiments)
 
     # published_settings is typically overwritten in the subclasses. Attributes here will
     # be published to MQTT and available settable attributes will be editable. Currently supported
@@ -262,6 +258,9 @@ class _BackgroundJob(metaclass=PostInitCaller):
         self.experiment = experiment
         self.unit = unit
         self._source = source
+        self._job_source = environ.get(
+            "JOB_SOURCE", default="user"
+        )  # ex: could be JOB_SOURCE=experiment_profile, or JOB_SOURCE=external_provider.
 
         # why do we need two clients? Paho lib can't publish a message in a callback,
         # but this is critical to our usecase: listen for events, and fire a response (ex: state change)
@@ -281,6 +280,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
         )
 
         self._check_for_duplicate_activity()
+        self._job_id = self._add_to_job_manager()
 
         # if we no-op in the _check_for_duplicate_activity, we don't want to fire the LWT, so we delay subclient until after.
         self.sub_client = self._create_sub_client()
@@ -306,8 +306,6 @@ class _BackgroundJob(metaclass=PostInitCaller):
             # (hence the _cleanup bit, don't use set_state)
             # but we still raise the error afterwards.
             self._check_published_settings(self.published_settings)
-            self._publish_properties_to_broker(self.published_settings)
-            self._publish_settings_to_broker(self.published_settings)
 
         except ValueError as e:
             self.logger.debug(e, exc_info=True)
@@ -324,34 +322,27 @@ class _BackgroundJob(metaclass=PostInitCaller):
         """
         This function is called AFTER the subclass' __init__ finishes successfully
 
-        Typical sequence (doesn't represent not calling stack, but "blocks of code" run)
+        Typical sequence (doesn't represent calling stack, but "blocks of code" run)
 
-        P.__init__() # check for duplicate job
-        C.__init__() # risk of job failing here
-        P.__post__init__()  # write metadata to disk
-        P.on_init_to_ready()  # default noop - can be overwritten in sub.
+        P == BackgroundJob (this class)
+        C == calling class (a subclass)
+
+        P.__init__() # check for duplicate job, among other checks
+        C.__init__() # Note: risk of job failing here
+        P.__post__init__()  # THIS FUNCTION
+        P.on_init_to_ready()  # default noop - can be overwritten in sub class C
         P.ready()
-        C.on_ready()
+        C.on_ready() # default noop
         """
-
-        with local_intermittent_storage(f"job_metadata_{self.job_name}") as cache:
-            # we set the "lock" in ready as then we know the __init__ finished successfully. Previously,
-            # __init__ might fail, and not clean up pio_job_* correctly.
-            # the catch is that there is a window where two jobs can be started, see growth_rate_calculating.
-            # sol for authors: move the long-running parts to the on_init_to_ready function.
-            cache["started_at"] = current_utc_timestamp()
-            cache["is_running"] = "1"
-            cache["source"] = self._source
-            cache["experiment"] = self.experiment
-            cache["unit"] = self.unit
-            cache["leader_hostname"] = leader_hostname
-            cache["pid"] = getpid()
-            cache["ended_at"] = ""  # populated later
-
-        with local_intermittent_storage("pio_jobs_running") as cache:
-            cache[self.job_name] = getpid()
-
+        # setting READY should happen after we write to the job manager, since a job might do a long-running
+        # task in on_ready, which delays writing to the db, which means `pio kill` might not see it.
         self.set_state(self.READY)
+
+        # now start listening to confirm our state is correct in mqtt
+        self.subscribe_and_callback(
+            self._confirm_state_in_broker,
+            f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/$state",
+        )
 
     def start_passive_listeners(self) -> None:
         # overwrite this to in subclasses to subscribe to topics in MQTT
@@ -415,7 +406,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
         self,
         topic: str,
         payload: pt.PublishableSettingDataType | dict | bytes | None,
-        qos: int = QOS.AT_MOST_ONCE,
+        qos: int = QOS.EXACTLY_ONCE,
         **kwargs,
     ) -> None:
         """
@@ -432,7 +423,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
     def subscribe_and_callback(
         self,
         callback: t.Callable[[pt.MQTTMessage], None],
-        subscriptions: list[str | MQTT_TOPIC] | str | MQTT_TOPIC,
+        subscriptions: list[str] | str,
         allow_retained: bool = True,
         qos: int = QOS.EXACTLY_ONCE,
     ) -> None:
@@ -547,8 +538,6 @@ class _BackgroundJob(metaclass=PostInitCaller):
         self._check_published_settings(new_setting_pair)
         # we need create a new dict (versus just a key update), since published_settings is a class level prop, and editing this would have effects for other BackgroundJob classes.
         self.published_settings = self.published_settings | new_setting_pair
-        self._publish_properties_to_broker(self.published_settings)
-        self._publish_settings_to_broker(new_setting_pair)
 
     ########### Private #############
 
@@ -587,19 +576,6 @@ class _BackgroundJob(metaclass=PostInitCaller):
     def _create_sub_client(self) -> Client:
         # see note above as to why we split pub and sub.
 
-        # the client will try to automatically reconnect if something bad happens
-        # when we reconnect to the broker, we want to republish our state
-        # to overwrite potential last-will losts...
-        # also reconnect to our old topics.
-        def reconnect_protocol(client: Client, userdata, flags, rc: int, properties=None):
-            self.logger.info("Reconnected to the MQTT broker on leader.")  # type: ignore
-            self._publish_attr("state")
-            self._start_general_passive_listeners()
-            self.start_passive_listeners()
-
-        def on_disconnect(client, userdata, rc: int) -> None:
-            self._on_mqtt_disconnect(client, rc)
-
         # we give the last_will to this sub client because when it reconnects, it
         # will republish state.
         last_will = {
@@ -608,6 +584,24 @@ class _BackgroundJob(metaclass=PostInitCaller):
             "qos": QOS.EXACTLY_ONCE,
             "retain": True,
         }
+
+        # the client will try to automatically reconnect if something bad happens
+        # when we reconnect to the broker, we want to republish our state
+        # also reconnect to our old topics (see reconnect_protocol)
+        # before we connect, we also want to set a new last_will (in case the existing one
+        # was exhausted), so we reset the last will in the pre_connect callback.
+        def set_last_will(client: Client, userdata) -> None:
+            # we can only set last wills _before_ connecting, so we put this here.
+            client.will_set(**last_will)  # type: ignore
+
+        def reconnect_protocol(client: Client, userdata, flags, rc: int, properties=None) -> None:
+            self.logger.info("Sub client reconnected to the MQTT broker on leader.")
+            self._publish_defined_settings_to_broker(self.published_settings)
+            self._start_general_passive_listeners()
+            self.start_passive_listeners()
+
+        def on_disconnect(client, userdata, flags, reason_code, properties) -> None:
+            self._on_mqtt_disconnect(client, reason_code)
 
         client = create_client(
             client_id=f"{self.job_name}-sub-{self.unit}-{self.experiment}",
@@ -626,46 +620,53 @@ class _BackgroundJob(metaclass=PostInitCaller):
             else:
                 break
 
+        # these all are assigned _after_ connection is made:
+        client.on_pre_connect = set_last_will
         client.on_connect = reconnect_protocol
         client.on_disconnect = on_disconnect
         return client
 
-    def _on_mqtt_disconnect(self, client, rc: int) -> None:
-        from paho.mqtt import client as mqtt  # type: ignore
+    def _on_mqtt_disconnect(self, client: Client, reason_code: int) -> None:
+        from paho.mqtt.enums import MQTTErrorCode as mqtt
+        from paho.mqtt.client import error_string
 
-        if rc == mqtt.MQTT_ERR_SUCCESS:
+        if reason_code == mqtt.MQTT_ERR_SUCCESS:
             # MQTT_ERR_SUCCESS means that the client disconnected using disconnect()
             self.logger.debug("Disconnected successfully from MQTT.")
 
         # we won't exit, but the client object will try to reconnect
         # Error codes are below, but don't always align
         # https://github.com/eclipse/paho.mqtt.python/blob/42f0b13001cb39aee97c2b60a3b4807314dfcb4d/src/paho/mqtt/client.py#L147
-        elif rc == mqtt.MQTT_ERR_KEEPALIVE:
+        elif reason_code == mqtt.MQTT_ERR_KEEPALIVE:
             self.logger.warning("Lost contact with MQTT server. Is the leader Pioreactor still online?")
         else:
-            self.logger.debug(f"Disconnected from MQTT with {rc=}: {mqtt.error_string(rc)}")
+            self.logger.debug(f"Disconnected from MQTT with {reason_code=}: {error_string(reason_code)}")
         return
 
-    def _publish_attr(self, attr: str) -> None:
+    def _publish_setting(self, setting: str) -> None:
         """
         Publish the current value of the class attribute `attr` to MQTT.
         """
-        if attr == "state":
-            attr_name = "$state"
+        if setting == "state":
+            setting_name = "$state"
         else:
-            attr_name = attr
+            setting_name = setting
+        value = getattr(self, setting)
 
         self.publish(
-            f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/{attr_name}",
-            getattr(self, attr),
+            f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/{setting_name}",
+            value,
             retain=True,
-            qos=QOS.EXACTLY_ONCE,  # TODO: this requires four messages between client and broker. QOS 1 requires two...
+            qos=QOS.EXACTLY_ONCE,
         )
+
+        with JobManager() as jm:
+            jm.upsert_setting(self._job_id, setting_name, value)
 
     def _set_up_exit_protocol(self) -> None:
         # here, we set up how jobs should disconnect and exit.
         def exit_gracefully(reason: int | str, *args) -> None:
-            if self._clean:
+            if self._is_cleaned_up:
                 return
 
             if isinstance(reason, int):
@@ -676,9 +677,13 @@ class _BackgroundJob(metaclass=PostInitCaller):
             self.clean_up()
 
             if (reason == signal.SIGTERM) or (reason == getattr(signal, "SIGHUP", None)):
+                # wait for threads to clean up
+                sleep(1)
+
                 import sys
 
                 sys.exit()
+            return
 
         # signals only work in main thread - and if we set state via MQTT,
         # this would run in a thread - so just skip.
@@ -761,8 +766,6 @@ class _BackgroundJob(metaclass=PostInitCaller):
 
     def disconnected(self) -> None:
         # set state to disconnect
-        # call this first to make sure that it gets published to the broker.
-        self.state = self.DISCONNECTED
 
         # call job specific on_disconnected to clean up subjobs, etc.
         # however, if it fails, nothing below executes, so we don't get a clean
@@ -777,29 +780,35 @@ class _BackgroundJob(metaclass=PostInitCaller):
             self.logger.debug("Error in on_disconnected:")
             self.logger.debug(e, exc_info=True)
 
-        # remove attrs from MQTT
-        self._clear_mqtt_cache()
-
+        self._clear_caches()
+        self.state = self.DISCONNECTED
         self._log_state(self.state)
 
         # we "set" the internal event, which will cause any event.waits to finishing blocking.
         self._blocking_event.set()
 
-    def _remove_from_cache(self) -> None:
-        with local_intermittent_storage(f"job_metadata_{self.job_name}") as cache:
-            cache["is_running"] = "0"
-            cache["ended_at"] = current_utc_timestamp()
+    def _remove_from_job_manager(self) -> None:
+        # TODO what happens if the job_id isn't found?
+        if hasattr(self, "_job_id"):
+            with JobManager() as jm:
+                jm.set_not_running(self._job_id)
 
-        with local_intermittent_storage("pio_jobs_running") as cache:
-            cache.pop(self.job_name)
+    def _add_to_job_manager(self) -> int:
+        # this registration use to be in post_init, and I feel like it was there for a good reason...
+        with JobManager() as jm:
+            return jm.register_and_set_running(
+                self.unit,
+                self.experiment,
+                self.job_name,
+                self._job_source,
+                getpid(),
+                leader_hostname,
+                self._IS_LONG_RUNNING,
+            )
 
     def _disconnect_from_loggers(self) -> None:
         # clean up logger handlers
-
-        handlers = self.logger.logger.handlers[:]
-        for handler in handlers:
-            self.logger.logger.removeHandler(handler)
-            handler.close()
+        self.logger.clean_up()
 
     def _disconnect_from_mqtt_clients(self) -> None:
         # disconnect from MQTT
@@ -811,44 +820,19 @@ class _BackgroundJob(metaclass=PostInitCaller):
         self.pub_client.disconnect()
 
     def _clean_up_resources(self) -> None:
-        self._remove_from_cache()
+        self._remove_from_job_manager()
         # Explicitly cleanup MQTT resources...
         self._disconnect_from_mqtt_clients()
         self._disconnect_from_loggers()
 
-        self._clean = True
+        self._is_cleaned_up = True
 
-    def _publish_properties_to_broker(self, published_settings: dict[str, pt.PublishableSetting]) -> None:
-        # this follows some of the Homie convention: https://homieiot.github.io/specification/
-        self.publish(
-            f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/$properties",
-            ",".join(published_settings),
-            qos=QOS.AT_LEAST_ONCE,
-            retain=True,
-        )
-
-    def _publish_settings_to_broker(self, published_settings: dict[str, pt.PublishableSetting]) -> None:
-        # this follows some of the Homie convention: https://homieiot.github.io/specification/
-        for setting, props in published_settings.items():
-            self.publish(
-                f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/{setting}/$settable",
-                props["settable"],
-                qos=QOS.AT_LEAST_ONCE,
-                retain=True,
-            )
-            self.publish(
-                f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/{setting}/$datatype",
-                props["datatype"],
-                qos=QOS.AT_LEAST_ONCE,
-                retain=True,
-            )
-            if props.get("unit"):
-                self.publish(
-                    f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/{setting}/$unit",
-                    props["unit"],
-                    qos=QOS.AT_LEAST_ONCE,
-                    retain=True,
-                )
+    def _publish_defined_settings_to_broker(
+        self, published_settings: dict[str, pt.PublishableSetting]
+    ) -> None:
+        for name in published_settings.keys():
+            if hasattr(self, name):
+                self._publish_setting(name)
 
     def _log_state(self, state: pt.JobState) -> None:
         if state == self.READY or state == self.DISCONNECTED:
@@ -902,69 +886,42 @@ class _BackgroundJob(metaclass=PostInitCaller):
             allow_retained=False,
         )
 
-        self.subscribe_and_callback(
-            self._confirm_state_in_broker,
-            f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/$state",
-        )
-
     def _confirm_state_in_broker(self, message: pt.MQTTMessage) -> None:
         if message.payload is None:
             return
 
         state_in_broker = message.payload.decode()
         if state_in_broker == self.LOST and state_in_broker != self.state:
-            self.logger.debug(f"Wrong state {state_in_broker} in broker - fixing by publishing {self.state}")
-            self._publish_attr("state")
+            self.logger.debug(
+                f"Job is in state {self.state}, but in state {state_in_broker} in broker. Attempting fix by publishing {self.state}."
+            )
+            sleep(1)
+            self._publish_setting("state")
 
-    def _clear_mqtt_cache(self) -> None:
+    def _clear_caches(self) -> None:
         """
         From homie: Devices can remove old properties and nodes by publishing a zero-length payload on the respective topics.
         Use "persist" to keep it from clearing.
         """
-        self.publish(
-            f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/$properties",
-            None,
-            retain=True,
-        )
-
-        for attr, metadata_on_attr in self.published_settings.items():
-            if not metadata_on_attr.get("persist", False):
-                self.publish(
-                    f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/{attr}",
-                    None,
-                    retain=True,
-                )
-
-            self.publish(
-                f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/{attr}/$settable",
-                None,
-                retain=True,
-            )
-            self.publish(
-                f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/{attr}/$datatype",
-                None,
-                retain=True,
-            )
-            self.publish(
-                f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/{attr}/$unit",
-                None,
-                retain=True,
-            )
+        with JobManager() as jm:
+            for setting, metadata_on_attr in self.published_settings.items():
+                if not metadata_on_attr.get("persist", False):
+                    self.publish(
+                        f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/{setting}",
+                        None,
+                        retain=True,
+                    )
+                    jm.upsert_setting(self._job_id, setting, None)
 
     def _check_for_duplicate_activity(self) -> None:
         if is_pio_job_running(self.job_name) and not is_testing_env():
             self.logger.warning(f"{self.job_name} is already running. Skipping")
             raise RuntimeError(f"{self.job_name} is already running. Skipping")
-        # elif is_pio_job_running("self_test"):
-        #     # don't ever run anything while self_test runs.
-        #     self.logger.error("self_test is running.")
-        #     raise RuntimeError("self_test is running.")
-        ### this doesn't work because self_test invokes jobs, and we hit this line.
 
     def __setattr__(self, name: str, value: t.Any) -> None:
         super(_BackgroundJob, self).__setattr__(name, value)
         if name in self.published_settings:
-            self._publish_attr(name)
+            self._publish_setting(name)
 
     def __enter__(self: BJT) -> BJT:
         return self
@@ -973,12 +930,38 @@ class _BackgroundJob(metaclass=PostInitCaller):
         self.clean_up()
 
 
+class LongRunningBackgroundJob(_BackgroundJob):
+    """
+    This doesn't check for is_active and doesn't obey `pio kill --all-jobs` so should be used for jobs like monitor, etc.
+    """
+
+    _IS_LONG_RUNNING = True
+
+    def __init__(self, unit: str, experiment: str) -> None:
+        super().__init__(unit, experiment, source="app")
+
+
+class LongRunningBackgroundJobContrib(_BackgroundJob):
+    """
+    Used for jobs like logs2x, etc.
+    """
+
+    _IS_LONG_RUNNING = True
+
+    def __init__(self, unit: str, experiment: str, plugin_name: str) -> None:
+        super().__init__(unit, experiment, source=plugin_name)
+
+
 class BackgroundJob(_BackgroundJob):
     """
-    Native jobs should inherit from this class.
+    Worker jobs should inherit from this class.
     """
 
     def __init__(self, unit: str, experiment: str) -> None:
+        if not is_active(unit):
+            raise NotActiveWorkerError(
+                f"{unit} is not active. Make active in leader, or set ACTIVE=1 in the environment: ACTIVE=1 pio run ... "
+            )
         super().__init__(unit, experiment, source="app")
 
 
@@ -986,6 +969,11 @@ class BackgroundJobContrib(_BackgroundJob):
     """
     Plugin jobs should inherit from this class.
     """
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if cls.job_name == "background_job":
+            raise NameError(f"must provide a job_name property to this BackgroundJob class {cls}.")
 
     def __init__(self, unit: str, experiment: str, plugin_name: str) -> None:
         super().__init__(unit, experiment, source=plugin_name)
@@ -1038,10 +1026,18 @@ class BackgroundJobWithDodging(_BackgroundJob):
         super().__init__(*args, source=source, **kwargs)  # type: ignore
 
         self.add_to_published_settings("enable_dodging_od", {"datatype": "boolean", "settable": True})
-        self.set_enable_dodging_od(bool(self.get_from_config("enable_dodging_od", fallback=True)))
+        self.set_enable_dodging_od(self.get_from_config("enable_dodging_od", cast=bool, fallback="True"))
 
-    def get_from_config(self, key, **get_kwargs):
-        return config.get(f"{self.job_name}.config", key, **get_kwargs)
+    def get_from_config(self, key: str, cast=None, **get_kwargs):
+        section = f"{self.job_name}.config"
+        if cast == float:
+            return config.getfloat(section, key, **get_kwargs)
+        elif cast == bool:
+            return config.getboolean(section, key, **get_kwargs)
+        elif cast == int:
+            return config.getint(section, key, **get_kwargs)
+        else:
+            return config.get(section, key, **get_kwargs)
 
     def action_to_do_before_od_reading(self) -> None:
         raise NotImplementedError()
@@ -1058,8 +1054,10 @@ class BackgroundJobWithDodging(_BackgroundJob):
     def set_enable_dodging_od(self, value: bool) -> None:
         self.enable_dodging_od = value
         if self.enable_dodging_od:
+            self.logger.info("Will attempt to stop during OD readings.")
             self._listen_for_od_reading()
         else:
+            self.logger.info("Running continuously through OD readings.")
             if hasattr(self, "sneak_in_timer"):
                 self.sneak_in_timer.cancel()
             try:
@@ -1095,8 +1093,8 @@ class BackgroundJobWithDodging(_BackgroundJob):
         except AttributeError:
             pass
 
-        post_delay = float(self.get_from_config("post_delay_duration", fallback=1.0))
-        pre_delay = float(self.get_from_config("pre_delay_duration", fallback=1.5))
+        post_delay = self.get_from_config("post_delay_duration", cast=float, fallback=1.0)
+        pre_delay = self.get_from_config("pre_delay_duration", cast=float, fallback=1.5)
 
         if post_delay <= 0.25:
             self.logger.warning("For optimal OD readings, keep `post_delay_duration` more than 0.25 seconds.")
@@ -1108,6 +1106,7 @@ class BackgroundJobWithDodging(_BackgroundJob):
             if self.state != self.READY:
                 return
 
+            self.is_after_period = True
             self.action_to_do_after_od_reading()
             sleep(ads_interval - self.OD_READING_DURATION - (post_delay + pre_delay))
             self.is_after_period = False
@@ -1119,13 +1118,13 @@ class BackgroundJobWithDodging(_BackgroundJob):
         ads_start_time_msg = subscribe(
             f"pioreactor/{self.unit}/{self.experiment}/od_reading/first_od_obs_time"
         )
-        if ads_start_time_msg:
+        if ads_start_time_msg and ads_start_time_msg.payload:
             ads_start_time = float(ads_start_time_msg.payload)
         else:
             return
 
         ads_interval_msg = subscribe(f"pioreactor/{self.unit}/{self.experiment}/od_reading/interval")
-        if ads_interval_msg:
+        if ads_interval_msg and ads_interval_msg.payload:
             ads_interval = float(ads_interval_msg.payload)
         else:
             return
@@ -1140,10 +1139,12 @@ class BackgroundJobWithDodging(_BackgroundJob):
         self.sneak_in_timer = RepeatedTimer(
             ads_interval,
             sneak_in,
+            job_name=self.job_name,
             args=(ads_interval, post_delay, pre_delay),
             run_immediately=False,
         )
 
+        # TODO: shouldn't I just use run_after in `RepeatedTimer` instead of this?
         time_to_next_ads_reading = ads_interval - ((time() - ads_start_time) % ads_interval)
 
         sleep(time_to_next_ads_reading + (post_delay + self.OD_READING_DURATION))
@@ -1172,6 +1173,11 @@ class BackgroundJobWithDodgingContrib(BackgroundJobWithDodging):
     """
     Plugin jobs should inherit from this class.
     """
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if cls.job_name == "background_job":
+            raise NameError(f"must provide a job_name property to this BackgroundJob class {cls}.")
 
     def __init__(self, unit: str, experiment: str, plugin_name: str) -> None:
         super().__init__(unit=unit, experiment=experiment, source=plugin_name)

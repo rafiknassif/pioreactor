@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from contextlib import suppress
+from threading import Lock
 from time import perf_counter
 from time import sleep
 from time import time
@@ -10,7 +11,6 @@ from typing import Callable
 from typing import Optional
 
 import click
-import lgpio
 
 import pioreactor.types as pt
 from pioreactor import error_codes
@@ -29,7 +29,7 @@ from pioreactor.utils.streaming_calculations import PID
 from pioreactor.utils.timing import catchtime
 from pioreactor.utils.timing import current_utc_datetime
 from pioreactor.utils.timing import RepeatedTimer
-from pioreactor.whoami import get_latest_experiment_name
+from pioreactor.whoami import get_assigned_experiment_name
 from pioreactor.whoami import get_unit_name
 from pioreactor.whoami import is_testing_env
 
@@ -56,6 +56,8 @@ class RpmCalculator:
         pass
 
     def setup(self) -> None:
+        import lgpio
+
         # we delay the setup so that when all other checks are done (like in stirring's uniqueness), we can start to
         # use the GPIO for this.
         set_gpio_availability(hardware.HALL_SENSOR_PIN, False)
@@ -79,6 +81,8 @@ class RpmCalculator:
         self._edge_callback.cancel()
 
     def turn_on_collection(self) -> None:
+        import lgpio
+
         self.collecting = True
 
         if not is_testing_env():
@@ -87,6 +91,8 @@ class RpmCalculator:
             )
 
     def clean_up(self) -> None:
+        import lgpio
+
         with suppress(AttributeError):
             self._edge_callback.cancel()
             lgpio.gpiochip_close(self._handle)
@@ -117,6 +123,8 @@ class RpmFromFrequency(RpmCalculator):
     """
 
     _running_sum = 0.0
+    _running_min = 100
+    _running_max = -100
     _running_count = 0
     _start_time = None
 
@@ -127,8 +135,11 @@ class RpmFromFrequency(RpmCalculator):
             return
 
         if _start_time is not None:
-            self._running_sum += obs_time - _start_time
+            delta = obs_time - _start_time
+            self._running_sum += delta
             self._running_count += 1
+            self._running_min = min(self._running_min, delta)
+            self._running_max = max(self._running_max, delta)
 
         self._start_time = obs_time
 
@@ -136,6 +147,8 @@ class RpmFromFrequency(RpmCalculator):
         self._running_sum = 0.0
         self._running_count = 0
         self._start_time = None
+        self._running_min = 100
+        self._running_max = -100
 
     def estimate(self, seconds_to_observe: float) -> float:
         self.clear_aggregates()
@@ -143,10 +156,13 @@ class RpmFromFrequency(RpmCalculator):
         self.sleep_for(seconds_to_observe)
         self.turn_off_collection()
 
+        # self._running_max  / self._running_min # in a high vortex, noisy case, these aren't more than 25% apart.
+        # at 3200 RPM, we still aren't seeing much difference here. I'm pretty confident we don't see skipping.
+
         if self._running_sum == 0.0:
             return 0.0
         else:
-            return self._running_count * 60 / self._running_sum
+            return round(self._running_count * 60 / self._running_sum, 1)
 
 
 class Stirrer(BackgroundJob):
@@ -186,9 +202,7 @@ class Stirrer(BackgroundJob):
         "duty_cycle": {"datatype": "float", "settable": True, "unit": "%"},
     }
 
-    duty_cycle: float = config.getfloat(
-        "stirring", "initial_duty_cycle"
-    )  # only used if calibration isn't defined.
+    duty_cycle: float = 0
     _previous_duty_cycle: float = 0
     _measured_rpm: Optional[float] = None
 
@@ -198,7 +212,6 @@ class Stirrer(BackgroundJob):
         unit: str,
         experiment: str,
         rpm_calculator: Optional[RpmCalculator] = None,
-        hertz: float = config.getfloat("stirring", "pwm_hz"),
     ) -> None:
         super(Stirrer, self).__init__(unit=unit, experiment=experiment)
         self.rpm_calculator = rpm_calculator
@@ -215,7 +228,6 @@ class Stirrer(BackgroundJob):
 
         if self.rpm_calculator is not None:
             self.logger.debug("Operating with RPM feedback loop.")
-            self.rpm_calculator.setup()
         else:
             self.logger.debug("Operating without RPM feedback loop.")
 
@@ -227,14 +239,23 @@ class Stirrer(BackgroundJob):
             return
 
         pin: pt.GpioPin = hardware.PWM_TO_PIN[channel]
-        self.pwm = PWM(pin, hertz, unit=self.unit, experiment=self.experiment)
+        self.pwm = PWM(
+            pin,
+            config.getfloat("stirring.config", "pwm_hz"),
+            unit=self.unit,
+            experiment=self.experiment,
+            pubsub_client=self.pub_client,
+        )
         self.pwm.lock()
+        self.duty_cycle_lock = Lock()
 
         if target_rpm is not None and self.rpm_calculator is not None:
             self.target_rpm: Optional[float] = float(target_rpm)
         else:
             self.target_rpm = None
 
+        # initialize DC with initial_duty_cycle, however we can update it with a lookup (if it exists)
+        self.duty_cycle = config.getfloat("stirring.config", "initial_duty_cycle")
         self.rpm_to_dc_lookup = self.initialize_rpm_to_dc_lookup()
         self.duty_cycle = self.rpm_to_dc_lookup(self.target_rpm)
 
@@ -253,7 +274,7 @@ class Stirrer(BackgroundJob):
 
         # set up thread to periodically check the rpm
         self.rpm_check_repeated_thread = RepeatedTimer(
-            config.getfloat("stirring", "duration_between_updates_seconds", fallback=23.0),
+            config.getfloat("stirring.config", "duration_between_updates_seconds", fallback=23.0),
             self.poll_and_update_dc,
             job_name=self.job_name,
             run_immediately=True,
@@ -295,21 +316,27 @@ class Stirrer(BackgroundJob):
                 self.rpm_calculator.clean_up()
 
     def start_stirring(self) -> None:
-        self.logger.debug(f"Starting stirring with {self.target_rpm} RPM.")
+        self.logger.debug(
+            f"Starting stirring with {'no' if self.target_rpm is None  else  self.target_rpm} RPM."
+        )
+
         self.pwm.start(100)  # get momentum to start
-        sleep(0.20)
+        sleep(0.35)
         self.set_duty_cycle(self.duty_cycle)
-        sleep(0.50)
+
         if self.rpm_calculator is not None:
             self.rpm_check_repeated_thread.start()  # .start is idempotent
 
     def kick_stirring(self) -> None:
         self.logger.debug("Kicking stirring")
+        _existing_duty_cycle = self.duty_cycle
+        self.set_duty_cycle(0)
+        sleep(0.5)
         self.set_duty_cycle(100)
-        sleep(0.25)
+        sleep(0.5)
         self.set_duty_cycle(
-            min(1.01 * self._previous_duty_cycle, 50)
-        )  # DC should never need to be above 50 - simply not realistic. We want to avoid the death spiral to 100%.
+            min(1.01 * _existing_duty_cycle, 60)
+        )  # DC should never need to be above 60 - simply not realistic. We want to avoid the death spiral to 100%.
 
     def kick_stirring_but_avoid_od_reading(self) -> None:
         """
@@ -349,7 +376,7 @@ class Stirrer(BackgroundJob):
         if self.rpm_calculator is None:
             return None
 
-        recent_rpm = round(self.rpm_calculator.estimate(poll_for_seconds), 2)
+        recent_rpm = self.rpm_calculator.estimate(poll_for_seconds)
 
         self._measured_rpm = recent_rpm
         self.measured_rpm = structs.MeasuredRPM(
@@ -358,7 +385,7 @@ class Stirrer(BackgroundJob):
 
         if recent_rpm == 0 and self.state == self.READY:  # and not is_testing_env():
             self.logger.warning(
-                "Stirring RPM is 0 - attempting to restart it automatically. It may be a temporary stall, target RPM may be too low, or not reading sensor correctly."
+                "Stirring RPM is 0 - attempting to restart it automatically. It may be a temporary stall, target RPM may be too low, insufficient power applied to fan, or not reading sensor correctly."
             )
             self.blink_error_code(error_codes.STIRRING_FAILED)
 
@@ -372,13 +399,13 @@ class Stirrer(BackgroundJob):
         return self.measured_rpm
 
     def poll_and_update_dc(self, poll_for_seconds: Optional[float] = None) -> None:
+        if self.rpm_calculator is None or self.target_rpm is None or self.state != self.READY:
+            return
+
         if poll_for_seconds is None:
-            if self.target_rpm is None:
-                poll_for_seconds = 4.0  # this never runs? If target_rpm is None, what are we polling for?
-            else:
-                target_n_data_points = 12
-                rps = self.target_rpm / 60.0
-                poll_for_seconds = target_n_data_points / rps
+            target_n_data_points = 12
+            rps = self.target_rpm / 60.0
+            poll_for_seconds = target_n_data_points / rps
 
         self.poll(poll_for_seconds)
 
@@ -398,18 +425,23 @@ class Stirrer(BackgroundJob):
         self.start_stirring()
 
     def set_duty_cycle(self, value: float) -> None:
-        self._previous_duty_cycle = self.duty_cycle
-        self.duty_cycle = clamp(0.0, round(value, 5), 100.0)
-        self.pwm.change_duty_cycle(self.duty_cycle)
+        with self.duty_cycle_lock:
+            self._previous_duty_cycle = self.duty_cycle
+            self.duty_cycle = clamp(0.0, round(value, 5), 100.0)
+            self.pwm.change_duty_cycle(self.duty_cycle)
 
     def set_target_rpm(self, value: float) -> None:
         if self.rpm_calculator is None:
             # probably use_rpm=0 is in config.ini
             raise ValueError("Can't set target RPM when no RPM measurement is being made")
 
-        self.target_rpm = clamp(0.0, value, 5_000.0)
+        self.target_rpm = clamp(0.0, float(value), 5_000.0)
         self.set_duty_cycle(self.rpm_to_dc_lookup(self.target_rpm))
         self.pid.set_setpoint(self.target_rpm)
+
+    def sleep_if_ready(self, seconds):
+        if self.state == self.READY:
+            sleep(seconds)
 
     def block_until_rpm_is_close_to_target(
         self, abs_tolerance: float = 20, timeout: Optional[float] = 60
@@ -430,28 +462,31 @@ class Stirrer(BackgroundJob):
 
         """
 
-        if self.rpm_calculator is None:  # or is_testing_env():
+        if self.rpm_calculator is None or self.target_rpm is None:  # or is_testing_env():
             # can't block if we aren't recording the RPM
             return False
 
         sleep_time = 0.2
         poll_time = 2  # usually 4, but we don't need high accuracy here,
-        self.logger.debug(f"Stirring is blocking until RPM is near {self.target_rpm}.")
+        self.logger.debug(f"{self.job_name} is blocking until RPM is near {self.target_rpm}.")
 
         self.rpm_check_repeated_thread.pause()
 
         with catchtime() as time_waiting:
-            sleep(2)  # on init, the stirring is too fast from the initial "kick"
+            self.sleep_if_ready(2)  # on init, the stirring is too fast from the initial "kick"
             self.poll_and_update_dc(poll_time)
-
             assert isinstance(self.target_rpm, float)
             assert self._measured_rpm is not None
 
             while abs(self._measured_rpm - self.target_rpm) > abs_tolerance:
-                sleep(sleep_time)
+                self.sleep_if_ready(sleep_time)
+
                 self.poll_and_update_dc(poll_time)
 
-                if (timeout and time_waiting() > timeout) or (self.state != self.READY):
+                if self.state != self.READY:
+                    self.rpm_check_repeated_thread.unpause()
+                    return False
+                elif timeout and time_waiting() > timeout:
                     self.rpm_check_repeated_thread.unpause()
                     self.logger.debug(
                         f"Waited {time_waiting():.1f} seconds for RPM to match, breaking out early."
@@ -463,18 +498,20 @@ class Stirrer(BackgroundJob):
 
 
 def start_stirring(
-    target_rpm: float = config.getfloat("stirring", "target_rpm", fallback=400),
+    target_rpm: float = config.getfloat("stirring.config", "target_rpm", fallback=400),
     unit: Optional[str] = None,
     experiment: Optional[str] = None,
-    use_rpm: bool = config.getboolean("stirring", "use_rpm", fallback="true"),
+    use_rpm: bool = config.getboolean("stirring.config", "use_rpm", fallback="true"),
 ) -> Stirrer:
     unit = unit or get_unit_name()
-    experiment = experiment or get_latest_experiment_name()
+    experiment = experiment or get_assigned_experiment_name(unit)
 
     if use_rpm and not is_testing_env():
         rpm_calculator = RpmFromFrequency()
+        rpm_calculator.setup()
     elif use_rpm and is_testing_env():
         rpm_calculator = MockRpmCalculator()  # type: ignore
+        rpm_calculator.setup()
     else:
         rpm_calculator = None
 
@@ -491,12 +528,14 @@ def start_stirring(
 @click.command(name="stirring")
 @click.option(
     "--target-rpm",
-    default=config.getfloat("stirring", "target_rpm", fallback=400),
+    default=config.getfloat("stirring.config", "target_rpm", fallback=400),
     help="set the target RPM",
     show_default=True,
     type=click.FloatRange(0, 1500, clamp=True),
 )
-@click.option("--use-rpm/--ignore-rpm", default=config.getboolean("stirring", "use_rpm", fallback="true"))
+@click.option(
+    "--use-rpm/--ignore-rpm", default=config.getboolean("stirring.config", "use_rpm", fallback="true")
+)
 def click_stirring(target_rpm: float, use_rpm: bool) -> None:
     """
     Start the stirring of the Pioreactor.

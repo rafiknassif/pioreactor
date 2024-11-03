@@ -9,8 +9,6 @@ from typing import Any
 from typing import Iterator
 from typing import Optional
 
-import lgpio
-
 from pioreactor import types as pt
 from pioreactor.exc import PWMError
 from pioreactor.hardware import GPIOCHIP
@@ -23,7 +21,7 @@ from pioreactor.utils import clamp
 from pioreactor.utils import gpio_helpers
 from pioreactor.utils import local_intermittent_storage
 from pioreactor.version import rpi_version_info
-from pioreactor.whoami import get_latest_experiment_name
+from pioreactor.whoami import get_assigned_experiment_name
 from pioreactor.whoami import get_unit_name
 from pioreactor.whoami import is_testing_env
 
@@ -31,10 +29,7 @@ if is_testing_env():
     from pioreactor.utils.mock import MockPWMOutputDevice
     from pioreactor.utils.mock import MockHardwarePWM as HardwarePWM
 else:
-    try:
-        from rpi_hardware_pwm import HardwarePWM  # type: ignore
-    except ImportError:
-        pass
+    from rpi_hardware_pwm import HardwarePWM  # type: ignore
 
 
 class HardwarePWMOutputDevice(HardwarePWM):
@@ -81,6 +76,8 @@ class SoftwarePWMOutputDevice:
     _started = False
 
     def __init__(self, pin: GpioPin, frequency: float = 100) -> None:
+        import lgpio
+
         self.pin = pin
         self.frequency = frequency
         self._handle = lgpio.gpiochip_open(GPIOCHIP)
@@ -89,16 +86,14 @@ class SoftwarePWMOutputDevice:
         lgpio.tx_pwm(self._handle, self.pin, self.frequency, 0)
 
     def start(self, initial_dc: pt.FloatBetween0and100) -> None:
+        import lgpio
+
         self._started = True
         self.dc = initial_dc
         lgpio.tx_pwm(self._handle, self.pin, self.frequency, self.dc)
 
     def off(self) -> None:
-        try:
-            self.dc = 0.0
-        except lgpio.error:
-            # see issue #435
-            pass
+        self.dc = 0.0
 
     @property
     def dc(self) -> pt.FloatBetween0and100:
@@ -106,19 +101,23 @@ class SoftwarePWMOutputDevice:
 
     @dc.setter
     def dc(self, dc: pt.FloatBetween0and100) -> None:
+        import lgpio
+
         dc = clamp(0.0, dc, 100.0)
         self._dc = dc
         if self._started:
             try:
                 lgpio.tx_pwm(self._handle, self.pin, self.frequency, self.dc)
-            except lgpio.error:
-                # see issue #435
+            except lgpio.error as e:
+                print(e)
                 pass
 
         else:
             raise ValueError("must call .start() first!")
 
     def close(self):
+        import lgpio
+
         lgpio.gpiochip_close(self._handle)
 
 
@@ -177,11 +176,11 @@ class PWM:
         logger: Optional[CustomLogger] = None,
     ) -> None:
         self.unit = unit or get_unit_name()
-        self.experiment = experiment or get_latest_experiment_name()
+        self.experiment = experiment or get_assigned_experiment_name(self.unit)
 
         if pubsub_client is None:
             self._external_client = False
-            self.pubsub_client = create_client(client_id=f"pwm-{unit}-{experiment}-{pin}")
+            self.pubsub_client = create_client(client_id=f"pwm-{self.unit}-{experiment}-{pin}")
         else:
             self._external_client = True
             self.pubsub_client = pubsub_client
@@ -196,7 +195,7 @@ class PWM:
         self.duty_cycle = 0.0
 
         if self.is_locked():
-            msg = f"GPIO-{self.pin} is currently locked but a task is overwriting it. Either too many jobs are trying to access this pin, or a job didn't clean up properly. If your confident you can release it, use `pio clear-cache pwm_locks {self.pin} --as-int` on the command line for {self.unit}."
+            msg = f"GPIO-{self.pin} is currently locked but a task is overwriting it. Either too many jobs are trying to access this pin, or a job didn't clean up properly. If your confident you can release it, use `pio cache clear pwm_locks {self.pin} --as-int` on the command line for {self.unit}."
 
             self.logger.error(msg)
             raise PWMError(msg)
@@ -216,9 +215,6 @@ class PWM:
                 )
 
             self._pwm = SoftwarePWMOutputDevice(self.pin, self.hz)
-
-        with local_intermittent_storage("pwm_hz") as cache:
-            cache[self.pin] = self.hz
 
         self.logger.debug(
             f"Initialized GPIO-{self.pin} using {'hardware' if self.using_hardware else 'software'}-timing, initial frequency = {self.hz} hz."
@@ -248,7 +244,11 @@ class PWM:
             for k in cache:
                 if k == self.pin:
                     continue
-                current_values[k] = cache[k]
+                # we use get here because if two processes are updating the cache, and one of them deletes from the cache,
+                # this will raise a keyerror when we try to retrieve it.
+                value = cache.get(k, 0)
+                if value != 0:
+                    current_values[k] = value
 
         self.pubsub_client.publish(
             f"pioreactor/{self.unit}/{self.experiment}/pwms/dc", dumps(current_values), retain=True
@@ -286,9 +286,6 @@ class PWM:
         self.unlock()
 
         with local_intermittent_storage("pwm_dc") as cache:
-            cache.pop(self.pin)
-
-        with local_intermittent_storage("pwm_hz") as cache:
             cache.pop(self.pin)
 
         gpio_helpers.set_gpio_availability(self.pin, True)

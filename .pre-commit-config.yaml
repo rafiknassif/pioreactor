@@ -10,6 +10,8 @@ repos:
     -   id: mixed-line-ending
     -   id: trailing-whitespace
     -   id: check-added-large-files
+        args: ['--maxkb=3000']
+
 
 -   repo: https://github.com/ambv/black
     rev: 23.3.0
@@ -38,7 +40,6 @@ repos:
         additional_dependencies: [
             msgspec==0.18.5,
             types-pkg_resources==0.1.3,
-            types-paho-mqtt==1.6.0.6
         ]
 
 
@@ -49,3 +50,16 @@ repos:
         args:
           - --add-import
           - from __future__ import annotations
+
+
+-   repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+    -   id: shellcheck
+
+
+-   repo: https://github.com/sqlfluff/sqlfluff
+    rev: 3.0.4
+    hooks:
+      - id: sqlfluff-lint
+        args: [--dialect, "sqlite"]

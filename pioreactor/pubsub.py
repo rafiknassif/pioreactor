@@ -10,31 +10,16 @@ from typing import Any
 from typing import Callable
 from typing import Optional
 
+from msgspec import Struct
+from msgspec.json import decode as loads
 from paho.mqtt.client import Client as PahoClient
+from paho.mqtt.enums import CallbackAPIVersion
 
+from pioreactor import mureq
 from pioreactor.config import config
+from pioreactor.config import leader_address
 from pioreactor.config import mqtt_address
 from pioreactor.types import MQTTMessage
-
-
-class MQTT_TOPIC:
-    def __init__(self, init: str):
-        self.body = init
-
-    def __truediv__(self, other: str | MQTT_TOPIC) -> MQTT_TOPIC:
-        return MQTT_TOPIC(self.body + "/" + str(other))
-
-    def __str__(self) -> str:
-        return self.body
-
-    def __repr__(self) -> str:
-        return str(self)
-
-    def __iter__(self):
-        return iter(str(self))
-
-
-PIOREACTOR = MQTT_TOPIC("pioreactor")
 
 
 def add_hash_suffix(s: str) -> str:
@@ -98,9 +83,9 @@ def create_client(
             logger.error(f"Connection failed with error code {rc=}: {connack_string(rc)}")
 
     client = Client(
-        client_id=add_hash_suffix(client_id)
-        if client_id
-        else "",  # Note: if empty string, paho or mosquitto will autogenerate a good client id.
+        callback_api_version=CallbackAPIVersion.VERSION2,
+        # Note: if empty string, paho or mosquitto will autogenerate a good client id.
+        client_id=add_hash_suffix(client_id) if client_id else "",
         clean_session=clean_session,
         userdata=userdata,
     )
@@ -108,6 +93,10 @@ def create_client(
         config.get("mqtt", "username", fallback="pioreactor"),
         config.get("mqtt", "password", fallback="raspberry"),
     )
+    # set a finite queue for QOS>0 messages, so that if we lose connection, we don't store an unlimited number of messages. When the network comes back on, we don't want
+    # a storm of messages (it also causes problems when multiple triggers are sent to execute methods.)
+    client.max_queued_messages_set(100)
+
     if tls:
         import ssl
 
@@ -133,7 +122,7 @@ def create_client(
         except (socket.gaierror, OSError):
             if retries == max_connection_attempts:
                 break
-            sleep(retries * 2)
+            sleep(2 * retries)
         else:
             if not skip_loop:
                 client.loop_start()
@@ -196,7 +185,7 @@ def subscribe(
 
     lock: Optional[threading.Lock]
 
-    def on_connect(client: Client, userdata, flags, rc) -> None:
+    def on_connect(client: Client, userdata, flags, reason_code, properties) -> None:
         client.subscribe(userdata["topics"])
         return
 
@@ -310,16 +299,16 @@ def subscribe_and_callback(
     return client
 
 
-def prune_retained_messages(topics_to_prune: str = "#"):
+def prune_retained_messages(topics_to_prune: str = "#") -> None:
     topics = []
 
     def on_message(message):
         topics.append(message.topic)
 
-    client = subscribe_and_callback(on_message, topics_to_prune, timeout=1)
-
+    client = subscribe_and_callback(on_message, topics_to_prune)
+    sleep(1)
     for topic in topics.copy():
-        publish(topic, None, retain=True)
+        client.publish(topic, None, retain=True)
 
     client.disconnect()
 
@@ -338,14 +327,13 @@ class collect_all_logs_of_level:
         # create a bucket for the logs
         self.bucket: list[dict] = []
         # subscribe to the logs
+
         self.client: Client = subscribe_and_callback(
             self._collect_logs_into_bucket,
-            str(PIOREACTOR / self.unit / self.experiment / "logs" / "app"),
+            f"pioreactor/{self.unit}/{self.experiment}/logs/app/{self.log_level.lower()}",
         )
 
     def _collect_logs_into_bucket(self, message):
-        from json import loads
-
         # load the message
         log = loads(message.payload)
         # if the log level matches, add it to the bucket
@@ -362,39 +350,73 @@ class collect_all_logs_of_level:
         self.client.disconnect()
 
 
-def publish_to_pioreactor_cloud(
-    endpoint: str, data_dict: Optional[dict] = None, data_str: Optional[str] = None
-) -> None:
-    """
-    Parameters
-    ------------
-    endpoint: the function to send to the data to
-    json: (optional) data to send in the body.
+def conform_and_validate_api_endpoint(endpoint: str) -> str:
+    endpoint = endpoint.removeprefix("/")
+    if not (endpoint.startswith("api/") or endpoint.startswith("unit_api/")):
+        raise ValueError(f"/{endpoint} is not a valid Pioreactor API.")
 
-    """
-    from pioreactor.mureq import post
-    from pioreactor.whoami import get_hashed_serial_number, is_testing_env
-    from pioreactor.utils.timing import current_utc_timestamp
-    from json import dumps
+    return endpoint
 
-    assert (data_dict is not None) or (data_str is not None)
 
-    if is_testing_env():
-        return
+def create_webserver_path(address: str, endpoint: str) -> str:
+    # Most commonly, address can be an mdns name (test.local), or an IP address.
+    port = config.getint("ui", "port", fallback=80)
+    proto = config.get("ui", "proto", fallback="http")
+    return f"{proto}://{address}:{port}/{endpoint}"
 
-    if data_dict is not None:
-        data_dict["hashed_serial_number"] = get_hashed_serial_number()
-        data_dict["timestamp"] = current_utc_timestamp()
-        body = dumps(data_dict).encode("utf-8")
-    elif data_str is not None:
-        body = data_str.encode("utf-8")
 
-    headers = {"Content-type": "application/json", "Accept": "text/plain"}
-    try:
-        post(
-            f"https://cloud.pioreactor.com/{endpoint}",
-            body=body,
-            headers=headers,
-        )
-    except Exception:
-        pass
+def get_from(address: str, endpoint: str, **kwargs) -> mureq.Response:
+    endpoint = conform_and_validate_api_endpoint(endpoint)
+    return mureq.get(create_webserver_path(address, endpoint), **kwargs)
+
+
+def get_from_leader(endpoint: str, **kwargs) -> mureq.Response:
+    return get_from(leader_address, endpoint, **kwargs)
+
+
+def put_into(
+    address: str, endpoint: str, body: bytes | None = None, json: dict | Struct | None = None, **kwargs
+) -> mureq.Response:
+    endpoint = conform_and_validate_api_endpoint(endpoint)
+    return mureq.put(create_webserver_path(address, endpoint), body=body, json=json, **kwargs)
+
+
+def put_into_leader(
+    endpoint: str, body: bytes | None = None, json: dict | Struct | None = None, **kwargs
+) -> mureq.Response:
+    return put_into(leader_address, endpoint, body=body, json=json, **kwargs)
+
+
+def patch_into(
+    address: str, endpoint: str, body: bytes | None = None, json: dict | Struct | None = None, **kwargs
+) -> mureq.Response:
+    endpoint = conform_and_validate_api_endpoint(endpoint)
+    return mureq.patch(create_webserver_path(address, endpoint), body=body, json=json, **kwargs)
+
+
+def patch_into_leader(
+    endpoint: str, body: bytes | None = None, json: dict | Struct | None = None, **kwargs
+) -> mureq.Response:
+    return patch_into(leader_address, endpoint, body=body, json=json, **kwargs)
+
+
+def post_into(
+    address: str, endpoint: str, body: bytes | None = None, json: dict | Struct | None = None, **kwargs
+) -> mureq.Response:
+    endpoint = conform_and_validate_api_endpoint(endpoint)
+    return mureq.post(create_webserver_path(address, endpoint), body=body, json=json, **kwargs)
+
+
+def post_into_leader(
+    endpoint: str, body: bytes | None = None, json: dict | Struct | None = None, **kwargs
+) -> mureq.Response:
+    return post_into(leader_address, endpoint, body=body, json=json, **kwargs)
+
+
+def delete_from(address: str, endpoint: str, **kwargs) -> mureq.Response:
+    endpoint = conform_and_validate_api_endpoint(endpoint)
+    return mureq.delete(create_webserver_path(address, endpoint), **kwargs)
+
+
+def delete_from_leader(endpoint: str, **kwargs) -> mureq.Response:
+    return delete_from(leader_address, endpoint, **kwargs)

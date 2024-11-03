@@ -27,7 +27,7 @@ from pioreactor.utils.pwm import PWM
 from pioreactor.utils.timing import catchtime
 from pioreactor.utils.timing import current_utc_datetime
 from pioreactor.utils.timing import default_datetime_for_pioreactor
-from pioreactor.whoami import get_latest_experiment_name
+from pioreactor.whoami import get_assigned_experiment_name
 from pioreactor.whoami import get_unit_name
 
 DEFAULT_PWM_CALIBRATION = structs.PumpCalibration(
@@ -234,6 +234,7 @@ def _pump_action(
     manually: bool = False,
     mqtt_client: Optional[Client] = None,
     logger: Optional[CustomLogger] = None,
+    job_source: Optional[str] = None,
 ) -> pt.mL:
     """
     Returns the mL cycled. However,
@@ -244,8 +245,8 @@ def _pump_action(
     if (ml is not None) and (duration is not None):
         raise ValueError("Only select ml or duration")
 
-    experiment = experiment or get_latest_experiment_name()
     unit = unit or get_unit_name()
+    experiment = experiment or get_assigned_experiment_name(unit)
 
     action_name = _get_pump_action(pump_type)
 
@@ -255,7 +256,7 @@ def _pump_action(
     try:
         pin = _get_pin(pump_type, config)
     except NoOptionError:
-        logger.error(f"Add `{pump_type}` to `PWM` section to config_{unit}.ini.")
+        logger.error(f"Config entry not found. Add `{pump_type}` to `PWM` section to config_{unit}.ini.")
         return 0.0
 
     if calibration is None:
@@ -264,13 +265,14 @@ def _pump_action(
         except exc.CalibrationError:
             pass
 
-    with utils.publish_ready_to_disconnected_state(
+    with utils.managed_lifecycle(
         unit,
         experiment,
         action_name,
         mqtt_client=mqtt_client,
         exit_on_mqtt_disconnect=True,
         mqtt_client_kwargs={"keepalive": 10},
+        job_source=job_source,
     ) as state:
         mqtt_client = state.mqtt_client
 
@@ -304,7 +306,7 @@ def _pump_action(
                     ml = DEFAULT_PWM_CALIBRATION.duration_to_ml(duration)  # naive
                 logger.info(_to_human_readable_action(None, duration, pump_type))
             elif continuously:
-                duration = 10.0
+                duration = 2.5
                 try:
                     ml = pump.duration_to_ml(duration)  # can be wrong if calibration is not defined
                 except exc.CalibrationError:
@@ -364,6 +366,7 @@ def _liquid_circulation(
     config=config,
     mqtt_client: Optional[Client] = None,
     logger: Optional[CustomLogger] = None,
+    source_of_event: Optional[str] = None,
     **kwargs,
 ) -> tuple[pt.mL, pt.mL]:
     """
@@ -380,8 +383,8 @@ def _liquid_circulation(
     :return: None
     """
     action_name = f"circulate_{pump_type}"
-    experiment = experiment or get_latest_experiment_name()
     unit = unit or get_unit_name()
+    experiment = experiment or get_assigned_experiment_name(unit)
     duration = float(duration)
 
     if logger is None:
@@ -412,7 +415,7 @@ def _liquid_circulation(
             "Calibrations don't exist for pump(s). Keep an eye on the liquid level to avoid overflowing!"
         )
 
-    with utils.publish_ready_to_disconnected_state(
+    with utils.managed_lifecycle(
         unit,
         experiment,
         action_name,
@@ -436,6 +439,10 @@ def _liquid_circulation(
             mqtt_client=mqtt_client,
         ) as media_pump:
             logger.info("Running waste continuously.")
+
+            # assume they run it long enough such that the waste efflux position is reached.
+            _publish_pump_action("remove_waste", 20, unit, experiment, mqtt_client, source_of_event)
+
             with catchtime() as running_waste_duration:
                 waste_pump.continuously(block=False)
                 time.sleep(1)
@@ -489,12 +496,12 @@ def click_add_alt_media(
     continuously: bool,
     source_of_event: Optional[str],
     manually: bool,
-) -> float:
+) -> pt.mL:
     """
     Remove waste/media from unit
     """
     unit = get_unit_name()
-    experiment = get_latest_experiment_name()
+    experiment = get_assigned_experiment_name(unit)
 
     return add_alt_media(
         ml=ml,
@@ -524,12 +531,12 @@ def click_remove_waste(
     continuously: bool,
     source_of_event: Optional[str],
     manually: bool,
-) -> float:
+) -> pt.mL:
     """
     Remove waste/media from unit
     """
     unit = get_unit_name()
-    experiment = get_latest_experiment_name()
+    experiment = get_assigned_experiment_name(unit)
 
     return remove_waste(
         ml=ml,
@@ -559,12 +566,12 @@ def click_add_media(
     continuously: bool,
     source_of_event: Optional[str],
     manually: bool,
-) -> float:
+) -> pt.mL:
     """
     Add media to unit
     """
     unit = get_unit_name()
-    experiment = get_latest_experiment_name()
+    experiment = get_assigned_experiment_name(unit)
 
     return add_media(
         ml=ml,
@@ -574,4 +581,50 @@ def click_add_media(
         unit=unit,
         experiment=experiment,
         manually=manually,
+    )
+
+
+@click.command(name="circulate_media")
+@click.option("--duration", required=True, type=float)
+@click.option(
+    "--source-of-event",
+    default="CLI",
+    type=str,
+    help="who is calling this function - data goes into database and MQTT",
+)
+def click_circulate_media(
+    duration: Optional[pt.Seconds],
+    source_of_event: Optional[str],
+) -> tuple[pt.mL, pt.mL]:
+    """
+    Cycle waste/media from unit
+    """
+    unit = get_unit_name()
+    experiment = get_assigned_experiment_name(unit)
+
+    return circulate_media(
+        duration=duration, unit=unit, experiment=experiment, source_of_event=source_of_event
+    )
+
+
+@click.command(name="circulate_alt_media")
+@click.option("--duration", required=True, type=float)
+@click.option(
+    "--source-of-event",
+    default="CLI",
+    type=str,
+    help="who is calling this function - data goes into database and MQTT",
+)
+def click_circulate_alt_media(
+    duration: Optional[pt.Seconds],
+    source_of_event: Optional[str],
+) -> tuple[pt.mL, pt.mL]:
+    """
+    Cycle waste/alt media from unit
+    """
+    unit = get_unit_name()
+    experiment = get_assigned_experiment_name(unit)
+
+    return circulate_alt_media(
+        duration=duration, unit=unit, experiment=experiment, source_of_event=source_of_event
     )

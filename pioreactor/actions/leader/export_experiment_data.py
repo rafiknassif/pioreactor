@@ -56,14 +56,13 @@ def export_experiment_data(
 ) -> None:
     """
     Set an experiment, else it defaults to the entire table.
-
     """
     import sqlite3
     import zipfile
     import csv
 
     if not output.endswith(".zip"):
-        print("output should end with .zip")
+        click.echo("output should end with .zip")
         raise click.Abort()
 
     logger = create_logger("export_experiment_data")
@@ -95,15 +94,14 @@ def export_experiment_data(
                 _partition_by_unit = True
 
             if not _partition_by_unit:
-                if experiment is None:
-                    query = f"SELECT {timestamp_to_localtimestamp_clause} * from {table} ORDER BY {order_by}"
-                    cursor.execute(query)
-                    filename = f"{table}-{time}.csv"
-
-                else:
+                if experiment is not None and "experiment" in get_column_names(cursor, table):
                     query = f"SELECT {timestamp_to_localtimestamp_clause} * from {table} WHERE experiment=:experiment ORDER BY {order_by}"
                     cursor.execute(query, {"experiment": experiment})
                     filename = f"{experiment}-{table}-{time}.csv"
+                else:
+                    query = f"SELECT {timestamp_to_localtimestamp_clause} * from {table} ORDER BY {order_by}"
+                    cursor.execute(query)
+                    filename = f"{table}-{time}.csv"
 
                 filename = filename.replace(" ", "_")
                 path_to_file = os.path.join(os.path.dirname(output), filename)
@@ -116,24 +114,32 @@ def export_experiment_data(
                 os.remove(path_to_file)
 
             else:
-                if experiment is not None:
+                if experiment is not None and "experiment" in get_column_names(cursor, table):
                     query = f"SELECT {timestamp_to_localtimestamp_clause} * from {table} WHERE experiment=:experiment ORDER BY :order_by"
                     cursor.execute(query, {"experiment": experiment, "order_by": order_by})
                 else:
                     query = f"SELECT {timestamp_to_localtimestamp_clause} * from {table} ORDER BY :order_by"
                     cursor.execute(query, {"order_by": order_by})
-                    experiment = "all_experiments"
 
                 headers = [_[0] for _ in cursor.description]
-                iloc_pioreactor_unit = headers.index("pioreactor_unit")
+                if "pioreactor_unit" in headers:
+                    iloc_pioreactor_unit = headers.index("pioreactor_unit")
+                else:
+                    logger.debug(f"pioreactor_unit not found in {table}, skipping partition.")
+                    iloc_pioreactor_unit = None
+
                 filenames = []
                 unit_to_writer_map = {}
 
                 with ExitStack() as stack:
                     for row in cursor:
-                        unit = row[iloc_pioreactor_unit]
+                        if iloc_pioreactor_unit:
+                            unit = row[iloc_pioreactor_unit]
+                        else:
+                            unit = "all"
+
                         if unit not in unit_to_writer_map:
-                            filename = f"{experiment}-{table}-{unit}-{time}.csv"
+                            filename = f"{experiment or 'exp'}-{table}-{unit}-{time}.csv"
                             filenames.append(filename)
                             path_to_file = os.path.join(os.path.dirname(output), filename)
                             unit_to_writer_map[unit] = csv.writer(

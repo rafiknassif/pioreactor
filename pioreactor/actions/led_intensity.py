@@ -6,7 +6,6 @@ from contextlib import nullcontext
 from os import getpid
 from typing import Any
 from typing import Iterator
-from typing import Optional
 
 import click
 from msgspec.json import encode
@@ -21,16 +20,18 @@ from pioreactor.types import LedChannel
 from pioreactor.types import LedIntensityValue
 from pioreactor.utils import local_intermittent_storage
 from pioreactor.utils.timing import current_utc_datetime
-from pioreactor.whoami import get_latest_experiment_name
+from pioreactor.whoami import get_assigned_experiment_name
 from pioreactor.whoami import get_unit_name
+from pioreactor.whoami import is_active
 from pioreactor.whoami import is_testing_env
 
 ALL_LED_CHANNELS: list[LedChannel] = ["A", "B", "C", "D"]
+LEDsToIntensityMapping = dict[LedChannel, LedIntensityValue]
 
 
 @contextmanager
 def change_leds_intensities_temporarily(
-    desired_state: dict[LedChannel, LedIntensityValue],
+    desired_state: LEDsToIntensityMapping,
     **kwargs: Any,
 ) -> Iterator[None]:
     """
@@ -70,37 +71,37 @@ def is_led_channel_locked(channel: LedChannel) -> bool:
 
 
 def _update_current_state(
-    state: dict[LedChannel, LedIntensityValue],
-) -> tuple[structs.LEDsIntensity, structs.LEDsIntensity]:
+    state: LEDsToIntensityMapping,
+) -> tuple[LEDsToIntensityMapping, LEDsToIntensityMapping]:
     """
     TODO: Eventually I should try to modify the UI to not even need this `state` variable,
     """
 
     with local_intermittent_storage("leds") as led_cache:
         # rehydrate old cache
-        old_state = structs.LEDsIntensity(
-            **{str(channel): led_cache.get(str(channel), 0.0) for channel in ALL_LED_CHANNELS}
-        )
+        old_state: LEDsToIntensityMapping = {
+            channel: led_cache.get(str(channel), 0.0) for channel in ALL_LED_CHANNELS
+        }
 
         # update cache
         with led_cache.transact():
             for channel, intensity in state.items():
                 led_cache[channel] = intensity
 
-        new_state = structs.LEDsIntensity(
-            **{str(channel): led_cache.get(str(channel), 0.0) for channel in ALL_LED_CHANNELS}
-        )
+        new_state: LEDsToIntensityMapping = {
+            channel: led_cache.get(str(channel), 0.0) for channel in ALL_LED_CHANNELS
+        }
 
         return new_state, old_state
 
 
 def led_intensity(
-    desired_state: dict[LedChannel, LedIntensityValue],
-    unit: Optional[str] = None,
-    experiment: Optional[str] = None,
+    desired_state: LEDsToIntensityMapping,
+    unit: str | None = None,
+    experiment: str | None = None,
     verbose: bool = True,
-    source_of_event: Optional[str] = None,
-    pubsub_client: Optional[Client] = None,
+    source_of_event: str | None = None,
+    pubsub_client: Client | None = None,
 ) -> bool:
     """
     Change the intensity of the LED channels A,B,C, or D to an value between 0 and 100.
@@ -132,8 +133,11 @@ def led_intensity(
         pioreactor/<unit>/<experiment>/leds/intensity    {'A': intensityA, 'B': intensityB, ...}
 
     """
-    experiment = experiment or get_latest_experiment_name()
     unit = unit or get_unit_name()
+    experiment = experiment or get_assigned_experiment_name(unit)
+
+    if not is_active(unit):
+        return False
 
     logger = create_logger("led_intensity", experiment=experiment, unit=unit, pub_client=pubsub_client)
     updated_successfully = True
@@ -212,7 +216,7 @@ def led_intensity(
                 )
 
                 logger.info(
-                    f"Updated LED {channel} from {getattr(old_state, channel):0.3g}% to {getattr(new_state, channel):0.3g}%."
+                    f"Updated LED {channel} from {old_state[channel]:0.3g}% to {new_state[channel]:0.3g}%."
                 )
 
         return updated_successfully
@@ -245,22 +249,22 @@ def led_intensity(
     type=str,
     help="whom is calling this function (for logging purposes)",
 )
-@click.option("--no-log", is_flag=True, help="Add to log")
+@click.option("--no-log", is_flag=True, help="skip logging")
 def click_led_intensity(
-    a: Optional[LedIntensityValue] = None,
-    b: Optional[LedIntensityValue] = None,
-    c: Optional[LedIntensityValue] = None,
-    d: Optional[LedIntensityValue] = None,
-    source_of_event: Optional[str] = None,
+    a: LedIntensityValue | None = None,
+    b: LedIntensityValue | None = None,
+    c: LedIntensityValue | None = None,
+    d: LedIntensityValue | None = None,
+    source_of_event: str | None = None,
     no_log: bool = False,
 ) -> bool:
     """
     Modify the intensity of LED channel(s)
     """
     unit = get_unit_name()
-    experiment = get_latest_experiment_name()
+    experiment = get_assigned_experiment_name(unit)
 
-    state: dict[LedChannel, LedIntensityValue] = {}
+    state: LEDsToIntensityMapping = {}
     if a is not None:
         state["A"] = a
     if b is not None:

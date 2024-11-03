@@ -1,59 +1,113 @@
 # -*- coding: utf-8 -*-
 """
-CLI for running the commands on workers
+CLI for running the commands on workers, or otherwise interacting with the workers.
 """
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
 import click
+from msgspec.json import encode as dumps
 
+from pioreactor.cluster_management import get_active_workers_in_inventory
+from pioreactor.cluster_management import get_workers_in_inventory
 from pioreactor.config import config
-from pioreactor.config import get_active_workers_in_inventory
 from pioreactor.config import get_leader_hostname
-from pioreactor.config import get_workers_in_inventory
+from pioreactor.exc import RsyncError
 from pioreactor.logging import create_logger
-from pioreactor.utils.networking import add_local
+from pioreactor.mureq import HTTPException
+from pioreactor.pubsub import post_into
+from pioreactor.utils import ClusterJobManager
 from pioreactor.utils.networking import cp_file_across_cluster
+from pioreactor.utils.networking import resolve_to_address
 from pioreactor.utils.timing import current_utc_timestamp
 from pioreactor.whoami import am_I_leader
-from pioreactor.whoami import get_latest_experiment_name
+from pioreactor.whoami import get_assigned_experiment_name
 from pioreactor.whoami import get_unit_name
 from pioreactor.whoami import is_testing_env
 from pioreactor.whoami import UNIVERSAL_EXPERIMENT
 from pioreactor.whoami import UNIVERSAL_IDENTIFIER
 
 
-@click.group()
-def pios() -> None:
+@click.group(invoke_without_command=True)
+@click.pass_context
+def pios(ctx) -> None:
     """
     Command each of the worker Pioreactors with the `pios` command.
 
-    See full documentation here: https://docs.pioreactor.com/user_guide/Advanced/Command%20line%20interface#leader-only-commands-to-control-workers
+    See full documentation here: https://docs.pioreactor.com/user-guide/cli#leader-only-commands-to-control-workers
 
     Report errors or feedback here: https://github.com/Pioreactor/pioreactor/issues
     """
-    if not am_I_leader() and not is_testing_env():
+
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+    # this is run even if workers run `pios plugins etc.`
+    if not am_I_leader():
         click.echo("workers cannot run `pios` commands. Try `pio` instead.", err=True)
         raise click.Abort()
 
-    if len(get_active_workers_in_inventory()) == 0:
-        logger = create_logger("CLI", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
-        logger.warning("No active workers. See `cluster.inventory` section in config.ini.")
 
+if am_I_leader() or is_testing_env():
+    which_units = click.option(
+        "--units",
+        multiple=True,
+        default=(UNIVERSAL_IDENTIFIER,),
+        type=click.STRING,
+        help="specify a hostname, default is all active units",
+    )
 
-if am_I_leader():
+    confirmation = click.option("-y", is_flag=True, help="Skip asking for confirmation.")
+    json_output = click.option("--json", is_flag=True, help="output as json")
 
-    def universal_identifier_to_all_active_workers(units: tuple[str, ...]) -> tuple[str, ...]:
-        if units == (UNIVERSAL_IDENTIFIER,):
-            units = get_active_workers_in_inventory()
-        return units
+    def parse_click_arguments(input_list: list[str]) -> dict:  # TODO: typed dict
+        args: list[str] = []
+        opts: dict[str, str | None] = {}
 
-    def universal_identifier_to_all_workers(units: tuple[str, ...]) -> tuple[str, ...]:
-        if units == (UNIVERSAL_IDENTIFIER,):
-            units = get_workers_in_inventory()
-        return units
+        i = 0
+        while i < len(input_list):
+            item = input_list[i]
+
+            if item.startswith("--"):
+                # Option detected
+                option_name = item.lstrip("--")
+                if i + 1 < len(input_list) and not input_list[i + 1].startswith("--"):
+                    # Next item is the option's value
+                    opts[option_name] = input_list[i + 1]
+                    i += 1  # Skip the value
+                else:
+                    # No value provided for this option
+                    opts[option_name] = None
+            else:
+                # Argument detected
+                args.append(item)
+
+            i += 1
+
+        return {"args": args, "options": opts}
+
+    def universal_identifier_to_all_active_workers(workers: tuple[str, ...]) -> tuple[str, ...]:
+        active_workers = get_active_workers_in_inventory()
+        if workers == (UNIVERSAL_IDENTIFIER,):
+            return active_workers
+        else:
+            return tuple(u for u in set(workers) if u in active_workers)
+
+    def universal_identifier_to_all_workers(
+        workers: tuple[str, ...], filter_out_non_workers=True
+    ) -> tuple[str, ...]:
+        all_workers = get_workers_in_inventory()
+
+        if filter_out_non_workers:
+            include = lambda u: u in all_workers  # noqa: E731
+        else:
+            include = lambda u: True  # noqa: E731
+
+        if workers == (UNIVERSAL_IDENTIFIER,):
+            return all_workers
+        else:
+            return tuple(u for u in set(workers) if include(u))
 
     def add_leader(units: tuple[str, ...]) -> tuple[str, ...]:
         leader = get_leader_hostname()
@@ -115,7 +169,7 @@ if am_I_leader():
 
             except Exception as e:
                 click.echo(
-                    f"Did you forget to create a config_{unit}.ini to deploy to {unit}?",
+                    f"Error syncing config_{unit}.ini to {unit} - do they exist?",
                     err=True,
                 )
                 raise e
@@ -123,94 +177,129 @@ if am_I_leader():
 
     @pios.command("cp", short_help="cp a file across the cluster")
     @click.argument("filepath", type=click.Path(exists=True, resolve_path=True))
-    @click.option(
-        "--units",
-        multiple=True,
-        default=(UNIVERSAL_IDENTIFIER,),
-        type=click.STRING,
-        help="specify a Pioreactor name, default is all active non-leader units",
-    )
-    @click.option("-y", is_flag=True, help="Skip asking for confirmation.")
+    @which_units
+    @confirmation
     def cp(
         filepath: str,
         units: tuple[str, ...],
         y: bool,
     ) -> None:
+        units = remove_leader(universal_identifier_to_all_workers(units))
+
         if not y:
             confirm = input(f"Confirm copying {filepath} onto {units}? Y/n: ").strip()
             if confirm != "Y":
                 raise click.Abort()
 
         logger = create_logger("cp", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
-        units = remove_leader(universal_identifier_to_all_workers(units))
 
         def _thread_function(unit: str) -> bool:
-            logger.debug(f"Moving {filepath} to {unit}:{filepath}...")
+            logger.debug(f"Copying {filepath} to {unit}:{filepath}...")
             try:
                 cp_file_across_cluster(unit, filepath, filepath, timeout=30)
                 return True
             except Exception as e:
-                logger.error(f"Error occurred: {e}. See logs for more.")
+                logger.error(f"Error occurred copying to {unit}. See logs for more.")
                 logger.debug(f"Error occurred: {e}.", exc_info=True)
                 return False
 
-        for unit in units:
-            _thread_function(unit)
+        with ThreadPoolExecutor(max_workers=len(units)) as executor:
+            results = executor.map(_thread_function, units)
+
+        if not all(results):
+            raise click.Abort()
 
     @pios.command("rm", short_help="rm a file across the cluster")
-    @click.argument("filepath", type=click.Path(exists=True, resolve_path=True))
-    @click.option(
-        "--units",
-        multiple=True,
-        default=(UNIVERSAL_IDENTIFIER,),
-        type=click.STRING,
-        help="specify a Pioreactor name, default is all active non-leader units",
-    )
-    @click.option("-y", is_flag=True, help="Skip asking for confirmation.")
+    @click.argument("filepath", type=click.Path(resolve_path=True))
+    @which_units
+    @confirmation
     def rm(
         filepath: str,
         units: tuple[str, ...],
         y: bool,
     ) -> None:
-        logger = create_logger("rm", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
         units = remove_leader(universal_identifier_to_all_workers(units))
 
-        from sh import ssh  # type: ignore
-        from sh import ErrorReturnCode_255  # type: ignore
-        from sh import ErrorReturnCode_1
-        from shlex import join  # https://docs.python.org/3/library/shlex.html#shlex.quote
-
-        command = join(["rm", filepath])
-
         if not y:
-            confirm = input(f"Confirm running `{command}` on {units}? Y/n: ").strip()
+            confirm = input(f"Confirm deleting {filepath} on {units}? Y/n: ").strip()
             if confirm != "Y":
                 raise click.Abort()
 
+        logger = create_logger("rm", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
+
         def _thread_function(unit: str) -> bool:
-            logger.debug(f"Removing {unit}:{filepath}...")
             try:
-                ssh(add_local(unit), command)
+                logger.debug(f"deleting {unit}:{filepath}...")
+                r = post_into(
+                    resolve_to_address(unit), "/unit_api/system/remove_file", json={"filepath": filepath}
+                )
+                r.raise_for_status()
                 return True
-            except ErrorReturnCode_255 as e:
-                logger.error(f"Unable to connect to unit {unit}. {e.stderr.decode()}")
-                logger.debug(e, exc_info=True)
-                return False
-            except ErrorReturnCode_1 as e:
-                logger.error(f"Error occurred: {e}. See logs for more.")
+
+            except HTTPException as e:
+                logger.error(f"Unable to remove file on {unit} due to server error: {e}.")
                 return False
 
-        for unit in units:
-            _thread_function(unit)
+        with ThreadPoolExecutor(max_workers=len(units)) as executor:
+            results = executor.map(_thread_function, units)
 
-    @pios.command("update", short_help="update PioreactorApp on workers")
-    @click.option(
-        "--units",
-        multiple=True,
-        default=(UNIVERSAL_IDENTIFIER,),
-        type=click.STRING,
-        help="specify a Pioreactor name, default is all active units",
-    )
+        if not all(results):
+            raise click.Abort()
+
+    @pios.group(invoke_without_command=True)
+    @click.option("-s", "--source", help="use a release-***.zip already on the workers")
+    @click.option("-b", "--branch", help="specify a branch in repos")
+    @which_units
+    @confirmation
+    @json_output
+    @click.pass_context
+    def update(
+        ctx,
+        source: str | None,
+        branch: str | None,
+        units: tuple[str, ...],
+        y: bool,
+        json: bool,
+    ) -> None:
+        if ctx.invoked_subcommand is None:
+            units = universal_identifier_to_all_workers(units)
+
+            if not y:
+                confirm = input(f"Confirm updating app and ui on {units}? Y/n: ").strip()
+                if confirm != "Y":
+                    raise click.Abort()
+
+            logger = create_logger("update", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
+            options: dict[str, str | None] = {}
+
+            if source is not None:
+                options["source"] = source
+            elif branch is not None:
+                options["branch"] = branch
+
+            def _thread_function(unit: str) -> tuple[bool, dict]:
+                try:
+                    r = post_into(
+                        resolve_to_address(unit), "/unit_api/system/update", json={"options": options}
+                    )
+                    r.raise_for_status()
+                    return True, r.json()
+                except HTTPException as e:
+                    logger.error(f"Unable to update on {unit} due to server error: {e}.")
+                    return False, {"unit": unit}
+
+            with ThreadPoolExecutor(max_workers=len(units)) as executor:
+                results = executor.map(_thread_function, units)
+
+            if json:
+                for success, api_result in results:
+                    api_result["status"] = "success" if success else "error"
+                    click.echo(dumps(api_result))
+
+            if not all(success for (success, _) in results):
+                click.Abort()
+
+    @update.command(name="app", short_help="update Pioreactor app on workers")
     @click.option("-b", "--branch", help="update to the github branch")
     @click.option(
         "-r",
@@ -218,161 +307,232 @@ if am_I_leader():
         help="install from a repo on github. Format: username/project",
     )
     @click.option("-v", "--version", help="install a specific version, default is latest")
-    @click.option("--source", help="install from a source, whl or release archive")
-    @click.option("-y", is_flag=True, help="Skip asking for confirmation.")
-    def update(
+    @click.option("-s", "--source", help="install from a source, whl or release archive")
+    @which_units
+    @confirmation
+    @json_output
+    def update_app(
+        branch: str | None,
+        repo: str | None,
+        version: str | None,
+        source: str | None,
         units: tuple[str, ...],
-        branch: Optional[str],
-        repo: Optional[str],
-        version: Optional[str],
-        source: Optional[str],
         y: bool,
+        json: bool,
     ) -> None:
         """
         Pulls and installs a Pioreactor software version across the cluster
         """
-        from sh import ssh  # type: ignore
-        from sh import ErrorReturnCode_255  # type: ignore
-        from sh import ErrorReturnCode_1
-        from shlex import join
-
-        # type: ignore
-
-        logger = create_logger("update", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
-        if version is not None:
-            commands = ["pio", "update", "app", "-v", version]
-        elif branch is not None:
-            commands = ["pio", "update", "app", "-b", branch]
-        elif source is not None:
-            commands = ["pio", "update", "app", "--source", source]
-        else:
-            commands = ["pio", "update", "app"]
-
-        if repo is not None:
-            commands.extend(["-r", repo])
-
-        command = join(commands)
 
         units = universal_identifier_to_all_workers(units)
 
         if not y:
-            confirm = input(f"Confirm running `{command}` on {units}? Y/n: ").strip()
+            confirm = input(f"Confirm updating app on {units}? Y/n: ").strip()
             if confirm != "Y":
                 raise click.Abort()
 
-        def _thread_function(unit: str):
-            logger.debug(f"Executing `{command}` on {unit}...")
+        logger = create_logger("update", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
+        options: dict[str, str | None] = {}
+
+        # only one of these three is possible, mutually exclusive
+        if version is not None:
+            options["version"] = version
+        elif branch is not None:
+            options["branch"] = branch
+        elif source is not None:
+            options["source"] = source
+
+        if repo is not None:
+            options["repo"] = repo
+
+        def _thread_function(unit: str) -> tuple[bool, dict]:
             try:
-                ssh(add_local(unit), command)
-                return True
-            except ErrorReturnCode_255 as e:
-                logger.error(f"Unable to connect to unit {unit}. {e.stderr.decode()}")
-                logger.debug(e, exc_info=True)
-                return False
-            except ErrorReturnCode_1 as e:
-                logger.error(f"Error occurred: {e}. See logs for more.")
-                logger.debug(e.stderr, exc_info=True)
-                return False
+                r = post_into(
+                    resolve_to_address(unit), "/unit_api/system/update/app", json={"options": options}
+                )
+                r.raise_for_status()
+                return True, r.json()
+            except HTTPException as e:
+                logger.error(f"Unable to update app on {unit} due to server error: {e}.")
+                return False, {"unit": unit}
 
         with ThreadPoolExecutor(max_workers=len(units)) as executor:
             results = executor.map(_thread_function, units)
 
-        if not all(results):
-            raise click.Abort()
+        if json:
+            for success, api_result in results:
+                api_result["status"] = "success" if success else "error"
+                click.echo(dumps(api_result))
 
-    @pios.command("install-plugin", short_help="install a plugin on workers")
+        if not all(success for (success, _) in results):
+            click.Abort()
+
+    @update.command(name="ui", short_help="update Pioreactor ui on workers")
+    @click.option("-b", "--branch", help="update to the github branch")
+    @click.option(
+        "-r",
+        "--repo",
+        help="install from a repo on github. Format: username/project",
+    )
+    @click.option("-v", "--version", help="install a specific version, default is latest")
+    @click.option("-s", "--source", help="install from a source")
+    @which_units
+    @confirmation
+    @json_output
+    def update_ui(
+        branch: str | None,
+        repo: str | None,
+        version: str | None,
+        source: str | None,
+        units: tuple[str, ...],
+        y: bool,
+        json: bool,
+    ) -> None:
+        """
+        Pulls and installs the Pioreactor UI software version across the cluster
+        """
+
+        units = universal_identifier_to_all_workers(units)
+
+        if not y:
+            confirm = input(f"Confirm updating ui on {units}? Y/n: ").strip()
+            if confirm != "Y":
+                raise click.Abort()
+
+        logger = create_logger("update", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
+        options: dict[str, str | None] = {}
+
+        # only one of these three is possible, mutually exclusive
+        if version is not None:
+            options["version"] = version
+        elif branch is not None:
+            options["branch"] = branch
+        elif source is not None:
+            options["source"] = source
+
+        if repo is not None:
+            options["repo"] = repo
+
+        def _thread_function(unit: str) -> tuple[bool, dict]:
+            try:
+                r = post_into(
+                    resolve_to_address(unit), "/unit_api/system/update/ui", json={"options": options}
+                )
+                r.raise_for_status()
+                return True, r.json()
+            except HTTPException as e:
+                logger.error(f"Unable to update ui on {unit} due to server error: {e}.")
+                return False, {"unit": unit}
+
+        with ThreadPoolExecutor(max_workers=len(units)) as executor:
+            results = executor.map(_thread_function, units)
+
+        if json:
+            for success, api_result in results:
+                api_result["status"] = "success" if success else "error"
+                click.echo(dumps(api_result))
+
+        if not all(success for (success, _) in results):
+            click.Abort()
+
+    @pios.group()
+    def plugins():
+        pass
+
+    @plugins.command("install", short_help="install a plugin on workers")
     @click.argument("plugin")
     @click.option(
-        "--units",
-        multiple=True,
-        default=(UNIVERSAL_IDENTIFIER,),
-        type=click.STRING,
-        help="specify a Pioreactor name, default is all active units",
+        "--source",
+        type=str,
+        help="Install from a url, ex: https://github.com/user/repository/archive/branch.zip, or wheel file",
     )
-    def install_plugin(plugin: str, units: tuple[str, ...]) -> None:
+    @which_units
+    @confirmation
+    @json_output
+    def install_plugin(plugin: str, source: str | None, units: tuple[str, ...], y: bool, json: bool) -> None:
         """
         Installs a plugin to worker and leader
         """
-        from sh import ssh  # type: ignore
-        from sh import ErrorReturnCode_255  # type: ignore
-        from sh import ErrorReturnCode_1  # type: ignore
-
-        logger = create_logger("install_plugin", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
-
-        command = f"pio install-plugin {plugin}"
-
-        def _thread_function(unit: str):
-            logger.debug(f"Executing `{command}` on {unit}...")
-            try:
-                ssh(add_local(unit), command)
-                return True
-            except ErrorReturnCode_255 as e:
-                logger.error(f"Unable to connect to unit {unit}. {e.stderr.decode()}")
-                logger.debug(e, exc_info=True)
-                return False
-            except ErrorReturnCode_1 as e:
-                logger.error(f"Error occurred: {e}. See logs for more.")
-                logger.debug(e.stderr, exc_info=True)
-                return False
 
         units = add_leader(universal_identifier_to_all_workers(units))
+
+        if not y:
+            confirm = input(f"Confirm installing {plugin} on {units}? Y/n: ").strip()
+            if confirm != "Y":
+                raise click.Abort()
+
+        logger = create_logger("install_plugin", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
+        commands = {"args": [plugin], "options": {}}
+
+        if source:
+            commands["options"] = {"source": source}
+
+        def _thread_function(unit: str) -> tuple[bool, dict]:
+            try:
+                r = post_into(
+                    resolve_to_address(unit), "/unit_api/plugins/install", json=commands, timeout=60
+                )
+                r.raise_for_status()
+                return True, r.json()
+            except HTTPException as e:
+                logger.error(f"Unable to install plugin on {unit} due to server error: {e}.")
+                return False, {"unit": unit}
+
         with ThreadPoolExecutor(max_workers=len(units)) as executor:
             results = executor.map(_thread_function, units)
 
-        if not all(results):
-            raise click.Abort()
+        if json:
+            for success, api_result in results:
+                api_result["status"] = "success" if success else "error"
+                click.echo(dumps(api_result))
 
-    @pios.command("uninstall-plugin", short_help="uninstall a plugin on workers")
+        if not all(success for (success, _) in results):
+            click.Abort()
+
+    @plugins.command("uninstall", short_help="uninstall a plugin on workers")
     @click.argument("plugin")
-    @click.option(
-        "--units",
-        multiple=True,
-        default=(UNIVERSAL_IDENTIFIER,),
-        type=click.STRING,
-        help="specify a Pioreactor name, default is all active units",
-    )
-    def uninstall_plugin(plugin: str, units: tuple[str, ...]) -> None:
+    @which_units
+    @confirmation
+    @json_output
+    def uninstall_plugin(plugin: str, units: tuple[str, ...], y: bool, json: bool) -> None:
         """
         Uninstalls a plugin from worker and leader
         """
 
-        from sh import ssh  # type: ignore
-        from sh import ErrorReturnCode_255  # type: ignore
-        from sh import ErrorReturnCode_1  # type: ignore
+        units = add_leader(universal_identifier_to_all_workers(units))
+
+        if not y:
+            confirm = input(f"Confirm uninstalling {plugin} on {units}? Y/n: ").strip()
+            if confirm != "Y":
+                raise click.Abort()
 
         logger = create_logger("uninstall_plugin", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
+        commands = {"args": [plugin]}
 
-        command = f"pio uninstall-plugin {plugin}"
-
-        def _thread_function(unit: str):
-            logger.debug(f"Executing `{command}` on {unit}...")
+        def _thread_function(unit: str) -> tuple[bool, dict]:
             try:
-                ssh(add_local(unit), command)
-                return True
-            except ErrorReturnCode_255 as e:
-                logger.error(f"Unable to connect to unit {unit}. {e.stderr.decode()}")
-                logger.debug(e, exc_info=True)
-                return False
-            except ErrorReturnCode_1 as e:
-                logger.error(f"Error occurred: {e}. See logs for more.")
-                logger.debug(e.stderr, exc_info=True)
-                return False
+                r = post_into(
+                    resolve_to_address(unit), "/unit_api/plugins/uninstall", json=commands, timeout=60
+                )
+                r.raise_for_status()
+                return True, r.json()
 
-        units = add_leader(universal_identifier_to_all_workers(units))
+            except HTTPException as e:
+                logger.error(f"Unable to uninstall plugin on {unit} due to server error: {e}.")
+                return False, {"unit": unit}
+
         with ThreadPoolExecutor(max_workers=len(units)) as executor:
             results = executor.map(_thread_function, units)
 
-        if not all(results):
-            raise click.Abort()
+        if json:
+            for success, api_result in results:
+                api_result["status"] = "success" if success else "error"
+                click.echo(dumps(api_result))
+
+        if not all(success for (success, _) in results):
+            click.Abort()
 
     @pios.command(name="sync-configs", short_help="sync config")
-    @click.option(
-        "--units",
-        multiple=True,
-        default=(UNIVERSAL_IDENTIFIER,),
-        type=click.STRING,
-        help="specify a hostname, default is all active units",
-    )
     @click.option(
         "--shared",
         is_flag=True,
@@ -381,32 +541,41 @@ if am_I_leader():
     @click.option(
         "--specific",
         is_flag=True,
-        help="sync the worker specific config.ini(s)",
+        help="sync the specific config.ini(s)",
     )
     @click.option(
         "--skip-save",
         is_flag=True,
         help="don't save to db",
     )
-    def sync_configs(units: tuple[str, ...], shared: bool, specific: bool, skip_save: bool) -> None:
+    @which_units
+    @confirmation
+    def sync_configs(shared: bool, specific: bool, skip_save: bool, units: tuple[str, ...], y: bool) -> None:
         """
-        Deploys the shared config.ini and worker specific config.inis to the workers.
+        Deploys the shared config.ini and specific config.inis to the pioreactor units.
 
         If neither `--shared` not `--specific` are specified, both are set to true.
         """
-        logger = create_logger("sync_configs", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
-        units = universal_identifier_to_all_workers(units)
+        units = add_leader(
+            universal_identifier_to_all_workers(units, filter_out_non_workers=False)
+        )  # TODO: why is leader being added if I only specify a subset of units?
 
         if not shared and not specific:
             shared = specific = True
+
+        logger = create_logger("sync_configs", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
 
         def _thread_function(unit: str) -> bool:
             logger.debug(f"Syncing configs on {unit}...")
             try:
                 sync_config_files(unit, shared, specific)
                 return True
+            except RsyncError as e:
+                logger.warning(f"Could not transfer config to {unit}. Is it online?")
+                logger.debug(e, exc_info=True)
+                return False
             except Exception as e:
-                logger.error(f"Error syncing configs to {unit}.")
+                logger.warning(f"Encountered error syncing configs to {unit}: {e}")
                 logger.debug(e, exc_info=True)
                 return False
 
@@ -414,81 +583,63 @@ if am_I_leader():
             # save config.inis to database
             save_config_files_to_db(units, shared, specific)
 
-        results = []
-        for unit in units:
-            results.append(_thread_function(unit))
-
-        if not all(results):
-            raise click.Abort()
-
-    @pios.command("kill", short_help="kill a job(s) on workers")
-    @click.argument("job", nargs=-1)
-    @click.option(
-        "--units",
-        multiple=True,
-        default=(UNIVERSAL_IDENTIFIER,),
-        type=click.STRING,
-        help="specify a hostname, default is all active units",
-    )
-    @click.option("--all-jobs", is_flag=True, help="kill all worker jobs")
-    @click.option("-y", is_flag=True, help="skip asking for confirmation")
-    def kill(job: str, units: tuple[str, ...], all_jobs: bool, y: bool) -> None:
-        """
-        Send a SIGTERM signal to JOB. JOB can be any Pioreactor job name, like "stirring".
-        Example:
-
-        > pios kill stirring
-
-
-        multiple jobs accepted:
-
-        > pios kill stirring dosing_control
-
-
-        Kill all worker jobs (i.e. this excludes leader jobs like watchdog). Ignores `job` argument.
-
-        > pios kill --all-jobs -y
-
-
-        """
-        from sh import ssh  # type: ignore
-        from sh import ErrorReturnCode_255  # type: ignore
-        from sh import ErrorReturnCode_1  # type: ignore
-
-        if not y:
-            confirm = input(
-                f"Confirm killing {str(job) if (not all_jobs) else 'all jobs'} on {units}? Y/n: "
-            ).strip()
-            if confirm != "Y":
-                raise click.Abort()
-
-        command = f"pio kill {' '.join(job)}"
-        command += "--all-jobs" if all_jobs else ""
-
-        logger = create_logger("CLI", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
-
-        def _thread_function(unit: str):
-            logger.debug(f"Executing `{command}` on {unit}.")
-            try:
-                ssh(add_local(unit), command)
-                return True
-
-            except ErrorReturnCode_255 as e:
-                logger.debug(e, exc_info=True)
-                logger.error(f"Unable to connect to unit {unit}. {e.stderr.decode()}")
-                return False
-            except ErrorReturnCode_1 as e:
-                logger.error(f"Error occurred: {e}. See logs for more.")
-                logger.debug(e, exc_info=True)
-                logger.debug(e.stderr, exc_info=True)
-                return False
-
-        units = universal_identifier_to_all_active_workers(units)
         with ThreadPoolExecutor(max_workers=len(units)) as executor:
             results = executor.map(_thread_function, units)
 
         if not all(results):
             raise click.Abort()
+
+    @pios.command("kill", short_help="kill a job(s) on workers")
+    @click.option("--job")
+    @click.option("--all-jobs", is_flag=True, help="kill all worker jobs")
+    @click.option("--experiment", type=click.STRING)
+    @click.option("--job-source", type=click.STRING)
+    @click.option("--job-name", type=click.STRING)
+    @which_units
+    @confirmation
+    @json_output
+    def kill(
+        job: str | None,
+        all_jobs: bool,
+        experiment: str | None,
+        job_source: str | None,
+        job_name: str | None,
+        units: tuple[str, ...],
+        y: bool,
+        json: bool,
+    ) -> None:
+        """
+        Send a SIG signal to JOB. JOB can be any Pioreactor job name, like "stirring".
+        Example:
+
+        > pios kill --job-name stirring
+
+
+        Kill all worker jobs (i.e. this excludes leader jobs like monitor). Ignores `job` argument.
+
+        > pios kill --all-jobs -y
+
+
+        """
+
+        units = universal_identifier_to_all_active_workers(units)
+        if not y:
+            confirm = input(f"Confirm killing jobs on {units}? Y/n: ").strip()
+            if confirm != "Y":
+                raise click.Abort()
+
+        with ClusterJobManager() as cm:
+            results = cm.kill_jobs(
+                units, all_jobs=all_jobs, experiment=experiment, job_source=job_source, job_name=job_name
+            )
+
+        if json:
+            for success, api_result in results:
+                api_result["status"] = "success" if success else "error"
+                click.echo(dumps(api_result))
+
+        if not all(success for (success, _) in results):
+            click.Abort()
 
     @pios.command(
         name="run",
@@ -496,16 +647,11 @@ if am_I_leader():
         short_help="run a job on workers",
     )
     @click.argument("job", type=click.STRING)
-    @click.option(
-        "--units",
-        multiple=True,
-        default=(UNIVERSAL_IDENTIFIER,),
-        type=click.STRING,
-        help="specify a hostname, default is all active units",
-    )
-    @click.option("-y", is_flag=True, help="Skip asking for confirmation.")
+    @which_units
+    @confirmation
+    @json_output
     @click.pass_context
-    def run(ctx, job: str, units: tuple[str, ...], y: bool) -> None:
+    def run(ctx, job: str, units: tuple[str, ...], y: bool, json: bool) -> None:
         """
         Run a job on all, or specific, workers. Ex:
 
@@ -514,102 +660,76 @@ if am_I_leader():
         Will start stirring on all workers, after asking for confirmation.
         Each job has their own unique options:
 
-        > pios run stirring --duty-cycle 10
-        > pios run od_reading --od-angle-channel 135,0
+        > pios run stirring --target-rpm 100
+        > pios run od_reading
 
         To specify specific units, use the `--units` keyword multiple times, ex:
 
-        > pios run stirring --units pioreactor2 --units pioreactor3
+        > pios run stirring --units pio01 --units pio03
 
         """
-        from sh import ssh
-        from sh import ErrorReturnCode_255  # type: ignore
-        from sh import ErrorReturnCode_1  # type: ignore
-        from shlex import quote  # https://docs.python.org/3/library/shlex.html#shlex.quote
-
         extra_args = list(ctx.args)
 
         if "unit" in extra_args:
             click.echo("Did you mean to use 'units' instead of 'unit'? Exiting.", err=True)
             raise click.Abort()
 
-        core_command = " ".join(["pio", "run", quote(job), *extra_args])
-
-        # pipe all output to null
-        command = " ".join(["nohup", core_command, ">/dev/null", "2>&1", "&"])
-
         units = universal_identifier_to_all_active_workers(units)
+        assert len(units) > 0, "Empty units!"
 
         if not y:
-            confirm = input(f"Confirm running `{core_command}` on {units}? Y/n: ").strip()
+            confirm = input(f"Confirm running {job} on {units}? Y/n: ").strip()
             if confirm != "Y":
                 raise click.Abort()
 
-        def _thread_function(unit: str) -> bool:
-            click.echo(f"Executing `{core_command}` on {unit}.")
+        data = parse_click_arguments(extra_args)
+
+        def _thread_function(unit: str) -> tuple[bool, dict]:
             try:
-                ssh(add_local(unit), command)
-                return True
-            except ErrorReturnCode_255 as e:
-                logger = create_logger("CLI", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
-                logger.debug(e, exc_info=True)
-                logger.error(f"Unable to connect to unit {unit}. {e.stderr.decode()}")
-                return False
-            except ErrorReturnCode_1 as e:
-                logger = create_logger("CLI", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
-                logger.error(f"Error occurred: {e}. See logs for more.")
-                logger.debug(e.stderr, exc_info=True)
-                return False
+                r = post_into(resolve_to_address(unit), f"/unit_api/jobs/run/job_name/{job}", json=data)
+                r.raise_for_status()
+                return True, r.json()
+            except HTTPException as e:
+                click.echo(f"Unable to execute run command on {unit} due to server error: {e}.")
+                return False, {"unit": unit}
 
         with ThreadPoolExecutor(max_workers=len(units)) as executor:
             results = executor.map(_thread_function, units)
 
-        if not all(results):
-            raise click.Abort()
+        if json:
+            for success, api_result in results:
+                api_result["status"] = "success" if success else "error"
+                click.echo(dumps(api_result))
+
+        if not all(success for (success, _) in results):
+            click.Abort()
 
     @pios.command(
         name="shutdown",
         short_help="shutdown Pioreactors",
     )
-    @click.option(
-        "--units",
-        multiple=True,
-        default=(UNIVERSAL_IDENTIFIER,),
-        type=click.STRING,
-        help="specify a hostname, default is all active units",
-    )
-    @click.option("-y", is_flag=True, help="Skip asking for confirmation.")
+    @which_units
+    @confirmation
     def shutdown(units: tuple[str, ...], y: bool) -> None:
         """
         Shutdown Pioreactor / Raspberry Pi
         """
-        from sh import ssh  # type: ignore
-        from sh import ErrorReturnCode_255  # type: ignore
-        from sh import ErrorReturnCode_1  # type: ignore
 
-        command = "sudo shutdown -h now"
         units = universal_identifier_to_all_workers(units)
         also_shutdown_leader = get_leader_hostname() in units
         units_san_leader = remove_leader(units)
 
         if not y:
-            confirm = input(f"Confirm running `{command}` on {units}? Y/n: ").strip()
+            confirm = input(f"Confirm shutting down on {units}? Y/n: ").strip()
             if confirm != "Y":
                 raise click.Abort()
 
         def _thread_function(unit: str) -> bool:
-            click.echo(f"Executing `{command}` on {unit}.")
             try:
-                ssh(add_local(unit), command)
+                post_into(resolve_to_address(unit), "/unit_api/system/shutdown", timeout=60)
                 return True
-            except ErrorReturnCode_255 as e:
-                logger = create_logger("CLI", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
-                logger.debug(e, exc_info=True)
-                logger.error(f"Unable to connect to unit {unit}. {e.stderr.decode()}")
-                return False
-            except ErrorReturnCode_1 as e:
-                logger.error(f"Error occurred: {e}. See logs for more.")
-                logger.debug(e.stderr, exc_info=True)
+            except HTTPException as e:
+                click.echo(f"Unable to install plugin on {unit} due to server error: {e}.")
                 return False
 
         if len(units_san_leader) > 0:
@@ -619,53 +739,30 @@ if am_I_leader():
         # we delay shutdown leader (if asked), since it would prevent
         # executing the shutdown cmd on other workers
         if also_shutdown_leader:
-            import os
+            post_into(resolve_to_address(get_leader_hostname()), "/unit_api/shutdown", timeout=60)
 
-            os.system(command)
-
-    @pios.command(
-        name="reboot",
-        short_help="reboot Pioreactors",
-    )
-    @click.option(
-        "--units",
-        multiple=True,
-        default=(UNIVERSAL_IDENTIFIER,),
-        type=click.STRING,
-        help="specify a hostname, default is all active units",
-    )
-    @click.option("-y", is_flag=True, help="Skip asking for confirmation.")
+    @pios.command(name="reboot", short_help="reboot Pioreactors")
+    @which_units
+    @confirmation
     def reboot(units: tuple[str, ...], y: bool) -> None:
         """
         Reboot Pioreactor / Raspberry Pi
         """
-        from sh import ssh  # type: ignore
-        from sh import ErrorReturnCode_255  # type: ignore
-        from sh import ErrorReturnCode_1  # type: ignore
-
-        command = "sudo reboot"
         units = universal_identifier_to_all_workers(units)
         also_reboot_leader = get_leader_hostname() in units
         units_san_leader = remove_leader(units)
 
         if not y:
-            confirm = input(f"Confirm running `{command}` on {units}? Y/n: ").strip()
+            confirm = input(f"Confirm rebooting on {units}? Y/n: ").strip()
             if confirm != "Y":
                 raise click.Abort()
 
         def _thread_function(unit: str) -> bool:
-            click.echo(f"Executing `{command}` on {unit}.")
             try:
-                ssh(add_local(unit), command)
+                post_into(resolve_to_address(unit), "/unit_api/system/reboot", timeout=60)
                 return True
-            except ErrorReturnCode_255 as e:
-                logger = create_logger("CLI", unit=get_unit_name(), experiment=UNIVERSAL_EXPERIMENT)
-                logger.debug(e, exc_info=True)
-                logger.error(f"Unable to connect to unit {unit}. {e.stderr.decode()}")
-                return False
-            except ErrorReturnCode_1 as e:
-                logger.error(f"Error occurred: {e}. See logs for more.")
-                logger.debug(e.stderr, exc_info=True)
+            except HTTPException as e:
+                click.echo(f"Unable to install plugin on {unit} due to server error: {e}.")
                 return False
 
         if len(units_san_leader) > 0:
@@ -675,9 +772,7 @@ if am_I_leader():
         # we delay rebooting leader (if asked), since it would prevent
         # executing the reboot cmd on other workers
         if also_reboot_leader:
-            import os
-
-            os.system(command)
+            post_into(resolve_to_address(get_leader_hostname()), "/unit_api/reboot", timeout=60)
 
     @pios.command(
         name="update-settings",
@@ -685,46 +780,36 @@ if am_I_leader():
         short_help="update settings on a job on workers",
     )
     @click.argument("job", type=click.STRING)
-    @click.option(
-        "--units",
-        multiple=True,
-        default=(UNIVERSAL_IDENTIFIER,),
-        type=click.STRING,
-        help="specify a hostname, default is all active units",
-    )
+    @which_units
+    @confirmation
     @click.pass_context
-    def update_settings(ctx, job: str, units: tuple[str, ...]) -> None:
+    def update_settings(ctx, job: str, units: tuple[str, ...], y: bool) -> None:
         """
 
-        Examples
-        ---------
+        Examples:
+
         > pios update-settings stirring --target_rpm 500 --units worker1
-        > pios update-settings dosing_control --automation '{"type": "dosing", "automation_name": "silent", "args": {}}
 
         """
+        from pioreactor.pubsub import create_client
 
-        exp = get_latest_experiment_name()
         extra_args = {ctx.args[i][2:]: ctx.args[i + 1] for i in range(0, len(ctx.args), 2)}
-
-        if "unit" in extra_args:
-            click.echo("Did you mean to use 'units' instead of 'unit'? Exiting.", err=True)
-            raise click.Abort()
 
         assert len(extra_args) > 0
 
-        from pioreactor.pubsub import publish
-
-        def _thread_function(unit: str) -> bool:
-            for setting, value in extra_args.items():
-                publish(f"pioreactor/{unit}/{exp}/{job}/{setting}/set", value)
-            return True
+        if not y:
+            confirm = input(f"Confirm updating {job}'s {extra_args} on {units}? Y/n: ").strip()
+            if confirm != "Y":
+                raise click.Abort()
 
         units = universal_identifier_to_all_active_workers(units)
-        with ThreadPoolExecutor(max_workers=len(units)) as executor:
-            results = executor.map(_thread_function, units)
 
-        if not all(results):
-            raise click.Abort()
+        with create_client() as client:
+            for unit in units:
+                experiment = get_assigned_experiment_name(unit)
+                for setting, value in extra_args.items():
+                    setting = setting.replace("-", "_")
+                    client.publish(f"pioreactor/{unit}/{experiment}/{job}/{setting}/set", value)
 
 
 if __name__ == "__main__":

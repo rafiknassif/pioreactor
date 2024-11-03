@@ -3,28 +3,40 @@ from __future__ import annotations
 
 import os
 import signal
+import sqlite3
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from functools import wraps
+from os import getpid
 from threading import Event
 from typing import Any
 from typing import Callable
 from typing import cast
 from typing import Generator
-from typing import Optional
 from typing import overload
 from typing import Sequence
+from typing import TYPE_CHECKING
 
 from diskcache import Cache  # type: ignore
+from msgspec.json import encode as dumps
 
 from pioreactor import structs
 from pioreactor import types as pt
 from pioreactor import whoami
-from pioreactor.pubsub import Client
+from pioreactor.exc import NotActiveWorkerError
+from pioreactor.exc import RoleError
 from pioreactor.pubsub import create_client
-from pioreactor.pubsub import QOS
+from pioreactor.pubsub import patch_into
 from pioreactor.pubsub import subscribe_and_callback
+from pioreactor.utils.networking import resolve_to_address
+from pioreactor.utils.timing import current_utc_timestamp
+
+if TYPE_CHECKING:
+    from pioreactor.pubsub import Client
+
+JobMetadataKey = int
 
 
 class callable_stack:
@@ -97,7 +109,7 @@ def append_signal_handlers(signal_value: signal.Signals, new_callbacks: list[Cal
         append_signal_handler(signal_value, callback)
 
 
-class publish_ready_to_disconnected_state:
+class managed_lifecycle:
     """
     Wrap a block of code to have "state" in MQTT. See od_normalization, self_test, pump
 
@@ -106,20 +118,23 @@ class publish_ready_to_disconnected_state:
     Example
     ----------
 
-    > with publish_ready_to_disconnected_state(unit, experiment, "self_test"): # publishes "ready" to mqtt
-    >    do_work()
+    > with managed_lifecycle(unit, experiment, "self_test") as state: # publishes "ready" to mqtt
+    >    value = do_work()
+    >    state.publish_setting("work", value) # looks like a entry from a published_setting
     >
     > # on close of block, a "disconnected" is fired to MQTT, regardless of how that end is achieved (error, return statement, etc.)
 
 
-    If the program is required to know if it's killed, publish_ready_to_disconnected_state contains an event (see pump.py code)
+    If the program is required to know if it's killed, managed_lifecycle contains an event (see pump.py code)
 
-    > with publish_ready_to_disconnected_state(unit, experiment, "self_test") as state:
+    > with managed_lifecycle(unit, experiment, "self_test") as state:
     >    do_work()
     >
     >    state.block_until_disconnected()
     >    # or state.exit_event.is_set() or state.exit_event.wait(...) are other options.
     >
+
+    For now, it's possible to run multiple jobs with the same name using this tool.
 
     """
 
@@ -128,20 +143,28 @@ class publish_ready_to_disconnected_state:
         unit: str,
         experiment: str,
         name: str,
-        mqtt_client: Optional[Client] = None,
+        mqtt_client: Client | None = None,
         exit_on_mqtt_disconnect: bool = False,
-        mqtt_client_kwargs: Optional[dict] = None,
+        mqtt_client_kwargs: dict | None = None,
+        ignore_is_active_state=False,  # hack and kinda gross
+        source: str = "app",
+        job_source: str | None = None,
     ) -> None:
+        if not ignore_is_active_state and not whoami.is_active(unit):
+            raise NotActiveWorkerError(f"{unit} is not active.")
+
         self.unit = unit
         self.experiment = experiment
         self.name = name
         self.state = "init"
         self.exit_event = Event()
+        self._source = source
+        self._job_source = job_source or os.environ.get("JOB_SOURCE") or "user"
 
         last_will = {
             "topic": f"pioreactor/{self.unit}/{self.experiment}/{self.name}/$state",
             "payload": b"lost",
-            "qos": QOS.EXACTLY_ONCE,
+            "qos": 2,
             "retain": True,
         }
 
@@ -170,7 +193,7 @@ class publish_ready_to_disconnected_state:
     def _on_disconnect(self, *args):
         self._exit()
 
-    def __enter__(self) -> publish_ready_to_disconnected_state:
+    def __enter__(self) -> managed_lifecycle:
         try:
             # this only works on the main thread.
             append_signal_handler(signal.SIGTERM, self._exit)
@@ -178,33 +201,32 @@ class publish_ready_to_disconnected_state:
         except ValueError:
             pass
 
-        self.state = "ready"
-        self.mqtt_client.publish(
-            f"pioreactor/{self.unit}/{self.experiment}/{self.name}/$state",
-            self.state,
-            qos=QOS.AT_LEAST_ONCE,
-            retain=True,
-        )
+        with JobManager() as jm:
+            self._job_id = jm.register_and_set_running(
+                self.unit,
+                self.experiment,
+                self.name,
+                self._job_source,
+                getpid(),
+                "",  # TODO: why is leader string empty? perf?
+                False,
+            )
 
-        with local_intermittent_storage("pio_jobs_running") as cache:
-            cache[self.name] = os.getpid()
+        self.state = "ready"
+        self.publish_setting("$state", self.state)
 
         return self
 
     def __exit__(self, *args) -> None:
         self.state = "disconnected"
-        self.mqtt_client.publish(
-            f"pioreactor/{self.unit}/{self.experiment}/{self.name}/$state",
-            b"disconnected",
-            qos=QOS.AT_LEAST_ONCE,
-            retain=True,
-        )
+        self.publish_setting("$state", self.state)
         if not self._externally_provided_client:
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
 
-        with local_intermittent_storage("pio_jobs_running") as cache:
-            cache.pop(self.name)
+        with JobManager() as jm:
+            jm.set_not_running(self._job_id)
+
         return
 
     def exit_from_mqtt(self, message: pt.MQTTMessage) -> None:
@@ -226,6 +248,13 @@ class publish_ready_to_disconnected_state:
 
     def block_until_disconnected(self) -> None:
         self.exit_event.wait()
+
+    def publish_setting(self, setting: str, value: Any) -> None:
+        self.mqtt_client.publish(
+            f"pioreactor/{self.unit}/{self.experiment}/{self.name}/{setting}", value, retain=True
+        )
+        with JobManager() as jm:
+            jm.upsert_setting(self._job_id, setting, value)
 
 
 @contextmanager
@@ -309,15 +338,13 @@ def is_pio_job_running(target_jobs):
     > # [True, False]
     """
     if isinstance(target_jobs, str):
-        target_jobs = [target_jobs]
+        target_jobs = (target_jobs,)
 
     results = []
-    with local_intermittent_storage("pio_jobs_running") as cache:
+
+    with JobManager() as jm:
         for job in target_jobs:
-            if job not in cache:
-                results.append(False)
-            else:
-                results.append(True)
+            results.append(jm.is_job_running(job))
 
     if len(target_jobs) == 1:
         return results[0]
@@ -329,8 +356,11 @@ def get_cpu_temperature() -> float:
     if whoami.is_testing_env():
         return 22.0
 
-    with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
-        cpu_temperature_celcius = int(f.read().strip()) / 1000.0
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+            cpu_temperature_celcius = int(f.read().strip()) / 1000.0
+    except FileNotFoundError:
+        return -999
     return cpu_temperature_celcius
 
 
@@ -394,17 +424,17 @@ class SummableDict(dict):
 
 def boolean_retry(
     func: Callable[..., bool],
-    f_args: tuple,
-    f_kwargs: dict,
     retries: int = 3,
     sleep_for: float = 0.25,
+    args: tuple = (),
+    kwargs: dict = {},
 ) -> bool:
     """
     Retries a function upon encountering an False return until it succeeds or the maximum number of retries is exhausted.
 
     """
     for _ in range(retries):
-        res = func(*f_args, **f_kwargs)
+        res = func(*args, **kwargs)
         if res:
             return res
         time.sleep(sleep_for)
@@ -447,3 +477,273 @@ def exception_retry(func: Callable, retries: int = 3, sleep_for: float = 0.5, ar
             if i == retries - 1:  # If this was the last attempt
                 raise e
             time.sleep(sleep_for)
+
+
+def safe_kill(*args: str) -> None:
+    from subprocess import run
+
+    try:
+        run(("kill", "-2") + args)
+    except Exception:
+        pass
+
+
+class ShellKill:
+    def __init__(self) -> None:
+        self.list_of_pids: list[int] = []
+
+    def append(self, pid: int) -> None:
+        self.list_of_pids.append(pid)
+
+    def kill_jobs(self) -> int:
+        if len(self.list_of_pids) == 0:
+            return 0
+
+        safe_kill(*(str(pid) for pid in self.list_of_pids))
+
+        return len(self.list_of_pids)
+
+
+class MQTTKill:
+    def __init__(self) -> None:
+        self.job_names_to_kill: list[str] = []
+
+    def append(self, name: str) -> None:
+        self.job_names_to_kill.append(name)
+
+    def kill_jobs(self) -> int:
+        count = 0
+        if len(self.job_names_to_kill) == 0:
+            return count
+
+        with create_client() as client:
+            for i, name in enumerate(self.job_names_to_kill):
+                count += 1
+                msg = client.publish(
+                    f"pioreactor/{whoami.get_unit_name()}/{whoami.UNIVERSAL_EXPERIMENT}/{name}/$state/set",
+                    "disconnected",
+                    qos=1,
+                )
+
+                if (i + 1) == len(self.job_names_to_kill):
+                    # last one
+                    msg.wait_for_publish(2)
+
+        return count
+
+
+class JobManager:
+    PUMPING_JOBS = (
+        "add_media",
+        "remove_waste",
+        "add_alt_media",
+        "circulate_media",
+        "circulate_alt_media",
+    )
+
+    def __init__(self) -> None:
+        db_path = f"{tempfile.gettempdir()}/local_intermittent_pioreactor_metadata.sqlite"
+        self.conn = sqlite3.connect(db_path)
+        self.cursor = self.conn.cursor()
+        self._create_tables()
+
+    def _create_tables(self) -> None:
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS pio_job_metadata (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            unit         TEXT NOT NULL,
+            experiment   TEXT NOT NULL,
+            job_name     TEXT NOT NULL,
+            job_source   TEXT NOT NULL,
+            started_at   TEXT NOT NULL,
+            is_running   INTEGER NOT NULL,
+            leader       TEXT NOT NULL,
+            pid          INTEGER NOT NULL,
+            is_long_running_job INTEGER NOT NULL,
+            ended_at     TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS pio_job_published_settings (
+            setting     TEXT NOT NULL,
+            value       TEXT,
+            proposed_value TEXT,
+            job_id      INTEGER NOT NULL,
+            FOREIGN KEY(job_id) REFERENCES pio_job_metadata(id),
+            UNIQUE(setting, job_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pio_job_metadata_is_running ON pio_job_metadata(is_running);
+        CREATE INDEX IF NOT EXISTS idx_pio_job_metadata_is_running_experiment ON pio_job_metadata(is_running, experiment);
+        CREATE INDEX IF NOT EXISTS idx_pio_job_metadata_job_name ON pio_job_metadata(job_name);
+
+        CREATE INDEX IF NOT EXISTS idx_pio_job_published_settings_job_id ON pio_job_published_settings(job_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS  idx_pio_job_published_settings_setting_job_id ON pio_job_published_settings(setting, job_id);
+        """
+        self.cursor.executescript(create_table_query)
+        self.conn.commit()
+
+    def register_and_set_running(
+        self,
+        unit: str,
+        experiment: str,
+        job_name: str,
+        job_source: str | None,
+        pid: int,
+        leader: str,
+        is_long_running_job: bool,
+    ) -> JobMetadataKey:
+        insert_query = "INSERT INTO pio_job_metadata (started_at, is_running, job_source, experiment, unit, job_name, leader, pid, is_long_running_job, ended_at) VALUES (STRFTIME('%Y-%m-%dT%H:%M:%f000Z', 'NOW'), 1, :job_source, :experiment, :unit, :job_name, :leader, :pid, :is_long_running_job, NULL);"
+
+        self.cursor.execute(
+            insert_query,
+            {
+                "unit": unit,
+                "experiment": experiment,
+                "job_source": job_source,
+                "pid": pid,
+                "leader": leader,
+                "job_name": job_name,
+                "is_long_running_job": is_long_running_job,
+            },
+        )
+        self.conn.commit()
+        assert isinstance(self.cursor.lastrowid, int)
+        return self.cursor.lastrowid
+
+    def upsert_setting(self, job_id: JobMetadataKey, setting: str, value: Any) -> None:
+        if value is None:
+            # delete
+            delete_query = """
+            DELETE FROM pio_job_published_settings WHERE setting = :setting and job_id = :job_id
+            """
+            self.cursor.execute(delete_query, {"setting": setting, "job_id": job_id})
+        else:
+            # upsert
+            update_query = """
+            INSERT INTO pio_job_published_settings (setting, value, job_id)
+            VALUES (:setting, :value, :job_id)
+                ON CONFLICT (setting, job_id) DO
+                UPDATE SET value = :value;
+            """
+            if isinstance(value, dict):
+                value = dumps(value).decode()  # back to string, not bytes
+            else:
+                value = str(value)
+
+            self.cursor.execute(update_query, {"setting": setting, "value": value, "job_id": job_id})
+
+        self.conn.commit()
+        return
+
+    def set_not_running(self, job_id: JobMetadataKey) -> None:
+        update_query = "UPDATE pio_job_metadata SET is_running=0, ended_at=STRFTIME('%Y-%m-%dT%H:%M:%f000Z', 'NOW') WHERE id=(?)"
+        self.cursor.execute(update_query, (job_id,))
+        self.conn.commit()
+        return
+
+    def is_job_running(self, job_name: str) -> bool:
+        select_query = """SELECT pid FROM pio_job_metadata WHERE job_name=(?) and is_running=1"""
+        self.cursor.execute(select_query, (job_name,))
+        return len(self.cursor.fetchall()) > 0
+
+    def _get_jobs(self, all_jobs: bool = False, **query) -> list[tuple[str, int]]:
+        if not all_jobs:
+            # Construct the WHERE clause based on the query parameters
+            where_clause = " AND ".join([f"{key} = :{key}" for key in query.keys() if query[key] is not None])
+
+            # Construct the SELECT query
+            select_query = f"""
+                SELECT
+                    job_name, pid
+                FROM pio_job_metadata
+                WHERE is_running=1
+                AND {where_clause};
+            """
+
+            # Execute the query and fetch the results
+            self.cursor.execute(select_query, query)
+
+        else:
+            # Construct the SELECT query
+            select_query = (
+                "SELECT job_name, pid FROM pio_job_metadata WHERE is_running=1 AND is_long_running_job=0"
+            )
+
+            # Execute the query and fetch the results
+            self.cursor.execute(select_query)
+
+        return self.cursor.fetchall()
+
+    def kill_jobs(self, all_jobs: bool = False, **query) -> int:
+        # ex: kill_jobs(experiment="testing_exp") should end all jobs with experiment='testing_exp'
+
+        mqtt_kill = MQTTKill()
+        shell_kill = ShellKill()
+        count = 0
+
+        for job, pid in self._get_jobs(all_jobs, **query):
+            if job in self.PUMPING_JOBS:
+                mqtt_kill.append(job)
+            elif job == "led_intensity":
+                # led_intensity doesn't register with the JobManager, probably should somehow. #502
+                pass
+            else:
+                shell_kill.append(pid)
+        count += mqtt_kill.kill_jobs()
+        count += shell_kill.kill_jobs()
+
+        return count
+
+    def __enter__(self) -> JobManager:
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.conn.close()
+        return
+
+
+class ClusterJobManager:
+    # this is a context manager to mimic the kill API for JobManager.
+    def __init__(self) -> None:
+        if not whoami.am_I_leader():
+            raise RoleError("Must be leader to use this. Maybe you want JobManager?")
+
+    @staticmethod
+    def kill_jobs(
+        units: tuple[str, ...],
+        all_jobs: bool = False,
+        experiment: str | None = None,
+        job_name: str | None = None,
+        job_source: str | None = None,
+    ) -> list[tuple[bool, dict]]:
+        if len(units) == 0:
+            return []
+
+        if experiment:
+            endpoint = f"/unit_api/jobs/stop/experiment/{experiment}"
+        if job_name:
+            endpoint = f"/unit_api/jobs/stop/job_name/{job_name}"
+        if job_source:
+            endpoint = f"/unit_api/jobs/stop/job_source/{job_source}"
+        if all_jobs:
+            endpoint = "/unit_api/jobs/stop/all"
+
+        def _thread_function(unit: str) -> tuple[bool, dict]:
+            try:
+                r = patch_into(resolve_to_address(unit), endpoint)
+                r.raise_for_status()
+                return True, r.json()
+            except Exception as e:
+                print(f"Failed to send kill command to {unit}: {e}")
+                return False, {"unit": unit}
+
+        with ThreadPoolExecutor(max_workers=len(units)) as executor:
+            results = executor.map(_thread_function, units)
+
+        return list(results)
+
+    def __enter__(self) -> ClusterJobManager:
+        return self
+
+    def __exit__(self, *args) -> None:
+        return

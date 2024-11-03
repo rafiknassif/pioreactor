@@ -6,6 +6,7 @@ import time
 import pytest
 
 from pioreactor.background_jobs.base import BackgroundJob
+from pioreactor.background_jobs.base import BackgroundJobContrib
 from pioreactor.background_jobs.base import BackgroundJobWithDodging
 from pioreactor.background_jobs.od_reading import ODReader
 from pioreactor.background_jobs.od_reading import start_od_reading
@@ -15,7 +16,7 @@ from pioreactor.pubsub import publish
 from pioreactor.pubsub import subscribe
 from pioreactor.pubsub import subscribe_and_callback
 from pioreactor.types import MQTTMessage
-from pioreactor.utils import local_intermittent_storage
+from pioreactor.utils import is_pio_job_running
 from pioreactor.whoami import get_unit_name
 
 
@@ -157,9 +158,7 @@ def test_what_happens_when_an_error_occurs_in_init_but_we_catch_and_disconnect()
 
     pause()
     assert state[-1] == "disconnected"
-
-    with local_intermittent_storage("job_metadata_testjob") as cache:
-        assert cache["is_running"] == "0"
+    assert not is_pio_job_running("testjob")
 
 
 def test_state_transition_callbacks() -> None:
@@ -338,25 +337,6 @@ def test_sys_exit_does_exit() -> None:
             t.call_all_i_do_is_exit()
 
 
-def test_adding_key_in_published_settings() -> None:
-    exp = "test_adding_key_in_published_settings"
-
-    class TestJob(BackgroundJob):
-        job_name = "test_job"
-
-        def __init__(self, *args, **kwargs) -> None:
-            super(TestJob, self).__init__(*args, **kwargs)
-            self.add_to_published_settings("test", {"datatype": "string", "persist": True, "settable": True})
-
-    with TestJob(unit=get_unit_name(), experiment=exp):
-        msg = subscribe(f"pioreactor/testing_unit/{exp}/test_job/test/$settable")
-        assert msg is not None
-        assert msg.payload.decode() == "True"
-        msg = subscribe(f"pioreactor/testing_unit/{exp}/test_job/$properties")
-        assert msg is not None
-        assert msg.payload.decode() == "state,test"
-
-
 def test_cleans_up_mqtt() -> None:
     class TestJob(BackgroundJob):
         job_name = "job"
@@ -367,13 +347,14 @@ def test_cleans_up_mqtt() -> None:
             },
         }
 
+        def __init__(self, unit, experiment):
+            super().__init__(unit=unit, experiment=experiment)
+            self.readonly_attr = 1.0
+
     exp = "test_cleans_up_mqtt"
 
     with TestJob(unit=get_unit_name(), experiment=exp):
-        msg = subscribe(f"pioreactor/+/{exp}/job/readonly_attr/#", timeout=0.5)
-        assert msg is not None
-
-        msg = subscribe(f"pioreactor/+/{exp}/job/$properties", timeout=0.5)
+        msg = subscribe(f"pioreactor/+/{exp}/job/readonly_attr", timeout=0.5)
         assert msg is not None
 
         msg = subscribe(f"pioreactor/+/{exp}/job/$state", timeout=0.5)
@@ -381,10 +362,7 @@ def test_cleans_up_mqtt() -> None:
 
         pause()
 
-    msg = subscribe(f"pioreactor/+/{exp}/job/readonly_attr/#", timeout=0.5)
-    assert msg is None
-
-    msg = subscribe(f"pioreactor/+/{exp}/job/$properties", timeout=0.5)
+    msg = subscribe(f"pioreactor/+/{exp}/job/readonly_attr", timeout=0.5)
     assert msg is None
 
     msg = subscribe(f"pioreactor/+/{exp}/job/$state", timeout=0.5)
@@ -409,13 +387,13 @@ def test_dodging() -> None:
     class JustPause(BackgroundJobWithDodging):
         job_name = "just_pause"
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__(unit=get_unit_name(), experiment="test_dodging")
 
-        def action_to_do_before_od_reading(self):
+        def action_to_do_before_od_reading(self) -> None:
             self.logger.notice(f"   Pausing at {time.time()} 🛑")
 
-        def action_to_do_after_od_reading(self):
+        def action_to_do_after_od_reading(self) -> None:
             self.logger.notice(f"   Unpausing at {time.time()} 🟢")
 
     st = start_od_reading(
@@ -434,7 +412,8 @@ def test_dodging() -> None:
             assert len(bucket) > 4, bucket
 
     st.clean_up()
-    ODReader._post_read.clear()
+    ODReader._post_read = []
+    ODReader._pre_read = []
 
 
 def test_dodging_when_od_reading_stops_first() -> None:
@@ -446,13 +425,13 @@ def test_dodging_when_od_reading_stops_first() -> None:
     class JustPause(BackgroundJobWithDodging):
         job_name = "just_pause"
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__(unit=get_unit_name(), experiment="test_dodging_when_od_reading_stops_first")
 
-        def action_to_do_before_od_reading(self):
+        def action_to_do_before_od_reading(self) -> None:
             self.logger.notice(f"   Pausing at {time.time()} 🛑")
 
-        def action_to_do_after_od_reading(self):
+        def action_to_do_after_od_reading(self) -> None:
             self.logger.notice(f"   Unpausing at {time.time()} 🟢")
 
     st = start_od_reading(
@@ -487,13 +466,13 @@ def test_disabled_dodging() -> None:
         job_name = "just_pause"
         published_settings = {"test": {"datatype": "float", "settable": True}}
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__(unit=get_unit_name(), experiment=exp)
 
-        def action_to_do_before_od_reading(self):
+        def action_to_do_before_od_reading(self) -> None:
             self.logger.notice("Pausing")
 
-        def action_to_do_after_od_reading(self):
+        def action_to_do_after_od_reading(self) -> None:
             self.logger.notice("Unpausing")
 
     with collect_all_logs_of_level("NOTICE", unit=get_unit_name(), experiment=exp) as bucket:
@@ -522,34 +501,15 @@ def test_disabled_dodging() -> None:
     jp.clean_up()
 
 
-def test_job_write_metadata_correctly() -> None:
-    experiment = "test_job_write_metadata_correctly"
-    unit = get_unit_name()
+def test_subclasses_provide_a_unique_job_name_for_contrib():
+    with pytest.raises(NameError):
 
-    with BackgroundJob(unit=unit, experiment=experiment) as bj:
-        with local_intermittent_storage(f"job_metadata_{bj.job_name}") as cache:
-            assert cache["unit"] == unit
-            assert cache["experiment"] == experiment
-            assert cache["source"] == "app"
-            assert cache["is_running"] == "1"
-            assert cache["ended_at"] == ""
+        class TestJobBad(BackgroundJobContrib):
+            def __init__(self, unit: str, experiment: str) -> None:
+                super(TestJobBad, self).__init__(unit=unit, experiment=experiment, plugin_name="test")
 
-    with local_intermittent_storage(f"job_metadata_{bj.job_name}") as cache:
-        assert cache["is_running"] == "0"
-        assert cache["ended_at"] != ""
+    class TestJobOkay(BackgroundJobContrib):
+        job_name = "test_job"
 
-
-def test_that_job_will_republish_state_if_not_correct_in_broker() -> None:
-    experiment = "test_that_job_will_republish_state_if_not_correct_in_broker"
-    unit = get_unit_name()
-
-    with BackgroundJob(unit=unit, experiment=experiment) as bj:
-        pause()
-        assert bj.state == bj.READY
-        assert subscribe(f"pioreactor/{unit}/{experiment}/{bj.job_name}/$state").payload.decode() == bj.READY  # type: ignore
-        pause()
-        # override state
-        publish(f"pioreactor/{unit}/{experiment}/{bj.job_name}/$state", "lost", retain=True)
-        pause()
-        assert bj.state == bj.READY
-        assert subscribe(f"pioreactor/{unit}/{experiment}/{bj.job_name}/$state").payload.decode() == bj.READY  # type: ignore
+        def __init__(self, unit: str, experiment: str) -> None:
+            super(TestJobOkay, self).__init__(unit=unit, experiment=experiment, plugin_name="test")

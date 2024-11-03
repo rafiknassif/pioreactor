@@ -27,23 +27,28 @@ from pioreactor.background_jobs.stirring import start_stirring as stirring
 from pioreactor.background_jobs.stirring import Stirrer
 from pioreactor.config import config
 from pioreactor.config import leader_address
-from pioreactor.mureq import patch
-from pioreactor.mureq import put
+from pioreactor.mureq import HTTPErrorStatus
+from pioreactor.pubsub import patch_into_leader
+from pioreactor.pubsub import put_into_leader
 from pioreactor.utils import is_pio_job_running
 from pioreactor.utils import local_persistant_storage
-from pioreactor.utils import publish_ready_to_disconnected_state
+from pioreactor.utils import managed_lifecycle
 from pioreactor.utils.timing import current_utc_datestamp
 from pioreactor.utils.timing import current_utc_datetime
-from pioreactor.whoami import get_latest_testing_experiment_name
+from pioreactor.whoami import get_testing_experiment_name
 from pioreactor.whoami import get_unit_name
 from pioreactor.whoami import is_testing_env
 
 
-def green(string):
+def green(string: str) -> str:
     return style(string, fg="green")
 
 
-def bold(string):
+def red(string: str) -> str:
+    return style(string, fg="red")
+
+
+def bold(string: str) -> str:
     return style(string, bold=True)
 
 
@@ -90,6 +95,14 @@ def get_name_from_user() -> str:
 
 
 def get_metadata_from_user() -> tuple[pt.OD600, pt.OD600, pt.mL, pt.PdAngle, pt.PdChannel]:
+    if config["od_reading.config"]["ir_led_intensity"] == "auto":
+        echo(
+            red(
+                "Can't use ir_led_intensity=auto with OD calibrations. Change ir_led_intensity in your config.ini to a numeric value (70 is good default). Aborting!"
+            )
+        )
+        raise click.Abort()
+
     initial_od600 = prompt(
         green("Provide the OD600 measurement of your initial, high density, culture"),
         type=click.FloatRange(min=0.01, clamp=False),
@@ -125,9 +138,12 @@ def get_metadata_from_user() -> tuple[pt.OD600, pt.OD600, pt.mL, pt.PdAngle, pt.
     confirm(green("Continue?"), abort=True, default=True)
 
     if "REF" not in config["od_config.photodiode_channel_reverse"]:
-        raise ValueError(
-            "REF required for OD calibration. Set an input to REF in [od_config.photodiode_channel] in your config."
+        echo(
+            red(
+                "REF required for OD calibration. Set an input to REF in [od_config.photodiode_channel] in your config."
+            )
         )
+        raise click.Abort()
         # technically it's not required? we just need a specific PD channel to calibrate from.
 
     ref_channel = config["od_config.photodiode_channel_reverse"]["REF"]
@@ -161,9 +177,9 @@ def start_stirring():
     echo("Starting stirring and blocking until near target RPM.")
 
     st = stirring(
-        target_rpm=config.getfloat("stirring", "target_rpm"),
+        target_rpm=config.getfloat("stirring.config", "target_rpm"),
         unit=get_unit_name(),
-        experiment=get_latest_testing_experiment_name(),
+        experiment=get_testing_experiment_name(),
     )
     st.block_until_rpm_is_close_to_target(abs_tolerance=120)
     return st
@@ -191,13 +207,17 @@ def plot_data(
     plt.title(title)
     plt.xlabel("OD600")
     plt.ylabel("OD Reading (Raw)")
+
     plt.plot_size(105, 22)
 
     if interpolation_curve:
-        plt.plot(x, [interpolation_curve(x_) for x_ in x], color=204)
+        plt.plot(sorted(x), [interpolation_curve(x_) for x_ in sorted(x)], color=204)
         plt.plot_size(145, 26)
 
     plt.xlim(x_min, x_max)
+    plt.yfrequency(6)
+    plt.xfrequency(6)
+
     plt.show()
 
 
@@ -229,7 +249,7 @@ def start_recording_and_diluting(
         interval=None,
         unit=get_unit_name(),
         fake_data=is_testing_env(),
-        experiment=get_latest_testing_experiment_name(),
+        experiment=get_testing_experiment_name(),
         use_calibration=False,
     ) as od_reader:
 
@@ -345,11 +365,18 @@ def start_recording_and_diluting(
             x_max=initial_od600,
         )
         echo("Empty the vial and replace with 10 mL of the media you used.")
-        od600_of_blank = prompt(
-            green("What is the OD600 of your blank?"),
-            type=float,
-            confirmation_prompt=green("Repeat for confirmation"),
-        )
+        while True:
+            od600_of_blank = prompt(
+                green("What is the OD600 of your blank?"),
+                type=str,
+                confirmation_prompt=green("Repeat for confirmation"),
+            )
+            try:
+                od600_of_blank = float(od600_of_blank)
+                break
+            except ValueError:
+                echo("OD600 entered is invalid.")
+
         echo("Confirm vial outside is dry and clean. Place back into Pioreactor.")
         while not confirm(green("Continue?"), default=False):
             pass
@@ -363,7 +390,8 @@ def start_recording_and_diluting(
             else:
                 break
         else:
-            raise ValueError(f"Why is the blank reading, {value}V, higher than everything else: {voltages}V?")
+            echo(red(f"Why is the blank reading, {value}V, higher than everything else: {voltages}V?"))
+            raise click.Abort()
 
         voltages.append(value)
         inferred_od600s.append(od600_of_blank)
@@ -467,7 +495,7 @@ def save_results(
         curve_type=curve_type,
         voltages=voltages,
         od600s=od600s,
-        ir_led_intensity=float(config["od_config"]["ir_led_intensity"]),
+        ir_led_intensity=float(config["od_reading.config"]["ir_led_intensity"]),
         pd_channel=pd_channel,
     )
 
@@ -480,7 +508,9 @@ def save_results(
     return data_blob
 
 
-def get_data_from_data_file(data_file: str) -> tuple[pt.PdChannel, pt.PdAngle, list[float], list[float]]:
+def get_data_from_data_file(
+    data_file: str,
+) -> tuple[pt.PdChannel, pt.PdAngle, list[float], list[float], list[float] | None, str | None]:
     import json
 
     click.echo(f"Pulling data from {data_file}...")
@@ -488,7 +518,11 @@ def get_data_from_data_file(data_file: str) -> tuple[pt.PdChannel, pt.PdAngle, l
     with open(data_file, "r") as f:
         data = json.loads(f.read())
 
+    curve_data_ = data.get("curve_data_", [])
+    curve_type = data.get("curve_type", None)
+
     ods, voltages = data["od600s"], data["voltages"]
+
     assert len(ods) == len(voltages), "data must be the same length."
 
     pd_channel = data.get(
@@ -497,21 +531,24 @@ def get_data_from_data_file(data_file: str) -> tuple[pt.PdChannel, pt.PdAngle, l
     )
     angle = data.get("angle", str(config["od_config.photodiode_channel"][pd_channel]))
 
-    return pd_channel, angle, ods, voltages
+    return pd_channel, angle, ods, voltages, curve_data_, curve_type
 
 
 def od_calibration(data_file: str | None) -> None:
     unit = get_unit_name()
-    experiment = get_latest_testing_experiment_name()
+    experiment = get_testing_experiment_name()
+    curve_data_ = []  # type: ignore
+    curve_type = ""  # type: ignore
 
-    if any(is_pio_job_running(["stirring", "od_reading"])):
-        raise ValueError("Stirring and OD reading should be turned off.")
-
-    with publish_ready_to_disconnected_state(unit, experiment, "od_calibration"):
+    with managed_lifecycle(unit, experiment, "od_calibration"):
         introduction()
         name = get_name_from_user()
 
         if data_file is None:
+            if any(is_pio_job_running(["stirring", "od_reading"])):
+                echo(red("Both Stirring and OD reading should be turned off."))
+                raise click.Abort()
+
             (
                 initial_od600,
                 minimum_od600,
@@ -526,21 +563,26 @@ def od_calibration(data_file: str | None) -> None:
                     st, initial_od600, minimum_od600, dilution_amount, pd_channel
                 )
         else:
-            pd_channel, angle, inferred_od600s, voltages = get_data_from_data_file(data_file)
+            pd_channel, angle, inferred_od600s, voltages, curve_data_, curve_type = get_data_from_data_file(  # type: ignore
+                data_file
+            )
 
         degree = 5 if len(voltages) > 10 else 3
+        okay_with_result = False
         while True:
-            curve_data_, curve_type = calculate_curve_of_best_fit(voltages, inferred_od600s, degree)
-            okay_with_result, degree = show_results_and_confirm_with_user(
-                curve_data_, curve_type, voltages, inferred_od600s
-            )
+            if curve_type and curve_data_:
+                okay_with_result, degree = show_results_and_confirm_with_user(
+                    curve_data_, curve_type, voltages, inferred_od600s
+                )
             if okay_with_result:
                 break
 
+            curve_data_, curve_type = calculate_curve_of_best_fit(voltages, inferred_od600s, degree)
+
         echo("Saving results...")
         data_blob = save_results(
-            curve_data_,
-            curve_type,
+            curve_data_,  # type: ignore
+            curve_type,  # type: ignore
             voltages,
             inferred_od600s,
             angle,
@@ -556,11 +598,11 @@ def od_calibration(data_file: str | None) -> None:
         echo()
         echo(f"Finished calibration of `{name}` ✅")
 
-        if not config.getboolean("od_config", "use_calibration", fallback=False):
+        if not config.getboolean("od_reading.config", "use_calibration", fallback=False):
             echo()
             echo(
                 bold(
-                    "Currently [od_config][use_calibration] is set to 0 in your config.ini. This should be set to 1 to use calibrations.",
+                    "Currently [od_reading.config][use_calibration] is set to 0 in your config.ini. This should be set to 1 to use calibrations.",
                 )
             )
         return
@@ -631,18 +673,14 @@ def publish_to_leader(name: str) -> bool:
         )
 
     try:
-        res = put(
-            f"http://{leader_address}/api/calibrations",
-            encode(calibration_result),
-            headers={"Content-Type": "application/json"},
-        )
-        if not res.ok:
-            success = False
+        res = put_into_leader("/api/calibrations", json=calibration_result)
+        res.raise_for_status()
+        echo("✅ Published to leader.")
     except Exception as e:
-        print(e)
         success = False
-    if not success:
+        print(e)
         echo(f"Could not update in database on leader at http://{leader_address}/api/calibrations ❌")
+
     return success
 
 
@@ -667,23 +705,26 @@ def change_current(name: str) -> None:
             current_calibrations[angle] = encode(new_calibration)
 
         try:
-            res = patch(
-                f"http://{leader_address}/api/calibrations/{get_unit_name()}/{new_calibration.type}/{new_calibration.name}",
+            res = patch_into_leader(
+                f"/api/calibrations/{get_unit_name()}/{new_calibration.type}/{new_calibration.name}",
                 json={"current": 1},
             )
-            if not res.ok:
-                raise Exception
-        except Exception:
-            echo("Could not update in database on leader ❌")
-
-        if old_calibration:
-            echo(f"Replaced `{old_calibration.name}` with `{new_calibration.name}`   ✅")
+            res.raise_for_status()
+        except HTTPErrorStatus as e:
+            if e.status_code == 404:
+                # it doesn't exist in leader, so lets put it there.
+                publish_to_leader(name)
+                change_current(name)
+            else:
+                echo("Could not update in database on leader ❌")
         else:
-            echo(f"Set `{new_calibration.name}` to current calibration  ✅")
-        echo()
+            if old_calibration:
+                echo(f"Replaced `{old_calibration.name}` with `{new_calibration.name}`   ✅")
+            else:
+                echo(f"Set `{new_calibration.name}` to current calibration  ✅")
 
-    except Exception:
-        echo("Failed to swap.")
+    except Exception as e:
+        echo(red(f"Failed to swap. {e}"))
         raise click.Abort()
 
 

@@ -1,66 +1,44 @@
 # -*- coding: utf-8 -*-
-"""
-cmd line interface for running individual pioreactor units (including leader)
-
-> pio run stirring --ignore-rpm
-> pio logs
-"""
 from __future__ import annotations
 
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
-from json import dumps
-from json import loads
-from os import geteuid
 from shlex import quote
-from sys import exit
-from time import sleep
 from typing import Optional
 
 import click
+from msgspec.json import decode as loads
+from msgspec.json import encode as dumps
 
-import pioreactor
-import pioreactor.utils.networking as networking
-from pioreactor import actions
-from pioreactor import background_jobs as jobs
-from pioreactor import plugin_management
-from pioreactor import pubsub
+from pioreactor import exc
 from pioreactor import whoami
-from pioreactor.config import check_firstboot_successful
+from pioreactor.cli.lazy_group import LazyGroup
 from pioreactor.config import config
-from pioreactor.config import get_leader_hostname
 from pioreactor.logging import create_logger
 from pioreactor.mureq import get
 from pioreactor.mureq import HTTPException
+from pioreactor.pubsub import get_from
+from pioreactor.pubsub import post_into_leader
+from pioreactor.utils import JobManager
 from pioreactor.utils import local_intermittent_storage
 from pioreactor.utils import local_persistant_storage
-from pioreactor.utils.networking import add_local
 from pioreactor.utils.networking import is_using_local_access_point
-from pioreactor.utils.timing import catchtime
 from pioreactor.utils.timing import current_utc_timestamp
 
+lazy_subcommands = {
+    "run": "pioreactor.cli.run.run",
+    "plugins": "pioreactor.cli.plugins.plugins",
+}
 
-JOBS_TO_SKIP_KILLING = [
-    # this is used in `pio kill --all-jobs`, but accessible so that plugins can edit it.
-    # don't kill our permanent jobs
-    "monitor",
-    "watchdog",
-    "mqtt_to_db_streaming",
-    # don't kill automations, let the parent controller do it.
-    # probably all BackgroundSubJob should be here.
-    "temperature_automation",
-    "dosing_automation",
-    "led_automation",
-    # pumping jobs are created by a thread in monitor, and inherit the same PID. We don't want to `kill PID`,
-    # so skip killing using `kill`, and instead use MQTT to kill.
-    "add_media",
-    "remove_waste",
-    "add_alt_media",
-    "led_intensity",
-]
+if whoami.am_I_leader():
+    # add in ability to control workers
+    lazy_subcommands["workers"] = "pioreactor.cli.workers.workers"
 
 
-@click.group(invoke_without_command=True)
+@click.group(
+    cls=LazyGroup,
+    lazy_subcommands=lazy_subcommands,
+    invoke_without_command=True,
+)
 @click.pass_context
 def pio(ctx) -> None:
     """
@@ -79,10 +57,12 @@ def pio(ctx) -> None:
         click.echo(ctx.get_help())
 
     # this check could go somewhere else. TODO This check won't execute if calling pioreactor from a script.
-    if not check_firstboot_successful():
+    if not whoami.check_firstboot_successful():
         raise SystemError(
             "/usr/local/bin/firstboot.sh found on disk. firstboot.sh likely failed. Try looking for errors in `sudo systemctl status firstboot.service`."
         )
+
+    from os import geteuid
 
     if geteuid() == 0:
         raise SystemError("Don't run as root!")
@@ -97,39 +77,21 @@ def pio(ctx) -> None:
 def logs(n: int) -> None:
     """
     Tail & stream the logs from this unit to the terminal. CTRL-C to exit.
-    TODO: this consumes a full CPU core!
     """
+    log_file = config.get("logging", "log_file", fallback="/var/log/pioreactor.log")
+    ui_log_file = config.get("logging", "ui_log_file", fallback="/var/log/pioreactor.log")
 
-    def file_len(filename) -> int:
-        count = 0
-        with open(filename) as f:
-            for _ in f:
-                count += 1
-        return count
+    if whoami.am_I_leader():
+        log_files = list(set([log_file, ui_log_file]))  # deduping
+    else:
+        log_files = [log_file]
 
-    def follow(filename, sleep_sec=0.2):
-        """Yield each line from a file as they are written.
-        `sleep_sec` is the time to sleep after empty reads."""
-
-        # count the number of lines
-        n_lines = file_len(filename)
-
-        with open(filename) as file:
-            line = ""
-            count = 1
-            while True:
-                tmp = file.readline()
-                count += 1
-                if tmp is not None:
-                    line += tmp
-                    if line.endswith("\n") and count > (n_lines - n):
-                        yield line
-                    line = ""
-                else:
-                    sleep(sleep_sec)
-
-    for line in follow(config["logging"]["log_file"]):
-        click.echo(line, nl=False)
+    with subprocess.Popen(
+        ["tail", "-fqn", str(n)] + log_files, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    ) as process:
+        assert process.stdout is not None
+        for line in process.stdout:
+            click.echo(line.decode("utf8").rstrip("\n"))
 
 
 @pio.command(name="log", short_help="logs a message from the CLI")
@@ -138,7 +100,7 @@ def logs(n: int) -> None:
     "-l",
     "--level",
     default="debug",
-    type=click.Choice(["debug", "info", "notice", "warning", "critical"], case_sensitive=False),
+    type=click.Choice(["debug", "info", "notice", "warning", "error", "critical"], case_sensitive=False),
 )
 @click.option(
     "-n",
@@ -167,136 +129,71 @@ def blink() -> None:
     """
     monitor job is required to be running.
     """
-    pubsub.publish(
-        f"pioreactor/{whoami.get_unit_name()}/{whoami.UNIVERSAL_EXPERIMENT}/monitor/flicker_led_response_okay",
-        1,
-    )
+    post_into_leader(f"/api/workers/{whoami.get_unit_name()}/blink")
 
 
 @pio.command(name="kill", short_help="kill job(s)")
-@click.argument("job", nargs=-1)
+@click.option("--job-name", type=click.STRING)
+@click.option("--experiment", type=click.STRING)
+@click.option("--job-source", type=click.STRING)
 @click.option("--all-jobs", is_flag=True, help="kill all Pioreactor jobs running")
-def kill(job: list[str], all_jobs: bool) -> None:
+def kill(job_name: str | None, experiment: str | None, job_source: str | None, all_jobs: bool) -> None:
     """
     stop job(s).
     """
+    if not (job_name or experiment or job_source or all_jobs):
+        raise click.Abort("Provide an option to kill. See --help")
 
-    from sh import kill  # type: ignore
-    from pioreactor.actions.led_intensity import led_intensity
-
-    def safe_kill(*args: int) -> None:
-        try:
-            kill(*args)
-        except Exception:
-            pass
-
-    if all_jobs:
-        # kill all pumping
-        with pubsub.create_client() as client:
-            client.publish(
-                f"pioreactor/{whoami.UNIVERSAL_IDENTIFIER}/{whoami.UNIVERSAL_EXPERIMENT}/add_media/$state/set",
-                "disconnected",
-                qos=pubsub.QOS.AT_LEAST_ONCE,
-            )
-            client.publish(
-                f"pioreactor/{whoami.UNIVERSAL_IDENTIFIER}/{whoami.UNIVERSAL_EXPERIMENT}/remove_waste/$state/set",
-                "disconnected",
-                qos=pubsub.QOS.AT_LEAST_ONCE,
-            )
-            client.publish(
-                f"pioreactor/{whoami.UNIVERSAL_IDENTIFIER}/{whoami.UNIVERSAL_EXPERIMENT}/add_alt_media/$state/set",
-                "disconnected",
-                qos=pubsub.QOS.AT_LEAST_ONCE,
-            )
-
-        # kill all running pioreactor processes
-        jobs_killed_already = []
-        with local_intermittent_storage("pio_jobs_running") as cache:
-            for j in cache:
-                if j not in JOBS_TO_SKIP_KILLING:
-                    pid = cache[j]
-                    if pid not in jobs_killed_already:
-                        safe_kill(int(pid))
-                        jobs_killed_already.append(pid)
-
-        # kill all LEDs
-        sleep(0.25)
-        try:
-            # non-workers won't have this hardware, so just skip it
-            led_intensity({"A": 0.0, "B": 0.0, "C": 0.0, "D": 0.0}, verbose=False, experiment="_test")
-        except Exception:
-            pass
-
-        # assert everything is off
-        with local_intermittent_storage("pwm_dc") as cache:
-            for pin in cache:
-                if cache[pin] != 0.0:
-                    print(f"pin {pin} is not off!")
-
-        # assert everything is off
-        with local_intermittent_storage("leds") as cache:
-            for led in cache:
-                if cache[led] != 0.0:
-                    print(f"LED {led} is not off!")
-
-    else:
-        jobs_killed_already = []
-        with local_intermittent_storage("pio_jobs_running") as cache:
-            for j in cache:
-                if j in job:
-                    pid = cache[j]
-                    if pid not in jobs_killed_already:
-                        safe_kill(int(pid))
-                        jobs_killed_already.append(pid)
-
-
-@pio.group(short_help="run a job")
-def run() -> None:
-    if not (whoami.am_I_active_worker() or whoami.am_I_leader()):
-        click.echo(
-            f"Running `pio` on a non-active Pioreactor. Do you need to change `{whoami.get_unit_name()}` in `cluster.inventory` section in `config.ini`?"
+    with JobManager() as jm:
+        count = jm.kill_jobs(
+            all_jobs=all_jobs, job_name=job_name, experiment=experiment, job_source=job_source
         )
-        raise click.Abort()
+    click.echo(f"Killed {count} job{'s' if count != 1 else ''}.")
 
 
 @pio.command(name="version", short_help="print the Pioreactor software version")
 @click.option("--verbose", "-v", is_flag=True, help="show more system information")
 def version(verbose: bool) -> None:
+    from pioreactor.version import tuple_to_text
+    from pioreactor.version import software_version_info
+
     if verbose:
         import platform
         from pioreactor.version import hardware_version_info
-        from pioreactor.version import software_version_info
         from pioreactor.version import serial_number
-        from pioreactor.version import tuple_to_text
         from pioreactor.version import get_firmware_version
         from pioreactor.version import rpi_version_info
-        from pioreactor.version import get_product_from_id
+        from pioreactor.whoami import get_pioreactor_model_and_version
 
-        click.echo(f"Pioreactor software:    {tuple_to_text(software_version_info)}")
+        click.echo(f"Pioreactor app:         {tuple_to_text(software_version_info)}")
         click.echo(f"Pioreactor HAT:         {tuple_to_text(hardware_version_info)}")
         click.echo(f"Pioreactor firmware:    {tuple_to_text(get_firmware_version())}")
-        click.echo(f"Model name:             {get_product_from_id()}")
+        click.echo(f"Model name:             {get_pioreactor_model_and_version()}")
         click.echo(f"HAT serial number:      {serial_number}")
         click.echo(f"Operating system:       {platform.platform()}")
         click.echo(f"Raspberry Pi:           {rpi_version_info}")
         click.echo(f"Image version:          {whoami.get_image_git_hash()}")
-        if whoami.am_I_leader():
-            try:
-                result = get("http://127.0.0.1/api/versions/ui")
-                result.raise_for_status()
-                ui_version = result.body.decode()
-            except Exception:
-                ui_version = "<Failed to fetch>"
+        try:
+            result = get_from("localhost", "/unit_api/versions/ui")
+            result.raise_for_status()
+            ui_version = result.json()["version"]
+        except Exception:
+            ui_version = "<Failed to fetch>"
 
-            click.echo(f"Pioreactor UI:          {ui_version}")
+        click.echo(f"Pioreactor UI:          {ui_version}")
     else:
-        click.echo(pioreactor.__version__)
+        click.echo(tuple_to_text(software_version_info))
 
 
-@pio.command(name="view-cache", short_help="print out the contents of a cache")
+@pio.group()
+def cache():
+    pass
+
+
+@cache.command(name="view", short_help="print out the contents of a cache")
 @click.argument("cache")
 def view_cache(cache: str) -> None:
-    import os.path
+    from pathlib import Path
     import tempfile
 
     tmp_dir = tempfile.gettempdir()
@@ -306,10 +203,10 @@ def view_cache(cache: str) -> None:
     )
 
     # is it a temp cache or persistant cache?
-    if os.path.isdir(f"{tmp_dir}/{cache}"):
+    if Path(f"{tmp_dir}/{cache}").is_dir():
         cacher = local_intermittent_storage
 
-    elif os.path.isdir(f"{persistant_dir}/{cache}"):
+    elif Path(f"{persistant_dir}/{cache}").is_dir():
         cacher = local_persistant_storage
 
     else:
@@ -321,12 +218,12 @@ def view_cache(cache: str) -> None:
             click.echo(f"{click.style(key, bold=True)} = {c[key]}")
 
 
-@pio.command(name="clear-cache", short_help="clear out the contents of a cache")
+@cache.command(name="clear", short_help="clear out the contents of a cache")
 @click.argument("cache")
 @click.argument("key")
 @click.option("--as-int", is_flag=True, help="evict after casting key to int, useful for gpio pins.")
 def clear_cache(cache: str, key: str, as_int: bool) -> None:
-    import os.path
+    from pathlib import Path
     import tempfile
 
     tmp_dir = tempfile.gettempdir()
@@ -336,10 +233,10 @@ def clear_cache(cache: str, key: str, as_int: bool) -> None:
     )
 
     # is it a temp cache or persistant cache?
-    if os.path.isdir(f"{tmp_dir}/{cache}"):
+    if Path(f"{tmp_dir}/{cache}").is_dir():
         cacher = local_intermittent_storage
 
-    elif os.path.isdir(f"{persistant_dir}/{cache}"):
+    elif Path(f"{persistant_dir}/{cache}").is_dir():
         cacher = local_persistant_storage
 
     else:
@@ -368,11 +265,12 @@ def update_settings(ctx, job: str) -> None:
 
     > pio update-settings stirring --target_rpm 500
     > pio update-settings stirring --target-rpm 500
-    > pio update-settings dosing_control --automation '{"type": "dosing", "automation_name": "silent", "args": {}}
 
     """
-    exp = whoami.get_latest_experiment_name()
+    from pioreactor.pubsub import publish
+
     unit = whoami.get_unit_name()
+    exp = whoami.get_assigned_experiment_name(unit)
 
     extra_args = {ctx.args[i][2:]: ctx.args[i + 1] for i in range(0, len(ctx.args), 2)}
 
@@ -380,21 +278,33 @@ def update_settings(ctx, job: str) -> None:
 
     for setting, value in extra_args.items():
         setting = setting.replace("-", "_")
-        pubsub.publish(f"pioreactor/{unit}/{exp}/{job}/{setting}/set", value, qos=pubsub.QOS.EXACTLY_ONCE)
+        publish(f"pioreactor/{unit}/{exp}/{job}/{setting}/set", value)
 
 
-@pio.group()
-def update() -> None:
+@pio.group(invoke_without_command=True)
+@click.option("-s", "--source", help="use a URL, whl file, or release-***.zip file")
+@click.option("-b", "--branch", help="specify a branch")
+@click.pass_context
+def update(ctx, source: Optional[str], branch: Optional[str]) -> None:
     """
     update software for the app and UI
     """
-    pass
+    if ctx.invoked_subcommand is None:
+        # run update app and then update ui
+        if source is not None:
+            ctx.invoke(update_app, source=source)
+            ctx.invoke(update_ui, source="/tmp/pioreactorui_archive.tar.gz")
+        else:
+            ctx.invoke(update_app, branch=branch)
+            ctx.invoke(update_ui, branch=branch)
 
 
 def get_non_prerelease_tags_of_pioreactor(repo) -> list[str]:
     """
     Returns a list of all the tag names associated with non-prerelease releases, sorted in descending order
     """
+    from packaging.version import Version
+
     url = f"https://api.github.com/repos/{repo}/releases"
     headers = {"Accept": "application/vnd.github.v3+json"}
     response = get(url, headers=headers)
@@ -409,11 +319,7 @@ def get_non_prerelease_tags_of_pioreactor(repo) -> list[str]:
         if not release["prerelease"]:
             non_prerelease_tags.append(release["tag_name"])
 
-    def version_key(version):
-        major, minor, patch = version.split(".")
-        return int(major), int(minor), int(patch)
-
-    return sorted(non_prerelease_tags, reverse=True, key=version_key)
+    return sorted(non_prerelease_tags, key=Version)
 
 
 def get_tag_to_install(repo: str, version_desired: Optional[str]) -> str:
@@ -432,15 +338,16 @@ def get_tag_to_install(repo: str, version_desired: Optional[str]) -> str:
 
     if version_desired is None:
         # we should only update one step at a time.
-        from pioreactor.version import __version__ as software_version
+        from pioreactor.version import __version__
+        from packaging.version import Version
+        from bisect import bisect
 
+        software_version = Version(Version(__version__).base_version)  # this removes and .devY or rcx
         version_history = get_non_prerelease_tags_of_pioreactor(repo)
-
-        if software_version in version_history:
-            ix = version_history.index(software_version)
-
+        if bisect(version_history, software_version, key=Version) < len(version_history):
+            ix = bisect(version_history, software_version, key=Version)
             if ix >= 1:
-                tag = f"tags/{version_history[ix-1]}"  # update to the succeeding version.
+                tag = f"tags/{version_history[ix]}"
             elif ix == 0:
                 tag = "latest"  # essentially a re-install?
 
@@ -474,35 +381,45 @@ def update_app(
     """
     Update the Pioreactor core software
     """
-    logger = create_logger("update-app", unit=whoami.get_unit_name(), experiment=whoami.UNIVERSAL_EXPERIMENT)
+    import tempfile
+
+    logger = create_logger("update_app", unit=whoami.get_unit_name(), experiment=whoami.UNIVERSAL_EXPERIMENT)
 
     commands_and_priority: list[tuple[str, float]] = []
 
     if source is not None:
         source = quote(source)
         import re
-        import tempfile
 
         if re.search(r"release_\d{0,2}\.\d{0,2}\.\d{0,2}\w{0,6}\.zip$", source):
             # provided a release archive
             version_installed = re.search(r"release_(.*).zip$", source).groups()[0]  # type: ignore
             tmp_dir = tempfile.gettempdir()
-            tmp_release_folder = f"{tmp_dir}/release_{version_installed}"
+            tmp_rls_dir = f"{tmp_dir}/release_{version_installed}"
             # fmt: off
             commands_and_priority.extend(
                 [
-                    (f"rm -rf {tmp_release_folder}", -3),
-                    (f"unzip {source} -d {tmp_release_folder}", -2),
-                    (f"unzip {tmp_release_folder}/wheels_{version_installed}.zip -d {tmp_release_folder}/wheels", 0),
-                    (f"mv {tmp_release_folder}/pioreactorui_*.tar.gz {tmp_dir}/pioreactorui_archive || :", 0.5),  # move ui folder to be accessed by a `pio update ui`
-                    (f"sudo bash {tmp_release_folder}/pre_update.sh || :", 1),
-                    (f"sudo pip install --no-index --find-links={tmp_release_folder}/wheels/ {tmp_release_folder}/pioreactor-{version_installed}-py3-none-any.whl", 2),
-                    (f"sudo bash {tmp_release_folder}/update.sh || :", 3),
-                    (f'sudo sqlite3 {config["storage"]["database"]} < {tmp_release_folder}/update.sql || :', 4),
-                    (f"sudo bash {tmp_release_folder}/post_update.sh || :", 5),
-                    (f"rm -rf {tmp_release_folder}", 6),
+                    (f"sudo rm -rf {tmp_rls_dir}", -99),
+                    (f"unzip -o {source} -d {tmp_rls_dir}", 0),
+                    (f"unzip -o {tmp_rls_dir}/wheels_{version_installed}.zip -d {tmp_rls_dir}/wheels", 1),
+                    (f"sudo bash {tmp_rls_dir}/pre_update.sh", 2),
+                    (f"sudo bash {tmp_rls_dir}/update.sh", 4),
+                    (f"sudo bash {tmp_rls_dir}/post_update.sh", 20),
+                    (f"mv {tmp_rls_dir}/pioreactorui_*.tar.gz {tmp_dir}/pioreactorui_archive.tar.gz", 98),  # move ui folder to be accessed by a `pio update ui`
+                    (f"sudo rm -rf {tmp_rls_dir}", 99),
                 ]
             )
+
+            if whoami.am_I_leader():
+                commands_and_priority.extend([
+                    (f"sudo pip install --no-index --find-links={tmp_rls_dir}/wheels/ {tmp_rls_dir}/pioreactor-{version_installed}-py3-none-any.whl[leader,worker]", 3),
+                    (f'sudo sqlite3 {config.get("storage", "database")} < {tmp_rls_dir}/update.sql', 10),
+                ])
+            else:
+                commands_and_priority.extend([
+                    (f"sudo pip install --no-index --find-links={tmp_rls_dir}/wheels/ {tmp_rls_dir}/pioreactor-{version_installed}-py3-none-any.whl[worker]", 3),
+                ])
+
             # fmt: on
         elif source.endswith(".whl"):
             # provided a whl
@@ -528,7 +445,7 @@ def update_app(
                 f"Unable to retrieve information over internet. Is the Pioreactor connected to the internet? Local access point is {'active' if is_using_local_access_point() else 'inactive'}."
             )
         response = get(f"https://api.github.com/repos/{repo}/releases/{tag}")
-        if response.raise_for_status():
+        if not response.ok:
             logger.error(f"Version {version} not found")
             raise click.Abort()
 
@@ -536,27 +453,30 @@ def update_app(
         version_installed = release_metadata["tag_name"]
         found_whl = False
 
-        # nuke all existing assets in /tmp
-        # TODO: just make a new tempdir, put all files there, and then nuke that temp dir......
+        # nuke all existing assets in /tmp/
         # BETTER TODO: just download the release archive and run the script above.....
-        commands_and_priority.append(("rm -f /tmp/*update.sh /tmp/update.sql", -1))
+        tmp_dir = tempfile.gettempdir()
+        tmp_rls_dir = f"{tmp_dir}/release_{version_installed}"
+        commands_and_priority.append((f"rm -rf {tmp_rls_dir}", -10))
+        commands_and_priority.append((f"mkdir {tmp_rls_dir}", -9))
 
         for asset in release_metadata["assets"]:
             # add the following files to the release. They should ideally be idempotent!
 
-            # pre_update.sh runs (if exists)
-            # `pip install pioreactor...whl` runs
-            # update.sh runs (if exists)
-            # update.sql to update sqlite schema runs (if exists)
-            # post_update.sh runs (if exists)
+            # 1. download any unique assets like scripts, .elf, etc.
+            # 2. pre_update.sh runs (if exists)
+            # 3. `pip install pioreactor...whl` runs
+            # 4. update.sh runs (if exists)
+            # 5. update.sql to update sqlite schema runs (if exists)
+            # 6. post_update.sh runs (if exists)
             url = asset["browser_download_url"]
             asset_name = asset["name"]
 
             if asset_name == "pre_update.sh":
                 commands_and_priority.extend(
                     [
-                        (f"wget -O /tmp/pre_update.sh {url}", 0),
-                        ("sudo bash /tmp/pre_update.sh", 1),
+                        (f"wget -O {tmp_rls_dir}/pre_update.sh {url}", 0),
+                        (f"sudo bash {tmp_rls_dir}/pre_update.sh", 1),
                     ]
                 )
             elif asset_name.startswith("pioreactor") and asset_name.endswith(".whl"):
@@ -568,24 +488,32 @@ def update_app(
             elif asset_name == "update.sh":
                 commands_and_priority.extend(
                     [
-                        (f"wget -O /tmp/update.sh {url}", 3),
-                        ("sudo bash /tmp/update.sh", 4),
+                        (f"wget -O {tmp_rls_dir}/update.sh {url}", 3),
+                        (f"sudo bash {tmp_rls_dir}/update.sh", 4),
                     ]
                 )
-            elif asset_name == "update.sql":
+            elif asset_name == "update.sql" and whoami.am_I_leader():
                 commands_and_priority.extend(
                     [
-                        (f"wget -O /tmp/update.sql {url}", 5),
-                        (f'sudo sqlite3 {config["storage"]["database"]} < /tmp/update.sql', 6),
+                        (f"wget -O {tmp_rls_dir}/update.sql {url}", 5),
+                        (
+                            f'sudo sqlite3 {config.get("storage", "database")} < {tmp_rls_dir}/update.sql || :',
+                            6,
+                        ),  # or True at the end, since this may run on workers, that's okay.
                     ]
                 )
             elif asset_name == "post_update.sh":
                 commands_and_priority.extend(
                     [
-                        (f"wget -O /tmp/post_update.sh {url}", 99),
-                        ("sudo bash /tmp/post_update.sh", 100),
+                        (f"wget -O {tmp_rls_dir}/post_update.sh {url}", 99),
+                        (f"sudo bash {tmp_rls_dir}/post_update.sh", 100),
                     ]
                 )
+            else:
+                # any misc files, add too (like main.elf, or scripts, etc.).
+                # download these first, so they can be used in update.sh...
+                commands_and_priority.append((f"wget -O {tmp_rls_dir}/{asset_name} {url}", -1))
+
         if not found_whl:
             raise FileNotFoundError(f"Could not find a whl file in the {repo=} {tag=} release.")
 
@@ -606,9 +534,11 @@ def update_app(
         else:
             logger.debug(p.stdout)
 
-    logger.notice(f"Updated {whoami.get_unit_name()} to version {version_installed}.")  # type: ignore
+    logger.notice(f"Updated Pioreactor app to version {version_installed}.")  # type: ignore
     # everything work? Let's publish to MQTT. This is a terrible hack, as monitor should do this.
-    pubsub.publish(
+    from pioreactor.pubsub import publish
+
+    publish(
         f"pioreactor/{whoami.get_unit_name()}/{whoami.UNIVERSAL_EXPERIMENT}/monitor/versions/set",
         dumps({"app": version_installed, "timestamp": current_utc_timestamp()}),
     )
@@ -622,7 +552,10 @@ def update_firmware(version: Optional[str]) -> None:
 
     # TODO: this needs accept a --source arg
     """
-    logger = create_logger("update-app", unit=whoami.get_unit_name(), experiment=whoami.UNIVERSAL_EXPERIMENT)
+
+    logger = create_logger(
+        "update_firmware", unit=whoami.get_unit_name(), experiment=whoami.UNIVERSAL_EXPERIMENT
+    )
     commands_and_priority: list[tuple[str, int]] = []
 
     if version is None:
@@ -663,273 +596,105 @@ def update_firmware(version: Optional[str]) -> None:
             # end early
             raise click.Abort()
 
-    logger.notice(f"Updated Pioreactor firmware to version {version_installed}.")  # type: ignore
+    logger.info(f"Updated Pioreactor firmware to version {version_installed}.")  # type: ignore
 
 
-pio.add_command(plugin_management.click_install_plugin)
-pio.add_command(plugin_management.click_uninstall_plugin)
-pio.add_command(plugin_management.click_list_plugins)
+@update.command(name="ui")
+@click.option("-b", "--branch", help="install from a branch on github")
+@click.option(
+    "-r",
+    "--repo",
+    help="install from a repo on github. Format: username/project",
+    default="pioreactor/pioreactorui",
+)
+@click.option("--source", help="use a tar.gz file")
+@click.option("-v", "--version", help="install a specific version")
+def update_ui(branch: Optional[str], repo: str, source: Optional[str], version: Optional[str]) -> None:
+    """
+    Update the PioreactorUI
 
-# this runs on both leader and workers
-run.add_command(jobs.monitor.click_monitor)
+    Source, if provided, should be a .tar.gz with a top-level dir like pioreactorui-{version}/
+    This is what is provided from Github releases.
+    """
+    logger = create_logger("update_ui", unit=whoami.get_unit_name(), experiment=whoami.UNIVERSAL_EXPERIMENT)
+    commands = []
 
+    if version is None:
+        version = "latest"
+    else:
+        version = f"tags/{version}"
 
-if whoami.am_I_active_worker():
-    run.add_command(jobs.growth_rate_calculating.click_growth_rate_calculating)
-    run.add_command(jobs.stirring.click_stirring)
-    run.add_command(jobs.od_reading.click_od_reading)
-    run.add_command(jobs.dosing_control.click_dosing_control)
-    run.add_command(jobs.led_control.click_led_control)
-    run.add_command(jobs.temperature_control.click_temperature_control)
+    if source is not None:
+        source = quote(source)
+        version_installed = source
 
-    run.add_command(actions.led_intensity.click_led_intensity)
-    run.add_command(actions.pump.click_add_alt_media)
-    run.add_command(actions.pump.click_add_media)
-    run.add_command(actions.pump.click_remove_waste)
-    run.add_command(actions.od_blank.click_od_blank)
-    run.add_command(actions.self_test.click_self_test)
-    run.add_command(actions.stirring_calibration.click_stirring_calibration)
-    run.add_command(actions.pump_calibration.click_pump_calibration)
-    run.add_command(actions.od_calibration.click_od_calibration)
+    elif branch is not None:
+        cleaned_branch = quote(branch)
+        cleaned_repo = quote(repo)
+        version_installed = cleaned_branch
+        url = f"https://github.com/{cleaned_repo}/archive/{cleaned_branch}.tar.gz"
+        source = "/tmp/pioreactorui.tar.gz"
+        commands.append(["wget", url, "-O", source])
 
-    # TODO: this only adds to `pio run` - what if users want to add a high level command? Examples?
-    for plugin in pioreactor.plugin_management.get_plugins().values():
-        for possible_entry_point in dir(plugin.module):
-            if possible_entry_point.startswith("click_"):
-                run.add_command(getattr(plugin.module, possible_entry_point))
+    else:
+        latest_release_metadata = loads(get(f"https://api.github.com/repos/{repo}/releases/{version}").body)
+        version_installed = latest_release_metadata["tag_name"]
+        url = f"https://github.com/{repo}/archive/refs/tags/{version_installed}.tar.gz"
+        source = "/tmp/pioreactorui.tar.gz"
+        commands.append(["wget", url, "-O", source])
+
+    assert source is not None
+    commands.append(["bash", "/usr/local/bin/update_ui.sh", source])
+
+    for command in commands:
+        logger.debug(" ".join(command))
+        p = subprocess.run(
+            command,
+            universal_newlines=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        if p.returncode != 0:
+            logger.error(p.stderr)
+            raise exc.BashScriptError(p.stderr)
+
+    logger.info(f"Updated PioreactorUI to version {version_installed}.")  # type: ignore
 
 
 if whoami.am_I_leader():
-    run.add_command(jobs.mqtt_to_db_streaming.click_mqtt_to_db_streaming)
-    run.add_command(jobs.watchdog.click_watchdog)
-    run.add_command(actions.export_experiment_data.click_export_experiment_data)
-    run.add_command(actions.backup_database.click_backup_database)
-    run.add_command(actions.experiment_profile.click_experiment_profile)
 
-    @pio.command(short_help="access the db CLI")
+    @pio.command(short_help="access the database's CLI")
     def db() -> None:
         import os
 
-        os.system(f"sqlite3 {config['storage']['database']} -column -header")
+        os.system(f"sqlite3 {config.get('storage','database')} -column -header")
 
     @pio.command(short_help="tail MQTT")
     @click.option("--topic", "-t", default="pioreactor/#")
     def mqtt(topic: str) -> None:
-        import os
-
-        os.system(f"""mosquitto_sub -v -t '{topic}' -F "%19.19I  |  %t   %p" -u pioreactor -P raspberry""")
-
-    @pio.command(name="add-pioreactor", short_help="add a new Pioreactor to cluster")
-    @click.argument("hostname")
-    @click.option("--password", "-p", default="raspberry")
-    def add_pioreactor(hostname: str, password: str) -> None:
-        """
-        Add a new pioreactor worker to the cluster. The pioreactor should already have the worker image installed and is turned on.
-        """
-        # TODO: move this to its own file
-        import socket
-
-        logger = create_logger(
-            "add_pioreactor",
-            unit=whoami.get_unit_name(),
-            experiment=whoami.UNIVERSAL_EXPERIMENT,
-        )
-        logger.info(f"Adding new pioreactor {hostname} to cluster.")
-
-        hostname = hostname.removesuffix(".local")
-        hostname_dot_local = hostname + ".local"
-
-        # check to make sure <hostname>.local is on network
-        checks, max_checks = 0, 15
-        sleep_time = 3
-
-        with catchtime() as elapsed:
-            while not networking.is_hostname_on_network(hostname_dot_local):
-                checks += 1
-                try:
-                    socket.gethostbyname(hostname_dot_local)
-                except socket.gaierror:
-                    sleep(sleep_time)
-                    click.echo(f"`{hostname}` not found on network - checking again.")
-                    if checks >= max_checks:
-                        logger.error(
-                            f"`{hostname}` not found on network after {round(elapsed())} seconds. Check that you provided the right i) WiFi credentials to the network, ii) the hostname is correct, the iii) worker is turned on."
-                        )
-                        raise click.Abort()
-
-        res = subprocess.run(
-            ["bash", "/usr/local/bin/add_new_pioreactor_worker_from_leader.sh", hostname, password],
-            capture_output=True,
-            text=True,
-        )
-        if res.returncode == 0:
-            logger.notice(f"New pioreactor {hostname} successfully added to cluster.")  # type: ignore
-        else:
-            logger.error(res.stderr)
-            raise click.Abort()
-
-    @pio.command(
-        name="discover-workers",
-        short_help="discover all pioreactor workers on the network",
-    )
-    @click.option(
-        "-t",
-        "--terminate",
-        is_flag=True,
-        help="Terminate after dumping a more or less complete list",
-    )
-    def discover_workers(terminate: bool) -> None:
-        from pioreactor.utils.networking import discover_workers_on_network
-
-        for hostname in discover_workers_on_network(terminate):
-            click.echo(hostname)
-
-    @pio.command(name="cluster-status", short_help="report information on the cluster")
-    def cluster_status() -> None:
-        """
-        Note that this only looks at the current cluster as defined in config.ini.
-        """
-        import socket
-
-        def get_metadata(hostname):
-            # get ip
-            if whoami.get_unit_name() == hostname:
-                ip = networking.get_ip()
-            else:
-                try:
-                    ip = socket.gethostbyname(add_local(hostname))
-                except OSError:
-                    ip = "unknown"
-
-            # get state
-            result = pubsub.subscribe(
-                f"pioreactor/{hostname}/{whoami.UNIVERSAL_EXPERIMENT}/monitor/$state",
-                timeout=1,
-                name="CLI",
-            )
-            if result:
-                state = result.payload.decode()
-            else:
-                state = "unknown"
-
-            # get version
-            result = pubsub.subscribe(
-                f"pioreactor/{hostname}/{whoami.UNIVERSAL_EXPERIMENT}/monitor/versions",
-                timeout=1,
-                name="CLI",
-            )
-            if result:
-                versions = loads(result.payload.decode())
-            else:
-                versions = {"hat": "unknown", "hat_serial": "unknown"}
-
-            # is reachable?
-            reachable = networking.is_reachable(add_local(hostname))
-
-            return ip, state, reachable, versions
-
-        def display_data_for(hostname_status: tuple[str, str]) -> bool:
-            hostname, status = hostname_status
-
-            ip, state, reachable, versions = get_metadata(hostname)
-
-            statef = click.style(f"{state:15s}", fg="green" if state in ("ready", "init") else "red")
-            ipf = f"{ip if (ip is not None) else 'unknown':20s}"
-
-            is_leaderf = f"{('Y' if hostname==get_leader_hostname() else 'N'):15s}"
-            hostnamef = f"{hostname:20s}"
-            reachablef = (
-                f"{(click.style('Y', fg='green') if reachable       else click.style('N', fg='red')):23s}"
-            )
-            statusf = (
-                f"{(click.style('Y', fg='green') if (status == '1') else click.style('N', fg='red')):23s}"
-            )
-            versionf = f"{versions['hat']:15s}"
-
-            click.echo(f"{hostnamef} {is_leaderf} {ipf} {statef} {reachablef} {statusf} {versionf}")
-            return reachable & (state == "ready")
-
-        worker_statuses = list(config["cluster.inventory"].items())
-        n_workers = len(worker_statuses)
-
-        click.secho(
-            f"{'Unit / hostname':20s} {'Is leader?':15s} {'IP address':20s} {'State':15s} {'Reachable?':14s} {'Active?':14s} {'HAT version':15s}",
-            bold=True,
-        )
-        if n_workers == 0:
-            return
-
-        with ThreadPoolExecutor(max_workers=n_workers) as executor:
-            results = executor.map(display_data_for, worker_statuses)
-
-        if not all(results):
-            exit(1)
-
-    @update.command(name="ui")
-    @click.option("-b", "--branch", help="install from a branch on github")
-    @click.option(
-        "-r",
-        "--repo",
-        help="install from a repo on github. Format: username/project",
-        default="pioreactor/pioreactorui",
-    )
-    @click.option("--source", help="use a tar.gz file")
-    @click.option("-v", "--version", help="install a specific version")
-    def update_ui(branch: Optional[str], repo: str, source: Optional[str], version: Optional[str]) -> None:
-        """
-        Update the PioreactorUI
-
-        Source, if provided, should be a .tar.gz with a top-level dir like pioreactorui-{version}/
-        This is what is provided from Github releases.
-        """
-        logger = create_logger(
-            "update-ui", unit=whoami.get_unit_name(), experiment=whoami.UNIVERSAL_EXPERIMENT
-        )
-        commands = []
-
-        if version is None:
-            version = "latest"
-        else:
-            version = f"tags/{version}"
-
-        if source is not None:
-            source = quote(source)
-            version_installed = source
-
-        elif branch is not None:
-            cleaned_branch = quote(branch)
-            cleaned_repo = quote(repo)
-            version_installed = cleaned_branch
-            url = f"https://github.com/{cleaned_repo}/archive/{cleaned_branch}.tar.gz"
-            source = "/tmp/pioreactorui.tar.gz"
-            commands.append(["wget", url, "-O", source])
-
-        else:
-            latest_release_metadata = loads(
-                get(f"https://api.github.com/repos/{repo}/releases/{version}").body
-            )
-            version_installed = latest_release_metadata["tag_name"]
-            url = f"https://github.com/{repo}/archive/refs/tags/{version_installed}.tar.gz"
-            source = "/tmp/pioreactorui.tar.gz"
-            commands.append(["wget", url, "-O", source])
-
-        assert source is not None
-        commands.append(["bash", "/usr/local/bin/update_ui.sh", source])
-
-        for command in commands:
-            logger.debug(" ".join(command))
-            p = subprocess.run(
-                command,
-                universal_newlines=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-            )
-            if p.returncode != 0:
-                logger.error(p.stderr)
-                raise click.Abort()
-
-        logger.notice(f"Updated PioreactorUI to version {version_installed}.")  # type: ignore
-
-
-if __name__ == "__main__":
-    pio()
+        with subprocess.Popen(
+            [
+                "mosquitto_sub",
+                "-v",
+                "-t",
+                topic,
+                "-F",
+                "%19.19I||%t||%p",
+                "-u",
+                "pioreactor",
+                "-P",
+                "raspberry",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        ) as process:
+            assert process.stdout is not None
+            for line in process.stdout:
+                timestamp, topic, value = line.decode("utf8").rstrip("\n").split("||")
+                click.echo(
+                    click.style(timestamp, fg="cyan")
+                    + " | "
+                    + click.style(topic, fg="bright_green")
+                    + " | "
+                    + click.style(value, fg="bright_yellow")
+                )

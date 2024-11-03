@@ -59,8 +59,8 @@ if hardware_version_info >= (1, 1):
 
 
 # I2C channels used
-ADC = 0x48 if (0, 0) < hardware_version_info <= (1, 0) else 0x30
-DAC = 0x49 if (0, 0) < hardware_version_info <= (1, 0) else 0x30
+ADC = 0x48 if (0, 0) < hardware_version_info <= (1, 0) else 0x2C  # As of 24.8.22, =44. Prior it was 0x30=48.
+DAC = 0x49 if (0, 0) < hardware_version_info <= (1, 0) else 0x2C  # As of 24.8.22, =44. Prior it was 0x30=48
 TEMP = 0x4F
 
 
@@ -144,7 +144,7 @@ def voltage_in_aux(precision: float = 0.1) -> float:
 
     slope = 0.134  # from schematic
 
-    adc = ADC_class()
+    adc = ADC_class()  # type: ignore
     return round_to_precision(
         adc.from_raw_to_voltage(adc.read_from_channel(ADC_CHANNEL_FUNCS["aux"])) / slope,
         p=precision,

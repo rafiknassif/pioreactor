@@ -14,11 +14,11 @@ from msgspec.json import decode as msgspec_loads
 
 from pioreactor import structs
 from pioreactor import types as pt
-from pioreactor.background_jobs.base import BackgroundJob
+from pioreactor.background_jobs.base import LongRunningBackgroundJob
 from pioreactor.config import config
 from pioreactor.hardware import PWM_TO_PIN
-from pioreactor.pubsub import MQTT_TOPIC
 from pioreactor.pubsub import QOS
+from pioreactor.utils import local_intermittent_storage
 from pioreactor.utils.sqlite_worker import Sqlite3Worker
 from pioreactor.utils.timing import current_utc_datetime
 from pioreactor.utils.timing import RepeatedTimer
@@ -45,23 +45,21 @@ class TopicToParserToTable(Struct):
      - parsers can return None as well, to skip adding the row to the database.
     """
 
-    topic: str | MQTT_TOPIC | list[str | MQTT_TOPIC]
+    topic: str | list[str]
     parser: Callable[[str, pt.MQTTMessagePayload], Optional[dict | list[dict]]]
     table: str
 
+    def __repr__(self):
+        return f"TopicToParserToTable(topic='{self.topic}', table='{self.table}', parser=...)"
+
 
 class TopicToCallback(Struct):
-    topic: str | MQTT_TOPIC | list[str | MQTT_TOPIC]
+    topic: str | list[str]
     callback: Callable[[pt.MQTTMessage], None]
 
 
-class MqttToDBStreamer(BackgroundJob):
+class MqttToDBStreamer(LongRunningBackgroundJob):
     job_name = "mqtt_to_db_streaming"
-    published_settings = {
-        "inserts_in_last_60s": {"datatype": "integer", "settable": False},
-    }
-
-    inserts_in_last_60s = 0
     _inserts_in_last_60s = 0
 
     def __init__(
@@ -90,7 +88,9 @@ class MqttToDBStreamer(BackgroundJob):
         self.initialize_callbacks(topics_and_callbacks)
 
     def publish_stats(self) -> None:
-        self.inserts_in_last_60s = self._inserts_in_last_60s
+        with local_intermittent_storage(self.job_name) as c:
+            c["inserts_in_last_60s"] = self._inserts_in_last_60s
+
         self._inserts_in_last_60s = 0
 
     def on_disconnected(self) -> None:
@@ -114,9 +114,9 @@ class MqttToDBStreamer(BackgroundJob):
             try:
                 new_rows = parser(message.topic, message.payload)
             except Exception as e:
-                self.logger.error(f"Encountered error in saving to DB: {e}. See logs.")
+                self.logger.warning(f"Encountered error in saving to DB: {e}. See logs.")
                 self.logger.debug(
-                    f"Error in {parser.__name__}. message.payload that caused error: `{message.payload.decode()}`",
+                    f"Error in {parser.__name__}. Payload that caused error: `{message.payload.decode()}`",
                     exc_info=True,
                 )
                 return
@@ -136,7 +136,7 @@ class MqttToDBStreamer(BackgroundJob):
                 try:
                     self.sqliteworker.execute(SQL, new_row)  # type: ignore
                 except Exception as e:
-                    self.logger.error(e)
+                    self.logger.warning(e)
                     self.logger.debug(f"SQL that caused error: `{SQL}`")
                     return
                 self._inserts_in_last_60s += 1
@@ -225,9 +225,11 @@ def parse_dosing_events(topic: str, payload: pt.MQTTMessagePayload) -> dict:
 
 
 def parse_experiment_profile_runs(topic: str, payload: pt.MQTTMessagePayload) -> dict:
+    metadata = produce_metadata(topic)
     return {
         "started_at": current_utc_datetime(),
         "experiment_profile_name": payload.decode("utf-8"),
+        "experiment": metadata.experiment,
     }
 
 
@@ -292,6 +294,18 @@ def parse_alt_media_fraction(topic: str, payload: pt.MQTTMessagePayload) -> dict
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": current_utc_datetime(),
         "alt_media_fraction": float(payload),
+    }
+
+
+def parse_liquid_volume(topic: str, payload: pt.MQTTMessagePayload) -> dict:
+    metadata = produce_metadata(topic)
+    payload = loads(payload)
+
+    return {
+        "experiment": metadata.experiment,
+        "pioreactor_unit": metadata.pioreactor_unit,
+        "timestamp": current_utc_datetime(),
+        "liquid_volume": float(payload),
     }
 
 
@@ -388,7 +402,7 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 "growth_rates",
             ),
             TopicToParserToTable(
-                "pioreactor/+/+/temperature_control/temperature",
+                "pioreactor/+/+/temperature_automation/temperature",
                 parse_temperature,
                 "temperature_readings",
             ),
@@ -397,7 +411,12 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 parse_alt_media_fraction,
                 "alt_media_fractions",
             ),
-            TopicToParserToTable("pioreactor/+/+/logs/+", parse_logs, "logs"),
+            TopicToParserToTable(
+                "pioreactor/+/+/dosing_automation/liquid_volume",
+                parse_liquid_volume,
+                "liquid_volumes",
+            ),
+            TopicToParserToTable("pioreactor/+/+/logs/#", parse_logs, "logs"),
             TopicToParserToTable(
                 "pioreactor/+/+/dosing_automation/dosing_automation_settings",
                 parse_automation_settings,

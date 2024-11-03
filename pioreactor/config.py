@@ -4,6 +4,7 @@ from __future__ import annotations
 import configparser
 import os
 from functools import cache
+from pathlib import Path
 
 
 def __getattr__(attr):  # type: ignore
@@ -41,7 +42,13 @@ class ConfigParserMod(configparser.ConfigParser):
         return reversed_section
 
     def _get_conv(self, section, option, conv, *, raw=False, vars=None, fallback=None, **kwargs):
-        return self._get(section, conv, option, raw=raw, vars=vars, fallback=fallback, **kwargs)
+        try:
+            return self._get(section, conv, option, raw=raw, vars=vars, fallback=fallback, **kwargs)
+        except TypeError as e:
+            from pioreactor.logging import create_logger
+
+            create_logger("read config").error(e)
+            raise e
 
     def getboolean(self, section: str, option: str, *args, **kwargs) -> bool:  # type: ignore
         try:
@@ -84,6 +91,7 @@ class ConfigParserMod(configparser.ConfigParser):
             raise e
 
 
+@cache
 def get_config() -> ConfigParserMod:
     """
     This function reads from disk and initializes the configuration logic for the Pioreactor cluster.
@@ -124,7 +132,7 @@ def get_config() -> ConfigParserMod:
         global_config_path = "/home/pioreactor/.pioreactor/config.ini"
         local_config_path = "/home/pioreactor/.pioreactor/unit_config.ini"
 
-    if not os.path.isfile(global_config_path):
+    if not Path(global_config_path).exists():
         raise FileNotFoundError(
             f"Configuration file at {global_config_path} is missing. Has it completed initializing? Does it need to connect to a leader? Alternatively, use the env variable GLOBAL_CONFIG to specify its location."
         )
@@ -157,6 +165,9 @@ def get_config() -> ConfigParserMod:
     return config
 
 
+config = get_config()
+
+
 @cache
 def get_leader_hostname() -> str:
     return get_config().get("cluster.topology", "leader_hostname", fallback="localhost")
@@ -170,32 +181,3 @@ def get_leader_address() -> str:
 @cache
 def get_mqtt_address() -> str:
     return get_config().get("mqtt", "broker_address", fallback=get_leader_address())
-
-
-def check_firstboot_successful() -> bool:
-    from pioreactor.whoami import is_testing_env
-
-    if is_testing_env():
-        return True
-    return os.path.isfile("/usr/local/bin/firstboot.sh.done")
-
-
-def get_active_workers_in_inventory() -> tuple[str, ...]:
-    # note that this rehydrates conifg.ini from disk before checking.
-    # because we are not using config.getboolean here, values like "0" are seen as true,
-    # hence we use the built in config.BOOLEAN_STATES to determine truthiness
-    config = get_config()
-    return tuple(
-        str(unit)
-        for (unit, available) in config["cluster.inventory"].items()
-        if config.BOOLEAN_STATES[available]
-    )
-
-
-def get_workers_in_inventory() -> tuple[str, ...]:
-    # note that this rehydrates config.ini from disk before checking.
-    config = get_config()
-    return tuple(str(unit) for (unit, available) in config["cluster.inventory"].items())
-
-
-config = get_config()

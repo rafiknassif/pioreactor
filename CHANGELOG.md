@@ -1,3 +1,461 @@
+### 24.10.29
+
+#### Enhancements
+ - `dosing_automation.vial_volume` replaced with `dosing_automation.liquid_volume`. You can see the values by watching `pio mqtt -t "pioreactor/+/+/dosing_automation/liquid_volume"`  after starting a dosing automation.
+ - Adding a SQL table for tracking `liquid_volume`.
+ - Because we are now storing `liquid_volume` in the database, you can add charts in the UI that track the volume over time:
+    1. Add the following yaml contents to `~/.pioreactor/plugins/ui/contrib/charts/liquid_volume.yaml`: https://gist.github.com/CamDavidsonPilon/95eef30189101da69f706d02ef28d972
+    2. In your config.ini, under `ui.overview.charts`, add the line `liquid_volume=1`.
+ - New dataset exports from the Export data page in the UI: calibrations and liquid-volumes.
+ - Added a "partition by unit" option to the Export data page that will create a csv per Pioreactor in the export, instead of grouping them all together.
+ - od calibrations can use the `--json-file` to edit calibration polynomial coefficients. In the json file, specify `curve_data_` fields with values of the curve's polynomial coefficients (leading term first), and set `curve_type` as `"poly"`. The routine will begin with that calibration curve displayed.
+ - faster UI response times when starting jobs.
+ - faster syncing configs.
+ - faster copying files across cluster via `pio cp`.
+ - faster clean up of jobs using PWMs.
+ - new installs only: updated base RPiOS to 2024-10-22.
+ - new database table in `/tmp/local_intermittent_pioreactor_metadata.sqlite` called `pio_job_published_settings` that stores the published settings for each job. This powers the next API endpoints:
+ - New API endpoints for getting the current settings of a _running_ job:
+    - Per pioreactor:
+      - GET: `/unit_api/jobs/settings/job_name/<job_name>`
+      - GET: `/unit_api/jobs/settings/job_name/<job_name>/setting/<setting>`
+    - Across the cluster:
+      - GET: `/api/jobs/settings/job_name/<job_name>/setting/<setting>`
+      - GET: `/api/jobs/settings/job_name/<job_name>/experiments/<experiment>`
+      - GET: `/api/jobs/settings/job_name/<job_name>/experiments/<experiment>/setting/<setting>`
+      - GET: `/api/jobs/settings/workers/<pioreactor_unit>/job_name/<job_name>`
+      - GET: `/api/jobs/settings/workers/<pioreactor_unit>/job_name/<job_name>/setting/<setting>`
+   Ex: query the temperature of a Pioreactor: `curl http://pio01.local/unit_api/jobs/settings/job_name/temperature_automation/setting/temperature`
+
+
+#### Breaking changes
+ - `pio kill --name x` is now `pio kill --job-name x`
+ - removed publishing published_settings metadata to mqtt. Ex `$properties`, `$settable`, `$unit`, `$datatype` are no longer being sent mqtt. This was never used, and just a bandwidth suck.
+
+#### Bug fixes
+ - fix for OD calibration graph showing "two lines" in the terminal display
+ - fix for updating over the internet when a Pioreactor is on a `A.devX` or `B.rcY` release
+ - `pio kill --all-jobs` will no longer kill long-running jobs from plugins (specifically, `logs2x` jobs.)
+ - updating the UI software won't prematurely stop any currently running activities
+ - correct ethernet mac address on RPi5s
+ - We weren't passing all the OS environment variables when jobs were started from the UI. This is fixed now.
+ - Fixed circulate media / alt. media in the UI.
+ - Fixed manual dosing updates in the UI.
+
+
+
+### 24.10.1
+
+#### Enhancements
+ - amount of data shown on charts is now a function of the OD sampling rate
+ - allow for showing more than 16 workers in a chart.
+
+#### Bug fixes
+ - Bug fix for "Manage all" that would start activities in all Pioreactors, whether they were in the experiment or not.
+ - Fix for bug when clicking a legend element it not hiding
+ - `led_intensity` (i.e. changes to LEDs) now respect whether a worker is active or not.
+ - Fix bug for UI crashing with "colors" error.
+ - If a worker is referenced in a profile, but is not part of the current experiment, the actions will not be schedualed for it.
+
+
+
+### 24.9.26
+
+#### Enhancements
+ - UI improvements to the experiment select box.
+ - Better clean up of configs when a worker is removed from the cluster.
+ - Improved UI loading time
+
+#### Bug fixes
+ - only show ipv4 in UI and in avahi aliases.
+ - fixed experiment profile plugin checks.
+ - fixed experiment profile display crashing the UI when editing plugins section.
+
+#### Breaking changes
+ - `pio clear-cache` renamed to `pio cache clear`
+ - `pio view-cache` renamed to `pio cache view`
+ - some more web API changes to endpoints that manage updates
+ - We no longer use `monitor` to start jobs. This has a slowdown when changing LEDs or starting pumps, unfortunately, but generally better performance elsewhere.
+ - `watchdog` job has been merged with `monitor`. `watchdog` no longer exists.
+
+### 24.9.19
+
+#### Highlights
+ - Workers now have a webserver on them. This is one of the largest architectural changes to Pioreactor, and lays the foundation for better plugin, version, and calibration cluster management, plus future features.
+   - As an example, in your browser, you can enter the url: http://some-worker.local/unit_api/jobs/running to see a list of jobs running on a worker.
+   - Note: there is no interactive user interface for workers, just a web API
+   - Previous actions that would involve SSHing from leader to a worker are replaced by web requests.
+
+#### Bug fixes
+ - fixed an issue where a calibrated OD reading would be mapped to max OD signal if it was too low.
+ - fixed an issue where the Pioreactor UI would lock up if trying to create a new experiment with an existing name.
+ - fixed Hours Elapsed not updating in Overview
+
+#### Breaking changes
+ - **Lots and lots of web API changes**. You'll want to review them on our docs: https://docs.pioreactor.com/developer-guide/web-ui-api
+ - We no longer recommend the Raspberry Pi Zero (the original Zero, not the Zero 2.) since supporting a web server + pioreactor functions is too much for a single core.
+ - `watchdog` is neutered. It used to try to "wake-up" a job, but this was flaky and causing more problems than it solved.
+ - removed python library dependency `sh`
+ - APIs that initiate a background task either return with the result, or return a task id that be be looked up at `/unit_api/task_status/`.
+ - `pios update` now updates the UI too.
+
+#### Enhancements
+ - Better MQTT re-connection logic.
+ - New `Manage Inventory` menu on the Inventory page that can be used for bulk actions.
+ - `pio update` is a new command to update both the UI and app.
+ - adding more network logs to `network_info.txt`
+ - `pios` commands now return quicker since they post to the workers servers and don't wait around. You can view the status of the worker's by using the output from including `--json`.
+
+
+### 24.8.22
+
+#### Enhancements
+
+ - `pio logs` now includes the UI logs (if run on leader).
+ - introduce a new od_reading config,`turn_off_leds_during_reading`, which enables / disables turning off the other LEDS during an OD snapshot. By default, it is set to 1 (enables).
+ - leader-only Pioreactors also have a `config_<hostname>.local` file now.
+ - a new top-level section in experiment profiles, `inputs`, allows you to define parameters that can be used in expressions. This is useful if you are copy the same constant over an over again, and want a quick way to change it once. Example:
+
+  ```yaml
+  inputs:
+    growth_phase_temp: 37.0
+    stationary_phase_temp: 30.0
+    od_threshold: 1.6
+
+  common:
+    jobs:
+      temperature_automation:
+        actions:
+          ...
+          - type: update
+            hours_elapsed: 12.0
+            if: ${{ ::od_reading:od1.od < od_threshold }}
+            options:
+              target_temperature: ${{ stationary_phase_temp }}
+          - type: update
+            hours_elapsed: 12.0
+            if: ${{ ::od_reading:od1.od >= od_threshold }}
+            options:
+              target_temperature: ${{ growth_phase_temp }}
+
+  ```
+
+#### Bug fixes
+
+ - more resilience to "UI state" diverging from "bioreactor state".  Often, this occurred when two jobs stared almost immediately (often a networking issue), and the last job would halt since it couldn't get the required resources, however any MQTT data would be overwritten by the last job. Now, multiple places in the request pipeline will reduce duplication and prevent two jobs from starting too close to each other.
+ - improved stirring clean up when stopped in quick succession after starting.
+ - if a network isn't found, the `monitor` job will not stall, but warn and continue.
+ - fixed HAT warning for HAT-less leaders.
+
+#### Breaking changes
+
+ - the RP2040 firmware is now on i2c channel 0x2C (previously 0x30). This is to solve an annoying `i2cdetect` issue where the i2c channel would lock up.
+ - the web server now writes its logs to the same location as the app: `/var/log/pioreactor.log`. Those wishing to keep the old location can use a new configuration parameter `ui_log_file` to `[logging]` section and set it to `/var/log/pioreactorui.log`.
+ - removed `psutil` and `zeroconf` Python packages from new images. We replaced their functionality with built-in routines.
+ - in config.ini, the section `od_config` renamed to `od_reading.config`, and `stirring` is `stirring.config`. When you update, a script will run to automatically update these names in your config.inis.
+
+### 24.7.18
+
+#### Enhancements
+
+ - improvements to the UI's experiment profile preview.
+ - `hours_elapsed()` is a function in profile expressions, which returns the hours since the profile started.
+ - `unit()` can be used in mqtt fetch expressions. Example: `unit():stirring:target_rpm` is identical to `::stirring:target_rpm`. The latter can be seen as a shortened version of the former.
+ - experiment profiles can have a `description` in the `job` field (i.e. at the same level as `actions`).
+ - Updated Raspberry Pi OS image to 2024-07-04.
+ - Vendoring the TMP1075 library, which also fixes the RPi5 error.
+ - In places where the ipv4 is displayed (Inventory page, System tab, pio workers status, etc), *all* ipv4 addresses are displayed.
+
+#### Breaking changes
+
+ - remove the temperature_control, dosing_control, and led_control abstractions. These were introduced early in the Pioreactor software as a way to quickly change automations, but they have been more of a wort than a win. While working on the internals of experiment profiles recently, it became more and more clear how poor this abstraction was. The removal of them has some consequences and some backward incompatibilities:
+
+  - updating experiment profiles: experiment profiles that have a `*_control` job will need to be updated to use `*_automation`, _eventually_. For now, we are allowing `*_control` in profiles: in the backend, we are renaming `*_control` to `*_automations`, but a warning will be produced. Later, we'll remove this renaming and profiles will need to be completely updated. Example:
+    ```yaml
+    experiment_profile_name: start_temp_control
+
+    metadata:
+      author: Cam DP
+
+    common:
+      jobs:
+        temperature_control:
+          actions:
+            - type: start
+              hours_elapsed: 0
+              options:
+                automation_name: thermostat
+                target_temperature: 30
+            - type: stop
+              hours_elapsed: 12
+        temperature_automation:
+          actions:
+            - type: update
+              hours_elapsed: 6
+              options:
+                target_temperature: 35
+    ```
+
+    becomes:
+
+    ```yaml
+    experiment_profile_name: start_temp_control
+
+    metadata:
+      author: Cam DP
+
+    common:
+      jobs:
+        temperature_automation:
+          actions:
+            - type: start
+              hours_elapsed: 0
+              options:
+                automation_name: thermostat
+                target_temperature: 30
+            - type: stop
+              hours_elapsed: 12
+            - type: update
+              hours_elapsed: 6
+              options:
+                target_temperature: 35
+    ```
+
+    - update plugins. For users using, specifically, the high-temp plugin, or temperature-expansion-kit plugin, new plugins will be released. Look on the forums, or documentation, for update instructions.
+
+   The benefits of removing this abstraction is much less code, less overhead, easier developer experience, and overall simplification. Later, we may create a new abstraction, but now we are moving abstractions back to level 0.
+
+ - `log` in experiment profiles now uses expressions instead of Python string formatting. For example: `The unit {unit} is running {job} in experiment {experiment}` should be replaced by expressions in the string: `The unit ${{unit()}} is running ${{job_name()}} in the experiment ${{experiment}}`. Note: `{job}` is now `${{job_name()}}`.
+ - `cycle_media` and `cycle_alt_media` now publish dosing events, and will be recorded by dosing automations, and the db.
+
+
+#### Bug fixes
+
+ - When pausing temperature automations, the heater now turns off and stays off until unpaused. This is the intended behaviour.
+
+### 24.7.5 & 24.7.6 & 24.7.7
+
+Hotfix release for 24.7.3. This pins blinka to a specific version which does not install numpy.
+
+
+### 24.7.3
+
+#### Enhancements
+ - A new live preview in the UI's experiment profile editor. This preview tool is useful for getting immediate feedback when writing a profile. We'll keep on adding to this to improve the edit-profile workflow - please send us feedback!
+ - new `when` action type in experiment profiles that will execute an action (or list of actions) when some expression is true. For example, start a chemostat when a threshold OD is first achieved, log a message when event is triggered, or monitor a bioreactor parameter and execute an action if it goes out of bounds.
+ - New config `turbidostat.config` that can be used to modify some internal turbidostat settings:
+   ```
+   [turbidostat.config]
+   signal_channel=2
+   od_smoothing_ema=0.5
+   ```
+ - Better user interaction on the Pioreactors page when the assigned experiment and "viewing" experiment are different.
+ - Select / Deselect all Pioreactors to assign to an experiment faster.
+ - Added `unit()` function to experiment profiles expressions that returns the unit name the expression is evaluated for. Ex: `if: ${{ unit() == worker01 }}`.
+ - Added `job_name()` function to experiment profiles expressions that returns the job_name the expression is evaluated for. Ex: `if: ${{ job_name() == stirring }}`.
+ - Added `experiment()` function to experiment profiles expressions that returns the experiment the expression is evaluated for. Ex: `if: ${{ experiment() == exp001 }}`.
+
+#### Breaking changes
+ - significant web backend API changes! See list of rules in docs.
+
+#### Bug fixes
+ - Fix UI code editor from being unresponsive when all the text was removed.
+ - Experiment profiles won't be overwritten if providing the same filename as an existing profile.
+
+
+### 24.6.10
+
+#### Enhancements
+ - we changed the "auto" algorithm for picking a good `ir_led_intensity`. We now try to maximize the intensity, up to some constraints around saturating ADCs, LED longevity, and signal. In general, we expect a higher IR intensity, but this will help with noise and detecting lower signals.
+ - More improvements on the Pioreactor-specific page: added charts and a logs table.
+ - Added a "retry failed tests" to the UI's self-test dialog.
+ - `pio run self_test` has a new flag `--retry-failed` to only retry tests that failed in the previous run (if any).
+ - better clean up when a worker is removed from a cluster.
+ - reduce the mosquitto logs to reduce writes to disk and speed up connections.
+ - Use lexicographical ordering for all displays of workers in the UI
+ - **This only applies to new installed images, and not updates.** Updated to the latest RPI image, 2024-03-15, -> linux kernel update to 6.6. Recent versions of linux have improved support for usb wifi devices.
+ - **This only applies to new installed images, and not updates.** leader-only images will install worker Python libraries.
+ - **This only applies to new installed images, and not updates.** all experiment data will be deleted when the experiment is deleted.
+ - performance improvements
+
+#### Breaking changes
+ - Changed the web backend API endpoints for time-series, logs, shutdown, reboot, and plugins to be more RESTful. See docs for updated rules in the docs.
+
+#### Bug fixes
+ - fix performing an "undo" when editing the config.ini and experiment profiles.
+ - fix **Pioreactor v1.1** bug when change target temperature mid cycle causing the inferred temperature to change significantly.
+ - if a worker disconnected from the network, messages are queued in memory until the network reconnects. This has two problems. The first is that there is a finite amount of memory, and we don't want to OOM. The second is that when the worker(s) reconnect, there is a flurry of messages. For some jobs that use messages as events, this can cause multiple triggers in quick succession. We've added some logic that helps avoid these situations:
+    1. we max the queue of unsent messages to 100 (arbitrary)
+    2. in important jobs, like temperature automations, it will only respond to "recent" messages and not old messages.
+
+### 24.5.31
+
+#### Highlights
+ - New /pioreactor/`worker-name` page in the UI for a detailed view of an individual Pioreactor, including a realtime visualization of the Pioreactor!
+
+#### Enhancements
+ - UI backend now supports external MQTT broker. This configuration lives in the same place as the existing MQTT settings: in the config.ini, under `[mqtt]`.
+ - Added groupings on the Experiment drop down to organize "Active" and "Inactive" experiments. An active experiment has >= 1 Pioreactor assigned to it.
+
+#### Breaking changes
+ - New log topic that partitions by the level. This should make subscribers to the log topic slimmer (like the UI, who previously would have to accept _all_ messages and filter to what they needed). Should result in a performance increase.
+
+#### Bug fixes
+ - Fix for Pioreactors page when _no workers are added to the cluster_.
+ - Fix for UI labels when trying to remove labels from Pioreactors.
+ - Improvements to REF self-tests.
+
+
+### 24.5.22
+
+#### Enhancements
+ - Significant performance increase by using `force_turbo=1` in the Raspberry Pi. Expect a noticeable improvement in interacting with the Pioreactor. This pushes the Pi to always run "hot" (but we aren't overclocking). This does slightly increase the Pi's internal temperature, so be wary about putting the Pioreactor in very hot environment. _This settings requires a reboot to take affect._
+ - adding support for changing the port and protocol of the Pioreactor UI webserver in the software. Add the following to your config.ini:
+    ```
+    [ui]
+    port=80
+    proto=http
+    ```
+   This doesn't _set_ the port and proto, that involves changing settings in the lighttpd configuration.
+
+#### Bug fixes
+ - more sane defaults for OD reading for v1.1 when using `auto`.
+ - fix `pios plugins uninstall`
+ - fix leader not correctly being identified in `pio workers status`
+ - For RPi Zero W (first gen), sometimes the load_rp2040 script was failing. A new script will retry a few times. This only applies to new images.
+ - fix `pio workers update-active` using the wrong HTTP verb.
+ - Fix using ethernet cable to connect Pioreactor to a router: a new simple ethernet nmconnection has been added, and has higher connection priority than the PioreactorLocalLink nmconnection.
+ - Fix race conditions occurring between stirring and growth-rate when they were started too quickly.
+
+#### Known issues
+
+ - When the local access point would start on a fresh boot, the SSID would start as `pioreactor`, and then change to `pioreactor-<leader-name>` after the next reboot.
+
+
+### 24.5.13
+
+#### Enhancements
+ - UI chart legend's will support more than 8 Pioreactors.
+ - UI chart colors are consistent across charts in the Overview.
+ - reduce the severity of some messages, so there will be less pop-ups in the UI.
+ - UI performance improvements.
+   - Upgraded to React 18.3.1
+   - Removed unused dependencies
+ - UI's code sections use syntax-highlighting and other nicer features for editing yaml and ini files.
+ - App performance improvements
+   - Upgrade paho-mqtt to 2.1
+   - faster `pio kill`
+   - faster job start from UI
+ - more humane error messages.
+ - updated temperature inference model.
+ - added exponentiation `**` to profile expressions. Ex: `${{ pio1:growth_rate_calculating:growth_rate.growth_rate ** 0.5 }}`
+ - added `random()` to profile expressions. This returns a number between 0 and 1. Ex: `${{ 25 + 25 * random() }}`
+
+
+#### Bug fixes
+ - fix `pio plugins` not working on workers.
+ - fix `enable_dodging_od=0` for background jobs that can dodge OD.
+ - fix PWM jobs not cleaning up correctly if too many jobs try to end at the same time.
+ - fix `pio kill` not returning the correct count of jobs being killed.
+ - fix older Pioreactor HATs, with the ADS1115 chip, not have the method `from_voltage_to_raw_precise`.
+ - fix "Manage all" not sending the correct dosing command to workers.
+
+### 24.5.1
+
+#### Highlights
+
+ - initial support for Pioreactor 20ml v1.1! This is our latest iteration of Pioreactor. Even though it's a minor 0.x release, there's lots of positives about it. We encourage you to check out the upgrade kit [here](https://pioreactor.com/collections/upgrade-kits/products/pioreactor-20ml-v1-1-upgrade-kit).
+ - some further support for tracking the model and version of the Pioreactor you are using. Users can change the version in the config file. For example:
+   ```
+   [pioreactor]
+   model=pioreactor_20ml
+   version=1.1
+   ```
+   If you have a mixed cluster (some 1.0, some 1.1), then you should put this configuration in the _unit specific_ config files.
+ - For v1.1: New temperature inference algorithm makes reaching the `thermostat` setpoint quicker, and the Pioreactor can reach higher temperatures (our internal testing could easily reach up to 45C in a cool room). This algorithm uses the magic of ✨statistics✨. We may update the themostat PID values in the future, but the default ones work okay for now. A Pioreactor v1.0 update for this algorithm should come out soon, too.
+
+ #### Enhancements
+
+ - When using `turbidostat`, there is now a small moving average filter on the raw OD readings. This will prevent the turbidostat from firing when an OD outlier occurs.
+ - MQTT data is no long persisted between leader power-cycles. This was the cause of a lot of bad UI state issues where users couldn't interact with the Pioreactor via the UI after a power-cycle (intentional or not). We originally persisted the data since we previously used MQTT as more like a database, but our engineering style has moved away from that idea, and we now only use MQTT for "ephemeral" data. Taking out the persistent MQTT data forces this style change. Users shouldn't notice anything different.
+ - The leader is now the source-of-truth for the cluster's clocks. For example, when a worker boots up, it will ask the leader what the time is, and will periodically continue asking. If the leader has access to the internet, it will pull the correct time (and periodically continue asking). If the leader doesn't have access to the internet, it will use the default time on the Pi. This solves the problem of workers' clocks getting out of sync when powered down, especially in a local-access-point network.
+
+   ![](https://i.imgur.com/vt5gxyy.png)
+
+ - Lots of small UI improvements, including accessibility, empty-state, and loading improvements.
+ - Previously, we would "kick" stirring by forcing the DC% to 100% for a moment, and then increasing the running DC% slightly. Going forward, we'll actually try the following when the
+ sensor fails to read a signal: _DC% to 0%_, then _DC% to 100%_, and then a slight increase in the DC%. Why?
+    - If the mixing fan has stalled, setting the DC% to 0% does nothing, since the fan is already stopped.
+    - If the mixing fan is running, but the stir bar isn't in sync, this step will align the stir bar and fan again.
+    - If the mixing fan is running _too fast_, but the sensor isn't reading it, this allows for a small pause.
+ - The recommend way to upgrade Pioreactors and clusters is now using _release archives_. We have more control over the upgrade process this way. However, users are still welcome use the command line, `pio update`, which is what we use in house.
+ - A chart legend's in the UI now displays the entire name of the worker, if there is enough room.
+
+#### Breaking changes
+
+ - Temporary Pioreactor labels, set in the UI, are now unique across an experiment.
+ - config `max_volume_to_warn` was removed, it's now hardcoded as 90% of `max_volume_to_stop`
+
+#### Bug fixes
+
+ - Fix `pio ...` commands that displayed the CLI options not working on workers.
+ - Potential fix for heater continuing to be on after requested to be turned off.
+
+### 24.4.11
+
+#### Enhancements
+ - Faster app start-up performance, which should translate to faster response times.
+ - Log when workers change experiment assignments.
+ - Log when workers change active status.
+ - Adding `[pioreactor]` section to config.inis
+ - improvements to calibration charts
+
+#### Breaking changes
+ - `pio install-plugin` is now `pio plugins install`. Likewise for `uninstall`.
+ - `pio list-plugins` is now `pio plugins list`.
+ - `pios install-plugin` is now `pios plugins install`. Likewise for `uninstall`.
+
+#### Bug fixes
+ - fixed Log table in the UI not showing all entries.
+ - fixed HAT button response in the UI.
+
+### 24.4.3
+
+#### Highlights
+
+ - The Pioreactor leader can now support multiple experiments! If you have more than one Pioreactor, this change allows you to run multiple experiments simultaneously, assign Pioreactors to different experiments, and manage all experiments concurrently. No more multi-leader set ups - all you need is a single leader and multiple workers! See video [here](https://www.youtube.com/watch?v=7SuR26BQG5c).
+ - Ability to delete experiments from the UI.
+ - Better control over your cluster, using the Inventory page in the UI.
+ - Ship with network configuration of local-link connections: plug in an ethernet from your Pioreactor to your computer, and after invoking `sudo nmcli c PioreactorLocalLink up`, you should be able to visit `http://pioreactor.local` in your browser.
+
+ #### Enhancements
+ - replace the `ip` file that is written to on startup with a new `network_info.txt` file that contains the hostname, IPv4 address, and MAC addresses.
+ - Adding the ethernet (wired) mac address to the system tab.
+ - new Python module for controlling workers: `pioreactor.cluster_management`
+ - by default, for new installs, the local-access-point SSID is now `pioreactor_<hostname>`.
+ - UI performance improvements
+ - New database tables to handle workers (`workers`) and experiments assignments (`experiment_assignments`).
+ - New `pio workers` CLI to mange your inventory. Try `pio workers --help` to see all the commands available.
+ - Better error messages when a self-test fails.
+ - `pio kill` has new options to kill specific actions. Ex: `pio kill --experiment this-exp`, `pio kill --job-source experiment_profile`
+
+
+#### Breaking changes
+ - When a experiment profile **stops early** (i.e. via "stop early" in the UI), it now will halt any jobs that it started. This is a change from how they worked previously, but this new behaviour is less of a surprise to users.
+ - `pio add-pioreactor <name>` is now `pio workers add <name>`
+ - `pio cluster-status` is now `pio workers status`
+ - `utils.publish_ready_to_disconnected_state` changed names to `utils.managed_lifecycle`
+ - `config.inventory` in the config.ini is no longer used. All that data is now handled in the database on the leader, and managed in the UI or CLI.
+ - `pio kill <job_name>` is removed, use `pio kill --name <job_name>`.
+
+#### Bug fixes
+ - fix for not being able to access `http://pioreactor.local` reliably.
+ - fix for multiple exporting datasets when selecting "All experiments"
+
+#### Known bugs
+ - removing a Pioreactor leader from an experiment will stop any experiment profiles running that are associated to that experiment.
+
+
 ### 24.3.10
 
 #### Enhancements

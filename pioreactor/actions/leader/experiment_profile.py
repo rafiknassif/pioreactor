@@ -1,29 +1,36 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import random
 import time
 from collections import defaultdict
 from pathlib import Path
 from sched import scheduler
+from typing import Any
 from typing import Callable
 from typing import Optional
 
 import click
-from msgspec.json import encode
 from msgspec.yaml import decode
 
-from pioreactor.config import get_active_workers_in_inventory
-from pioreactor.config import leader_address
+from pioreactor.cluster_management import get_active_workers_in_experiment
+from pioreactor.exc import MQTTValueError
+from pioreactor.exc import NotAssignedAnExperimentError
 from pioreactor.experiment_profiles import profile_struct as struct
 from pioreactor.logging import create_logger
 from pioreactor.logging import CustomLogger
-from pioreactor.mureq import put
-from pioreactor.pubsub import publish
-from pioreactor.utils import publish_ready_to_disconnected_state
-from pioreactor.whoami import get_latest_experiment_name
+from pioreactor.pubsub import Client
+from pioreactor.pubsub import patch_into_leader
+from pioreactor.utils import ClusterJobManager
+from pioreactor.utils import managed_lifecycle
+from pioreactor.utils.timing import catchtime
+from pioreactor.utils.timing import current_utc_timestamp
+from pioreactor.whoami import get_assigned_experiment_name
 from pioreactor.whoami import get_unit_name
+from pioreactor.whoami import is_testing_env
 
 bool_expression = str | bool
+Env = dict[str, Any]
 
 
 def wrap_in_try_except(func, logger: CustomLogger) -> Callable:
@@ -52,7 +59,7 @@ def strip_expression_brackets(value: str) -> str:
     return match.group(1)
 
 
-def evaluate_options(options: dict, unit: str) -> dict:
+def evaluate_options(options: dict, env: dict) -> dict:
     """
     Users can provide options like {'target_rpm': '${{ bioreactor_A:stirring:target_rpm + 10 }}'}, and the latter
     should be evaluated
@@ -63,15 +70,28 @@ def evaluate_options(options: dict, unit: str) -> dict:
     for key, value in options.items():
         if is_bracketed_expression(value):
             expression = strip_expression_brackets(value)
-            # replace :: placeholder with unit
-            expression = expression.replace("::", f"{unit}:", 1)
-            options_expressed[key] = parse_profile_expression(expression)
+            options_expressed[key] = parse_profile_expression(expression, env=env)
         else:
             options_expressed[key] = value
     return options_expressed
 
 
-def evaluate_bool_expression(bool_expression: bool_expression, unit: str) -> bool:
+def evaluate_log_message(message: str, env: dict) -> str:
+    import re
+    from pioreactor.experiment_profiles.parser import parse_profile_expression
+
+    pattern = r"\${{(.*?)}}"
+
+    matches = re.findall(pattern, message)
+
+    modified_matches = [parse_profile_expression(match, env) for match in matches]
+
+    # Replace each ${{...}} in the original string with the modified match
+    result_string = re.sub(pattern, lambda m: str(modified_matches.pop(0)), message)
+    return result_string
+
+
+def evaluate_bool_expression(bool_expression: bool_expression, env: dict) -> bool:
     from pioreactor.experiment_profiles.parser import parse_profile_expression_to_bool
 
     if isinstance(bool_expression, bool):
@@ -80,11 +100,8 @@ def evaluate_bool_expression(bool_expression: bool_expression, unit: str) -> boo
     if is_bracketed_expression(bool_expression):
         bool_expression = strip_expression_brackets(bool_expression)
 
-    # replace :: placeholder with unit
-    bool_expression = bool_expression.replace("::", f"{unit}:", 1)
-
     # bool_expression is a str
-    return parse_profile_expression_to_bool(bool_expression)
+    return parse_profile_expression_to_bool(bool_expression, env=env)
 
 
 def check_syntax_of_bool_expression(bool_expression: bool_expression) -> bool:
@@ -141,20 +158,25 @@ def get_simple_priority(action: struct.Action):
             return 3
         case struct.Update():
             return 4
+        case struct.When():
+            return 5
         case struct.Repeat():
             return 6
         case struct.Log():
             return 10
         case _:
-            raise ValueError(f"Not a valid action: {action}")
+            raise ValueError(f"Not a defined action: {action}")
 
 
 def wrapped_execute_action(
     unit: str,
     experiment: str,
+    global_env: Env,
     job_name: str,
     logger: CustomLogger,
     schedule: scheduler,
+    elapsed_seconds_func: Callable[[], float],
+    client: Client,
     action: struct.Action,
     dry_run: bool = False,
 ) -> Callable[..., None]:
@@ -162,37 +184,90 @@ def wrapped_execute_action(
     if job_name == "led_intensity":
         action = _led_intensity_hack(action)
 
+    env = global_env | {"unit": unit, "experiment": experiment, "job_name": job_name}
+
     match action:
         case struct.Start(_, if_, options, args):
-            return start_job(unit, experiment, job_name, options, args, dry_run, if_, logger)
+            return start_job(
+                unit,
+                experiment,
+                client,
+                job_name,
+                dry_run,
+                if_,
+                env,
+                logger,
+                elapsed_seconds_func,
+                options,
+                args,
+            )
 
         case struct.Pause(_, if_):
-            return pause_job(unit, experiment, job_name, dry_run, if_, logger)
+            return pause_job(
+                unit, experiment, client, job_name, dry_run, if_, env, logger, elapsed_seconds_func
+            )
 
         case struct.Resume(_, if_):
-            return resume_job(unit, experiment, job_name, dry_run, if_, logger)
+            return resume_job(
+                unit, experiment, client, job_name, dry_run, if_, env, logger, elapsed_seconds_func
+            )
 
         case struct.Stop(_, if_):
-            return stop_job(unit, experiment, job_name, dry_run, if_, logger)
+            return stop_job(
+                unit, experiment, client, job_name, dry_run, if_, env, logger, elapsed_seconds_func
+            )
 
         case struct.Update(_, if_, options):
-            return update_job(unit, experiment, job_name, options, dry_run, if_, logger)
+            return update_job(
+                unit, experiment, client, job_name, dry_run, if_, env, logger, elapsed_seconds_func, options
+            )
 
         case struct.Log(_, options, if_):
-            return log(unit, experiment, job_name, options, dry_run, if_, logger)
+            return log(
+                unit,
+                experiment,
+                client,
+                job_name,
+                dry_run,
+                if_,
+                env,
+                logger,
+                elapsed_seconds_func,
+                options,
+            )
 
         case struct.Repeat(_, if_, repeat_every_hours, while_, max_hours, actions):
             return repeat(
                 unit,
                 experiment,
+                client,
                 job_name,
                 dry_run,
                 if_,
+                env,
                 logger,
+                elapsed_seconds_func,
                 action,
                 while_,
                 repeat_every_hours,
                 max_hours,
+                actions,
+                schedule,
+            )
+
+        case struct.When(_, if_, condition, actions):
+            return when(
+                unit,
+                experiment,
+                client,
+                job_name,
+                dry_run,
+                if_,
+                env,
+                logger,
+                elapsed_seconds_func,
+                condition,
+                action,
                 actions,
                 schedule,
             )
@@ -212,37 +287,138 @@ def chain_functions(*funcs: Callable[[], None]) -> Callable[[], None]:
 def common_wrapped_execute_action(
     experiment: str,
     job_name: str,
+    global_env: Env,
     logger: CustomLogger,
     schedule: scheduler,
+    elapsed_seconds_func: Callable[[], float],
+    client: Client,
     action: struct.Action,
     dry_run: bool = False,
 ) -> Callable[..., None]:
     actions_to_execute = []
-    for worker in get_active_workers_in_inventory():
+    for worker in get_active_workers_in_experiment(experiment):
         actions_to_execute.append(
-            wrapped_execute_action(worker, experiment, job_name, logger, schedule, action, dry_run)
+            wrapped_execute_action(
+                worker,
+                experiment,
+                global_env,
+                job_name,
+                logger,
+                schedule,
+                elapsed_seconds_func,
+                client,
+                action,
+                dry_run,
+            )
         )
 
     return chain_functions(*actions_to_execute)
 
 
-def repeat(
+def when(
     unit: str,
     experiment: str,
+    client: Client,
     job_name: str,
     dry_run: bool,
     if_: Optional[bool_expression],
+    env: dict,
     logger: CustomLogger,
+    elapsed_seconds_func: Callable[[], float],
+    condition: bool_expression,
+    when_action: struct.When,
+    actions: list[struct.Action],
+    schedule: scheduler,
+) -> Callable[..., None]:
+    def _callable() -> None:
+        # first check if the Pioreactor is still part of the experiment.
+        if (get_assigned_experiment_name(unit) != experiment) and not is_testing_env():
+            return
+
+        nonlocal env
+        env = env | {"hours_elapsed": seconds_to_hours(elapsed_seconds_func())}
+
+        if (if_ is None) or evaluate_bool_expression(if_, env):
+            try:
+                condition_met = evaluate_bool_expression(condition, env)
+            except MQTTValueError:
+                condition_met = False
+
+            if condition_met:
+                for action in actions:
+                    schedule.enter(
+                        delay=hours_to_seconds(action.hours_elapsed),
+                        priority=get_simple_priority(action),
+                        action=wrapped_execute_action(
+                            unit,
+                            experiment,
+                            env,
+                            job_name,
+                            logger,
+                            schedule,
+                            elapsed_seconds_func,
+                            client,
+                            action,
+                            dry_run,
+                        ),
+                    )
+
+            else:
+                schedule.enter(
+                    # adding a random element eventually smooth out these checks, so that there's not a thundering herd to check, and allows other actions to execute inbetween.
+                    delay=15 + 10 * random.random(),
+                    priority=get_simple_priority(when_action),
+                    action=wrapped_execute_action(
+                        unit,
+                        experiment,
+                        env,
+                        job_name,
+                        logger,
+                        schedule,
+                        elapsed_seconds_func,
+                        client,
+                        when_action,
+                        dry_run,
+                    ),
+                )
+
+        else:
+            logger.debug(f"Action's `if` condition, `{if_}`, evaluated False. Skipping action.")
+
+    return wrap_in_try_except(_callable, logger)
+
+
+def repeat(
+    unit: str,
+    experiment: str,
+    client: Client,
+    job_name: str,
+    dry_run: bool,
+    if_: Optional[bool_expression],
+    env: dict,
+    logger: CustomLogger,
+    elapsed_seconds_func: Callable[[], float],
     repeat_action: struct.Repeat,
     while_: Optional[bool_expression],
     repeat_every_hours: float,
     max_hours: Optional[float],
-    actions: list[struct.ActionWithoutRepeat],
+    actions: list[struct.BasicAction],
     schedule: scheduler,
-):
+) -> Callable[..., None]:
     def _callable() -> None:
-        if ((if_ is None) or evaluate_bool_expression(if_, unit)) and (
-            ((while_ is None) or evaluate_bool_expression(while_, unit))
+        # first check if the Pioreactor is still part of the experiment.
+        if get_assigned_experiment_name(unit) != experiment:
+            logger.debug(
+                f"Skipping repeat action on {unit} do to not being assigned to experiment {experiment}."
+            )
+
+            return
+
+        nonlocal env
+        env = env | {"hours_elapsed": seconds_to_hours(elapsed_seconds_func())}
+
+        if ((if_ is None) or evaluate_bool_expression(if_, env)) and (
+            ((while_ is None) or evaluate_bool_expression(while_, env))
         ):
             for action in actions:
                 if action.hours_elapsed > repeat_every_hours:
@@ -256,7 +432,16 @@ def repeat(
                     delay=hours_to_seconds(action.hours_elapsed),
                     priority=get_simple_priority(action),
                     action=wrapped_execute_action(
-                        unit, experiment, job_name, logger, schedule, action, dry_run
+                        unit,
+                        experiment,
+                        env,
+                        job_name,
+                        logger,
+                        schedule,
+                        elapsed_seconds_func,
+                        client,
+                        action,
+                        dry_run,
                     ),
                 )
 
@@ -271,7 +456,16 @@ def repeat(
                     delay=hours_to_seconds(repeat_every_hours),
                     priority=get_simple_priority(repeat_action),
                     action=wrapped_execute_action(
-                        unit, experiment, job_name, logger, schedule, repeat_action, dry_run
+                        unit,
+                        experiment,
+                        env,
+                        job_name,
+                        logger,
+                        schedule,
+                        elapsed_seconds_func,
+                        client,
+                        repeat_action,
+                        dry_run,
                     ),
                 )
             else:
@@ -288,16 +482,30 @@ def repeat(
 def log(
     unit: str,
     experiment: str,
+    client: Client,
     job_name: str,
-    options: struct._LogOptions,
     dry_run: bool,
-    if_: Optional[str | bool],
+    if_: Optional[bool_expression],
+    env: dict,
     logger: CustomLogger,
+    elapsed_seconds_func: Callable[[], float],
+    options: struct._LogOptions,
 ) -> Callable[..., None]:
     def _callable() -> None:
-        if (if_ is None) or evaluate_bool_expression(if_, unit):
+        # first check if the Pioreactor is still part of the experiment.
+        if get_assigned_experiment_name(unit) != experiment:
+            logger.debug(
+                f"Skipping log action on {unit} do to not being assigned to experiment {experiment}."
+            )
+
+            return
+
+        nonlocal env
+        env = env | {"hours_elapsed": seconds_to_hours(elapsed_seconds_func())}
+
+        if (if_ is None) or evaluate_bool_expression(if_, env):
             level = options.level.lower()
-            getattr(logger, level)(options.message.format(unit=unit, job=job_name, experiment=experiment))
+            getattr(logger, level)(evaluate_log_message(options.message, env))
         else:
             logger.debug(f"Action's `if` condition, `{if_}`, evaluated False. Skipping action.")
 
@@ -307,21 +515,38 @@ def log(
 def start_job(
     unit: str,
     experiment: str,
+    client: Client,
     job_name: str,
+    dry_run: bool,
+    if_: Optional[bool_expression],
+    env: dict,
+    logger: CustomLogger,
+    elapsed_seconds_func: Callable[[], float],
     options: dict,
     args: list,
-    dry_run: bool,
-    if_: Optional[str | bool],
-    logger: CustomLogger,
 ) -> Callable[..., None]:
     def _callable() -> None:
-        if (if_ is None) or evaluate_bool_expression(if_, unit):
+        # first check if the Pioreactor is still part of the experiment.
+        if get_assigned_experiment_name(unit) != experiment:
+            logger.debug(
+                f"Skipping start action on {unit} do to not being assigned to experiment {experiment}."
+            )
+            return
+
+        nonlocal env
+        env = env | {"hours_elapsed": seconds_to_hours(elapsed_seconds_func())}
+
+        if (if_ is None) or evaluate_bool_expression(if_, env):
             if dry_run:
                 logger.info(f"Dry-run: Starting {job_name} on {unit} with options {options} and args {args}.")
             else:
-                publish(
-                    f"pioreactor/{unit}/{experiment}/run/{job_name}",
-                    encode({"options": evaluate_options(options, unit), "args": args}),
+                patch_into_leader(
+                    f"/api/workers/{unit}/jobs/run/job_name/{job_name}/experiments/{experiment}",
+                    json={
+                        "options": evaluate_options(options, env),
+                        "env": {"JOB_SOURCE": "experiment_profile", "EXPERIMENT": experiment},
+                        "args": args,
+                    },
                 )
         else:
             logger.debug(f"Action's `if` condition, `{if_}`, evaluated False. Skipping action.")
@@ -332,17 +557,33 @@ def start_job(
 def pause_job(
     unit: str,
     experiment: str,
+    client: Client,
     job_name: str,
     dry_run: bool,
-    if_: Optional[str | bool],
+    if_: Optional[bool_expression],
+    env: dict,
     logger: CustomLogger,
+    elapsed_seconds_func: Callable[[], float],
 ) -> Callable[..., None]:
     def _callable() -> None:
-        if (if_ is None) or evaluate_bool_expression(if_, unit):
+        # first check if the Pioreactor is still part of the experiment.
+        if get_assigned_experiment_name(unit) != experiment:
+            logger.debug(
+                f"Skipping pause action on {unit} do to not being assigned to experiment {experiment}."
+            )
+            return
+
+        nonlocal env
+        env = env | {"hours_elapsed": seconds_to_hours(elapsed_seconds_func())}
+
+        if (if_ is None) or evaluate_bool_expression(if_, env):
             if dry_run:
                 logger.info(f"Dry-run: Pausing {job_name} on {unit}.")
             else:
-                publish(f"pioreactor/{unit}/{experiment}/{job_name}/$state/set", "sleeping")
+                patch_into_leader(
+                    f"/api/workers/{unit}/jobs/update/job_name/{job_name}/experiments/{experiment}",
+                    json={"settings": {"$state": "sleeping"}},
+                )
         else:
             logger.debug(f"Action's `if` condition, `{if_}`, evaluated False. Skipping action.")
 
@@ -352,17 +593,34 @@ def pause_job(
 def resume_job(
     unit: str,
     experiment: str,
+    client: Client,
     job_name: str,
     dry_run: bool,
-    if_: Optional[str | bool],
+    if_: Optional[bool_expression],
+    env: dict,
     logger: CustomLogger,
+    elapsed_seconds_func: Callable[[], float],
 ) -> Callable[..., None]:
     def _callable() -> None:
-        if (if_ is None) or evaluate_bool_expression(if_, unit):
+        # first check if the Pioreactor is still part of the experiment.
+        if get_assigned_experiment_name(unit) != experiment:
+            logger.debug(
+                f"Skipping resume action on {unit} do to not being assigned to experiment {experiment}."
+            )
+
+            return
+
+        nonlocal env
+        env = env | {"hours_elapsed": seconds_to_hours(elapsed_seconds_func())}
+
+        if (if_ is None) or evaluate_bool_expression(if_, env):
             if dry_run:
                 logger.info(f"Dry-run: Resuming {job_name} on {unit}.")
             else:
-                publish(f"pioreactor/{unit}/{experiment}/{job_name}/$state/set", "ready")
+                patch_into_leader(
+                    f"/api/workers/{unit}/jobs/update/job_name/{job_name}/experiments/{experiment}",
+                    json={"settings": {"$state": "ready"}},
+                )
         else:
             logger.debug(f"Action's `if` condition, `{if_}`, evaluated False. Skipping action.")
 
@@ -372,17 +630,33 @@ def resume_job(
 def stop_job(
     unit: str,
     experiment: str,
+    client: Client,
     job_name: str,
     dry_run: bool,
-    if_: Optional[str | bool],
+    if_: Optional[bool_expression],
+    env: dict,
     logger: CustomLogger,
+    elapsed_seconds_func: Callable[[], float],
 ) -> Callable[..., None]:
     def _callable() -> None:
-        if (if_ is None) or evaluate_bool_expression(if_, unit):
+        # first check if the Pioreactor is still part of the experiment.
+        if get_assigned_experiment_name(unit) != experiment:
+            logger.debug(
+                f"Skipping stop action on {unit} do to not being assigned to experiment {experiment}."
+            )
+
+            return
+
+        nonlocal env
+        env = env | {"hours_elapsed": seconds_to_hours(elapsed_seconds_func())}
+
+        if (if_ is None) or evaluate_bool_expression(if_, env):
             if dry_run:
                 logger.info(f"Dry-run: Stopping {job_name} on {unit}.")
             else:
-                publish(f"pioreactor/{unit}/{experiment}/{job_name}/$state/set", "disconnected")
+                patch_into_leader(
+                    f"/api/workers/{unit}/jobs/stop/job_name/{job_name}/experiments/{experiment}",
+                )
         else:
             logger.debug(f"Action's `if` condition, `{if_}`, evaluated False. Skipping action.")
 
@@ -392,21 +666,38 @@ def stop_job(
 def update_job(
     unit: str,
     experiment: str,
+    client: Client,
     job_name: str,
-    options: dict,
     dry_run: bool,
-    if_: Optional[str | bool],
+    if_: Optional[bool_expression],
+    env: dict,
     logger: CustomLogger,
+    elapsed_seconds_func: Callable[[], float],
+    options: dict,
 ) -> Callable[..., None]:
     def _callable() -> None:
-        if (if_ is None) or evaluate_bool_expression(if_, unit):
+        # first check if the Pioreactor is still part of the experiment.
+        if get_assigned_experiment_name(unit) != experiment:
+            logger.debug(
+                f"Skipping update action on {unit} do to not being assigned to experiment {experiment}."
+            )
+
+            return
+
+        nonlocal env
+        env = env | {"hours_elapsed": seconds_to_hours(elapsed_seconds_func())}
+
+        if (if_ is None) or evaluate_bool_expression(if_, env):
             if dry_run:
                 for setting, value in options.items():
                     logger.info(f"Dry-run: Updating {setting} to {value} in {job_name} on {unit}.")
 
             else:
-                for setting, value in evaluate_options(options, unit).items():
-                    publish(f"pioreactor/{unit}/{experiment}/{job_name}/{setting}/set", value)
+                for setting, value in evaluate_options(options, env).items():
+                    patch_into_leader(
+                        f"/api/workers/{unit}/jobs/update/job_name/{job_name}/experiments/{experiment}",
+                        json={"settings": {setting: value}},
+                    )
         else:
             logger.debug(f"Action's `if` condition, `{if_}`, evaluated False. Skipping action.")
 
@@ -417,11 +708,13 @@ def hours_to_seconds(hours: float) -> float:
     return hours * 60 * 60
 
 
+def seconds_to_hours(seconds: float) -> float:
+    return seconds / 60.0 / 60.0
+
+
 def _verify_experiment_profile(profile: struct.Profile) -> bool:
     # things to check for:
-    # 1. Don't "stop" or "start" any *_automations
-    # 2. Don't change generic settings on *_controllers, (Ex: changing target temp on temp_controller is wrong)
-    # 3. check syntax of if statements
+    # 1. check syntax of if statements
 
     actions_per_job = defaultdict(list)
 
@@ -435,35 +728,6 @@ def _verify_experiment_profile(profile: struct.Profile) -> bool:
             actions_per_job[job].append(action)
 
     # 1.
-    def check_for_not_stopping_automations(action: struct.Action) -> bool:
-        match action:
-            case struct.Stop(_):
-                raise ValueError(
-                    f"Don't use 'stop' for automations. To stop automations, use 'stop' for controllers: {action}"
-                )
-            case struct.Start(_):
-                raise ValueError(
-                    f"Don't use 'start' for automations. To start automations, use 'start' for controllers with `options`: {action}"
-                )
-            case _:
-                pass
-        return True
-
-    for automation_type in ["temperature_automation", "dosing_automation", "led_automation"]:
-        assert all(check_for_not_stopping_automations(act) for act in actions_per_job[automation_type])
-
-    # 2.
-    def check_for_settings_change_on_controllers(action: struct.Action) -> bool:
-        match action:
-            case struct.Update(_, _, options):
-                if "automation_name" not in options:
-                    raise ValueError(f"Update automations, not controllers, with settings: {action}.")
-        return True
-
-    for control_type in ["temperature_control", "dosing_control", "led_control"]:
-        assert all(check_for_settings_change_on_controllers(act) for act in actions_per_job[control_type])
-
-    # 3.
     for job in actions_per_job:
         for action in actions_per_job[job]:
             if action.if_ and not check_syntax_of_bool_expression(action.if_):
@@ -486,79 +750,85 @@ def _load_experiment_profile(profile_filename: str) -> struct.Profile:
 
 def load_and_verify_profile(profile_filename: str) -> struct.Profile:
     profile = _load_experiment_profile(profile_filename)
-    _verify_experiment_profile(profile)
+    assert _verify_experiment_profile(profile), "profile is incorrect"
     return profile
 
 
-def push_labels_to_ui(labels_map: dict[str, str]) -> None:
+def push_labels_to_ui(experiment, labels_map: dict[str, str]) -> None:
     try:
         for unit_name, label in labels_map.items():
-            put(
-                f"http://{leader_address}/api/unit_labels/current",
-                encode({"unit": unit_name, "label": label}),
-                headers={"Content-Type": "application/json"},
+            patch_into_leader(
+                f"/api/experiments/{experiment}/unit_labels", json={"unit": unit_name, "label": label}
             )
     except Exception:
         pass
 
 
-def get_installed_packages() -> dict[str, str]:
-    import pkg_resources
+def get_installed_plugins_and_versions() -> dict[str, str]:
+    from pioreactor.plugin_management import get_plugins
 
-    """Return a dictionary of installed packages and their versions"""
-    installed_packages = {d.project_name: d.version for d in pkg_resources.working_set}
-    return installed_packages
+    local_plugins = {name: metadata.version for name, metadata in get_plugins().items()}
+    return local_plugins
 
 
-def check_plugins(plugins: list[struct.Plugin]) -> None:
-    """Check if the specified packages with versions are installed"""
+def check_plugins(required_plugins: list[struct.Plugin]) -> None:
+    """Check if the specified plugins with versions are installed"""
 
-    if not plugins:
+    if not required_plugins:
         # this can be slow, so skip it if no plugins are needed
         return
 
-    installed_packages = get_installed_packages()
+    from packaging.version import Version
+
+    installed_plugins = get_installed_plugins_and_versions()
     not_installed = []
 
-    for plugin in plugins:
-        name = plugin.name
-        version = plugin.version
-        if name in installed_packages:
-            if version.startswith(">="):
+    for required_plugin in required_plugins:
+        required_name = required_plugin.name
+        required_version = required_plugin.version
+        if required_name in installed_plugins:
+            installed_version = Version(installed_plugins[required_name])
+            if required_version.startswith(">="):
                 # Version constraint is '>='
-                if installed_packages[name] < version[2:]:
-                    not_installed.append(plugin)
-            if version.startswith("<="):
+                if not (installed_version >= Version(required_version[2:])):
+                    not_installed.append(required_plugin)
+            elif required_version.startswith("<="):
                 # Version constraint is '<='
-                if installed_packages[name] > version[2:]:
-                    not_installed.append(plugin)
+                if not (installed_version <= Version(required_version[2:])):
+                    not_installed.append(required_plugin)
+            elif required_version.startswith("=="):
+                # specific version constraint, exact version match required
+                if installed_version != Version(required_version):
+                    not_installed.append(required_plugin)
             else:
                 # No version constraint, exact version match required
-                if installed_packages[name] != version:
-                    not_installed.append(plugin)
+                if installed_version != Version(required_version):
+                    not_installed.append(required_plugin)
         else:
-            not_installed.append(plugin)
+            not_installed.append(required_plugin)
 
     if not_installed:
-        raise ImportError(f"Missing packages {not_installed}")
+        raise ImportError(f"Missing plugins: {not_installed}")
 
 
-def execute_experiment_profile(profile_filename: str, dry_run: bool = False) -> None:
+def execute_experiment_profile(profile_filename: str, experiment: str, dry_run: bool = False) -> None:
     unit = get_unit_name()
-    experiment = get_latest_experiment_name()
     action_name = "experiment_profile"
-    logger = create_logger(action_name)
-    with publish_ready_to_disconnected_state(unit, experiment, action_name) as state:
+    logger = create_logger(action_name, unit=unit, experiment=experiment)
+    with managed_lifecycle(unit, experiment, action_name, ignore_is_active_state=True) as state:
         try:
             profile = load_and_verify_profile(profile_filename)
         except Exception as e:
             logger.error(e)
             raise e
 
-        state.mqtt_client.publish(
-            f"pioreactor/{unit}/{experiment}/{action_name}/experiment_profile_name",
+        state.publish_setting(
+            "experiment_profile_name",
             profile.experiment_profile_name,
-            retain=True,
+        )
+        state.publish_setting(
+            "start_time_utc",
+            current_utc_timestamp(),
         )
 
         if dry_run:
@@ -577,77 +847,103 @@ def execute_experiment_profile(profile_filename: str, dry_run: bool = False) -> 
             logger.error(e)
             raise e
 
-        s = scheduler()
+        global_env = profile.inputs
 
-        # process common
-        for job_name, job in profile.common.jobs.items():
-            for action in job.actions:
-                s.enter(
-                    delay=hours_to_seconds(action.hours_elapsed),
-                    priority=get_simple_priority(action),
-                    action=common_wrapped_execute_action(
-                        experiment,
-                        job_name,
-                        logger,
-                        s,
-                        action,
-                        dry_run,
-                    ),
-                )
+        sched = scheduler()
 
-        # process specific pioreactors
-        for unit_ in profile.pioreactors:
-            pioreactor_specific_block = profile.pioreactors[unit_]
-            if pioreactor_specific_block.label is not None:
-                label = pioreactor_specific_block.label
-                push_labels_to_ui({unit_: label})
-
-            for job_name, job in pioreactor_specific_block.jobs.items():
+        with catchtime() as elapsed_seconds_func:
+            # process common
+            for job_name, job in profile.common.jobs.items():
                 for action in job.actions:
-                    s.enter(
+                    sched.enter(
                         delay=hours_to_seconds(action.hours_elapsed),
                         priority=get_simple_priority(action),
-                        action=wrapped_execute_action(
-                            unit_,
+                        action=common_wrapped_execute_action(
                             experiment,
                             job_name,
+                            global_env,
                             logger,
-                            s,
+                            sched,
+                            elapsed_seconds_func,
+                            state.mqtt_client,
                             action,
                             dry_run,
                         ),
                     )
 
-        logger.debug("Starting execution actions.")
+            # process specific pioreactors
+            for unit_ in profile.pioreactors:
+                try:
+                    assigned_experiment = get_assigned_experiment_name(unit_)
+                except NotAssignedAnExperimentError:
+                    assigned_experiment = None
+
+                if (assigned_experiment != experiment) and not is_testing_env():
+                    logger.warning(
+                        f"There exists profile actions for {unit}, but it's not assigned to experiment {experiment}. Skipping scheduling actions."
+                    )
+                    continue
+
+                pioreactor_specific_block = profile.pioreactors[unit_]
+                if pioreactor_specific_block.label is not None:
+                    label = pioreactor_specific_block.label
+                    push_labels_to_ui(experiment, {unit_: label})
+
+                for job_name, job in pioreactor_specific_block.jobs.items():
+                    for action in job.actions:
+                        sched.enter(
+                            delay=hours_to_seconds(action.hours_elapsed),
+                            priority=get_simple_priority(action),
+                            action=wrapped_execute_action(
+                                unit_,
+                                experiment,
+                                global_env,
+                                job_name,
+                                logger,
+                                sched,
+                                elapsed_seconds_func,
+                                state.mqtt_client,
+                                action,
+                                dry_run,
+                            ),
+                        )
+
+        logger.debug("Starting execution of actions.")
 
         try:
             # try / finally to handle keyboard interrupts
 
             # the below is so the schedule can be canceled by setting the event.
             while not state.exit_event.wait(timeout=0):
-                next_event_in = s.run(blocking=False)
+                next_event_in = sched.run(blocking=False)
                 if next_event_in is not None:
-                    time.sleep(min(0.5, next_event_in))
+                    time.sleep(min(0.25, next_event_in))
                 else:
                     break
         finally:
-            state.mqtt_client.publish(
-                f"pioreactor/{unit}/{experiment}/{action_name}/experiment_profile_name",
-                None,
-                retain=True,
-            )
-
             if state.exit_event.is_set():
                 # ended early
-                logger.notice(f"Exiting profile {profile.experiment_profile_name} early: {len(s.queue)} actions not started.")  # type: ignore
+
+                logger.notice(f"Stopping profile {profile.experiment_profile_name} early: {len(sched.queue)} actions not started, and stopping all started actions.")  # type: ignore
+                # stop all jobs started
+                # we can use active workers in experiment, since if a worker leaves an experiment or goes inactive, it's jobs are stopped
+                workers = get_active_workers_in_experiment(experiment)
+                with ClusterJobManager() as cjm:
+                    cjm.kill_jobs(workers, experiment=experiment, job_source="experiment_profile")
+
             else:
                 if dry_run:
-                    logger.notice(  # type: ignore
+                    logger.info(  # type: ignore
                         f"Finished executing DRY-RUN of profile {profile.experiment_profile_name}."
                     )
 
                 else:
-                    logger.notice(f"Finished executing profile {profile.experiment_profile_name}.")  # type: ignore
+                    logger.info(f"Finished executing profile {profile.experiment_profile_name}.")  # type: ignore
+
+            state.publish_setting("experiment_profile_name", None)
+            state.publish_setting("start_time_utc", None)
+
+            logger.clean_up()
 
 
 @click.group(name="experiment_profile")
@@ -660,12 +956,13 @@ def click_experiment_profile():
 
 @click_experiment_profile.command(name="execute")
 @click.argument("filename", type=click.Path())
+@click.argument("experiment", type=str)
 @click.option("--dry-run", is_flag=True, help="Don't actually execute, just print to screen")
-def click_execute_experiment_profile(filename: str, dry_run: bool) -> None:
+def click_execute_experiment_profile(filename: str, experiment: str, dry_run: bool) -> None:
     """
     (leader only) Run an experiment profile.
     """
-    execute_experiment_profile(filename, dry_run)
+    execute_experiment_profile(filename, experiment, dry_run)
 
 
 @click_experiment_profile.command(name="verify")
