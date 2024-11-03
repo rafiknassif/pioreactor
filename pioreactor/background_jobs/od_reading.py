@@ -897,15 +897,16 @@ class ODReader(BackgroundJob):
             pubsub_client=self.pub_client,
             verbose=False,
         ):
+            sleep(2)
             with led_utils.lock_leds_temporarily(self.non_ir_led_channels):
                 # IR led is on
                 self.start_ir_led()
-                sleep(3)
+                sleep(0.1)
                 self.adc_reader.setup_adc()  # determine best gain, max-signal, etc.
 
                 # IR led is off so we can set blanks
                 self.stop_ir_led()
-                sleep(3)
+                sleep(0.1)
 
                 blank_reading = average_over_pd_channel_to_voltages(
                     self.adc_reader.take_reading(),
@@ -916,11 +917,11 @@ class ODReader(BackgroundJob):
                 # clear the history in adc_reader, so that we don't blank readings in later inference.
                 self.adc_reader.clear_batched_readings()
                 
-        self.start_ir_led()
-        sleep(3)
-
                 if determine_best_ir_led_intensity:
                     self.ir_led_intensity = self._determine_best_ir_led_intensity(on_reading, blank_reading)
+
+        #self.start_ir_led()
+        #sleep(3)
 
         if (self.interval is not None) and self.interval > 0:
             if self.interval <= 1.0:
@@ -1023,17 +1024,22 @@ class ODReader(BackgroundJob):
         # we put a soft lock on the LED channels - it's up to the
         # other jobs to make sure they check the locks.
         with led_utils.change_leds_intensities_temporarily(
-            desired_state=self.ir_led_on_and_rest_off_state,
+            #desired_state=self.ir_led_on_and_rest_off_state, #changed in orded not to turn on ir light source for duration it takes to disable light source. may need to bring back when i calculate offset for every measurement
+            {ch: 0.0 for ch in led_utils.ALL_LED_CHANNELS},
             unit=self.unit,
             experiment=self.experiment,
             source_of_event=self.job_name,
             pubsub_client=self.pub_client,
             verbose=False,
         ):
+            sleep(2)
             with led_utils.lock_leds_temporarily(self.non_ir_led_channels):
+                self.start_ir_led()
                 sleep(0.1)
                 timestamp_of_readings = timing.current_utc_datetime()
                 od_reading_by_channel = self._read_from_adc_and_transform()
+                self.stop_ir_led()
+                sleep(0.1)
                 od_readings = structs.ODReadings(
                     timestamp=timestamp_of_readings,
                     ods={

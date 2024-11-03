@@ -18,6 +18,7 @@ CORE_REQUIREMENTS = [
     "diskcache==5.6.3",
     "wheel==0.41.2",
     "crudini==0.9.5",
+    "filterpy==1.4.5",
     # "lgpio; platform_machine!='armv7l' and platform_machine!='armv6l'", # primarily available with base image, or via apt-get install python3-lgpio
 ]
 

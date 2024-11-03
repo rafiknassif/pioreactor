@@ -5,9 +5,10 @@ from json import dumps
 from math import sqrt
 from threading import Timer
 from typing import Optional
-
 from pioreactor.pubsub import create_client
-
+import numpy as np
+from filterpy.kalman import UnscentedKalmanFilter as UKF
+from filterpy.kalman import MerweScaledSigmaPoints
 
 class ExponentialMovingAverage:
     """
@@ -88,7 +89,8 @@ class ExponentialMovingStd:
         self.ema.clear()
 
 
-class CultureGrowthEKF:
+class CultureGrowthUKF:
+
     """
     Modified from the algorithm in
     https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0181923#pone.0181923.s007
@@ -137,10 +139,10 @@ class CultureGrowthEKF:
         initial_covariance = np.eye(2)
         process_noise_covariance = np.array([[0.00001, 0], [0, 1e-13]])
         observation_noise_covariance = 0.2
-        ekf = CultureGrowthEKF(initial_state, initial_covariance, process_noise_covariance, observation_noise_covariance)
+        ukf = CultureGrowthUKF(initial_state, initial_covariance, process_noise_covariance, observation_noise_covariance)
 
-        ekf.update(...)
-        ekf.state_
+        ukf.update(...)
+        ukf.state_
 
 
     Scaling
@@ -202,10 +204,12 @@ class CultureGrowthEKF:
         observation_noise_covariance,
         angles: list[str],
         outlier_std_threshold: float,
+        alpha,
+        beta,
+        kappa
     ) -> None:
-        import numpy as np
 
-        initial_state = np.asarray(initial_state)
+        #initial_state = np.asarray(initial_state)
 
         assert initial_state.shape[0] == 3
         assert (
@@ -215,62 +219,86 @@ class CultureGrowthEKF:
         assert self._is_positive_definite(process_noise_covariance)
         assert self._is_positive_definite(initial_covariance)
         assert self._is_positive_definite(observation_noise_covariance)
-
-        self.process_noise_covariance = process_noise_covariance
-        self.observation_noise_covariance = observation_noise_covariance
-        self.state_ = initial_state
-        self.covariance_ = initial_covariance
+                
+        #self.process_noise_covariance = process_noise_covariance
+        #self.observation_noise_covariance = observation_noise_covariance
+        #self.state_ = initial_state
+        #self.covariance_ = initial_covariance
         self.n_sensors = observation_noise_covariance.shape[0]
         self.n_states = initial_state.shape[0]
         self.angles = angles
         self.outlier_std_threshold = outlier_std_threshold
-
         self._currently_scaling_covariance = False
         self._currently_scaling_process_covariance = False
         self._scale_covariance_timer: Optional[Timer] = None
         self._covariance_pre_scale = None
+        
+        def f(x, dt):
+            """State transition function"""
+            od, rate, acc = x
+            od_pred=(od+(rate*dt)+(0.5*acc*dt**2))
+            gr_pred= rate + (acc*dt)
+            x_pred = np.array([od_pred, gr_pred, acc])
+            return x_pred
 
+        def h(x):
+            """Observation function"""
+            return np.array([x[0]])
+        dt = 1  #placeholder updated in predict step just to initialize ukf
+        sigmas = MerweScaledSigmaPoints(n=3, alpha=alpha, beta=beta, kappa=kappa)
+        self.ukf = UKF(dim_x=3, dim_z=1, fx=f, hx=h, dt=dt, points=sigmas)
+        self.ukf.x = np.asarray(initial_state)
+        self.ukf.P = initial_covariance
+        self.ukf.R = observation_noise_covariance
+        self.ukf.Q = process_noise_covariance
+        
+
+    
     def update(self, observation_: list[float], dt: float):
-        import numpy as np
 
         observation = np.asarray(observation_)
         assert observation.shape[0] == self.n_sensors, (observation, self.n_sensors)
-
+        
         # Predict
-        state_prediction = self.update_state_from_previous_state(self.state_, dt)
-        covariance_prediction = self.update_covariance_from_old_covariance(self.state_, self.covariance_, dt)
+        self.ukf.predict(dt=dt)
+
+        # state_prediction = self.update_state_from_previous_state(self.state_, dt)
+        # covariance_prediction = self.update_covariance_from_old_covariance(self.state_, self.covariance_, dt)
 
         # Update
+
         ### innovation
-        residual_state = observation - self.update_observations_from_state(state_prediction)
+        # residual_state = observation - self.update_observations_from_state(state_prediction)
 
-        H = self._J_update_observations_from_state(state_prediction)
+        # H = self._J_update_observations_from_state(state_prediction)
 
-        ### optimal gain
-        residual_covariance = (
-            # see Scaling note above for why we multiple by state_[0]
-            H @ covariance_prediction @ H.T
-            + self.state_[0] * self.observation_noise_covariance
-        )
+        # ### optimal gain
+        # residual_covariance = (
+        #     # see Scaling note above for why we multiple by state_[0]
+        #     H @ covariance_prediction @ H.T
+        #     + self.state_[0] * self.observation_noise_covariance
+        # )
 
-        huber_threshold = self.outlier_std_threshold * np.sqrt(residual_covariance[0, 0])
-        currently_is_outlier = abs(residual_state[0]) > huber_threshold
+        # huber_threshold = self.outlier_std_threshold * np.sqrt(residual_covariance[0, 0])
+        # currently_is_outlier = abs(residual_state[0]) > huber_threshold
 
-        if self.handle_outliers and (currently_is_outlier):
-            covariance_prediction[0, 0] = 2 * covariance_prediction[0, 0]
-            kalman_gain_ = np.linalg.solve(residual_covariance.T, (H @ covariance_prediction.T)).T
+        # if self.handle_outliers and (currently_is_outlier):
+        #     covariance_prediction[0, 0] = 2 * covariance_prediction[0, 0]
+        #     kalman_gain_ = np.linalg.solve(residual_covariance.T, (H @ covariance_prediction.T)).T
 
-            # adjust the gain s.t. we freeze acc and gr, and scale the nOD inversely by the size of the outlier.
-            kalman_gain_[0, 0] *= huber_threshold / abs(residual_state[0])
-            kalman_gain_[1:, 0] = 0
-        else:
-            kalman_gain_ = np.linalg.solve(residual_covariance.T, (H @ covariance_prediction.T)).T
+        #     # adjust the gain s.t. we freeze acc and gr, and scale the nOD inversely by the size of the outlier.
+        #     kalman_gain_[0, 0] *= huber_threshold / abs(residual_state[0])
+        #     kalman_gain_[1:, 0] = 0
+        # else:
+        #     kalman_gain_ = np.linalg.solve(residual_covariance.T, (H @ covariance_prediction.T)).T
 
         ### update estimates
-        self.state_ = state_prediction + kalman_gain_ @ residual_state
-        self.covariance_ = (np.eye(self.n_states) - kalman_gain_ @ H) @ covariance_prediction
+        # self.state_ = state_prediction + kalman_gain_ @ residual_state
+        # self.covariance_ = (np.eye(self.n_states) - kalman_gain_ @ H) @ covariance_prediction
+        
+        self.ukf.update(observation)
 
-        return self.state_, self.covariance_
+        return self.ukf.x, self.ukf.P
 
     def scale_OD_variance_for_next_n_seconds(self, factor: float, seconds: float):
         """
@@ -279,7 +307,7 @@ class CultureGrowthEKF:
         if we invoke this function again (i.e. a new dosing event). When the Timer successfully
         executes its function, then we restore state (add back the covariance matrix.)
 
-        TODO: this should be decoupled from the EKF class.
+        TODO: this should be decoupled from the UKF class.
 
         """
         import numpy as np
@@ -309,105 +337,105 @@ class CultureGrowthEKF:
 
         forward_scale_covariance()
 
-    def update_state_from_previous_state(self, state, dt: float):
-        """
-        Denoted "f" in literature, x_{k} = f(x_{k-1})
+    # def update_state_from_previous_state(self, state, dt: float):
+    #     """
+    #     Denoted "f" in literature, x_{k} = f(x_{k-1})
 
-        state = [OD, r, a]
+    #     state = [OD, r, a]
 
-        OD_t = OD_{t-1}·exp(r_{t-1}·Δt)
-        r_t  = r_{t-1} + a_{t-1}·Δt
-        a_t  = a_{t-1}
+    #     OD_t = OD_{t-1}·exp(r_{t-1}·Δt)
+    #     r_t  = r_{t-1} + a_{t-1}·Δt
+    #     a_t  = a_{t-1}
 
-        """
-        import numpy as np
+    #     """
+    #     import numpy as np
 
-        od, rate, acc = state
-        return np.array([od * np.exp(rate * dt), rate + acc * dt, acc])
+    #     od, rate, acc = state
+    #     return np.array([od * np.exp(rate * dt), rate + acc * dt, acc])
 
-    def _J_update_observations_from_state(self, state_prediction):
-        """
-        Jacobian of observations model, encoded as update_observations_from_state
+    # def _J_update_observations_from_state(self, state_prediction):
+    #     """
+    #     Jacobian of observations model, encoded as update_observations_from_state
 
-        measurement model is:
+    #     measurement model is:
 
-        m_{1,t} = g1(OD_{t-1})
-        m_{2,t} = g2(OD_{t-1})
-        ...
+    #     m_{1,t} = g1(OD_{t-1})
+    #     m_{2,t} = g2(OD_{t-1})
+    #     ...
 
-        gi are generic functions. Often they are the identity function, but if using a 180deg sensor
-        then it would be the inverse function. One day it could model saturation, too.
+    #     gi are generic functions. Often they are the identity function, but if using a 180deg sensor
+    #     then it would be the inverse function. One day it could model saturation, too.
 
-        jac(h) = [
-            [1, 0, 0],
-            [1, 0, 0],
-            ...
-        ]
+    #     jac(h) = [
+    #         [1, 0, 0],
+    #         [1, 0, 0],
+    #         ...
+    #     ]
 
-        """
-        from numpy import exp
-        from numpy import zeros
+    #     """
+    #     from numpy import exp
+    #     from numpy import zeros
 
-        od = state_prediction[0]
-        J = zeros((self.n_sensors, 3))
-        for i in range(self.n_sensors):
-            angle = self.angles[i]
-            J[i, 0] = 1.0 if (angle != "180") else -exp(-(od - 1))
-        return J
+    #     od = state_prediction[0]
+    #     J = zeros((self.n_sensors, 3))
+    #     for i in range(self.n_sensors):
+    #         angle = self.angles[i]
+    #         J[i, 0] = 1.0 if (angle != "180") else -exp(-(od - 1))
+    #     return J
 
-    def update_covariance_from_old_covariance(self, state, covariance, dt: float):
-        jacobian = self._J_update_state_from_previous_state(state, dt)
-        return jacobian @ covariance @ jacobian.T + self.process_noise_covariance
+    # def update_covariance_from_old_covariance(self, state, covariance, dt: float):
+    #     jacobian = self._J_update_state_from_previous_state(state, dt)
+    #     return jacobian @ covariance @ jacobian.T + self.process_noise_covariance
 
-    def update_observations_from_state(self, state_predictions):
-        """
-        "h" in the literature, z_k = h(x_k).
+    # def update_observations_from_state(self, state_predictions):
+    #     """
+    #     "h" in the literature, z_k = h(x_k).
 
-        Return shape is (n_sensors,)
-        """
-        import numpy as np
+    #     Return shape is (n_sensors,)
+    #     """
+    #     import numpy as np
 
-        obs = np.zeros((self.n_sensors,))
-        od = state_predictions[0]
+    #     obs = np.zeros((self.n_sensors,))
+    #     od = state_predictions[0]
 
-        for i in range(self.n_sensors):
-            angle = self.angles[i]
-            obs[i] = od if (angle != "180") else np.exp(-(od - 1))
-        return obs
+    #     for i in range(self.n_sensors):
+    #         angle = self.angles[i]
+    #         obs[i] = od if (angle != "180") else np.exp(-(od - 1))
+    #     return obs
 
-    def _J_update_state_from_previous_state(self, state, dt: float):
-        """
-        The prediction process is (encoded in update_state_from_previous_state)
+    # def _J_update_state_from_previous_state(self, state, dt: float):
+    #     """
+    #     The prediction process is (encoded in update_state_from_previous_state)
 
-            state = [OD, r, a]
+    #         state = [OD, r, a]
 
-            OD_t = OD_{t-1} * exp(r_{t-1} * Δt)
-            r_t = r_{t-1} + a_{t-1}Δt
-            a_t = a_{t-1}
+    #         OD_t = OD_{t-1} * exp(r_{t-1} * Δt)
+    #         r_t = r_{t-1} + a_{t-1}Δt
+    #         a_t = a_{t-1}
 
-        So jacobian should look like:
+    #     So jacobian should look like:
 
-        [
-            [exp(r Δt),  OD * exp(r Δt) * Δt,  0],
-            [0,          1,                    Δt],
-            [0,          0,                    1],
-        ]
+    #     [
+    #         [exp(r Δt),  OD * exp(r Δt) * Δt,  0],
+    #         [0,          1,                    Δt],
+    #         [0,          0,                    1],
+    #     ]
 
 
-        """
-        import numpy as np
+    #     """
+    #     import numpy as np
 
-        J = np.zeros((3, 3))
+    #     J = np.zeros((3, 3))
 
-        od, rate, acc = state
-        J[0, 0] = np.exp(rate * dt)
-        J[1, 1] = 1
-        J[2, 2] = 1
+    #     od, rate, acc = state
+    #     J[0, 0] = np.exp(rate * dt)
+    #     J[1, 1] = 1
+    #     J[2, 2] = 1
 
-        J[0, 1] = od * np.exp(rate * dt) * dt
-        J[1, 2] = dt
+    #     J[0, 1] = od * np.exp(rate * dt) * dt
+    #     J[1, 2] = dt
 
-        return J
+    #     return J
 
     @staticmethod
     def _is_positive_definite(A) -> bool:

@@ -47,67 +47,69 @@ def od_statistics(
         f"Starting to compute statistics from OD readings. Collecting {n_samples} data points."
     )
 
-    # turn on stirring if not already on
-    if not is_pio_job_running("stirring"):
-        from pioreactor.background_jobs.stirring import start_stirring
+    # turn on stirring if not already on 
+    #i disabled this no need for stirring
+    # if not is_pio_job_running("stirring"):
+    #     from pioreactor.background_jobs.stirring import start_stirring
 
-        logger.info("Starting stirring.")
-        st = start_stirring(
-            unit=unit,
-            experiment=experiment,
+    #     logger.info("Starting stirring.")
+    #     st = start_stirring(
+    #         unit=unit,
+    #         experiment=experiment,
+    #     )
+    #     st.block_until_rpm_is_close_to_target(timeout=40)  # wait for maximum 2 minutes
+    # else:
+    #     st = nullcontext()  # type: ignore
+
+    #with st:
+    #tabbed following lines back no longer need with
+    readings = defaultdict(list)
+    angles = {}
+
+    # okay now start collecting
+    for count, batched_reading in enumerate(od_stream, start=1):
+        for channel, reading in batched_reading.ods.items():
+            readings[channel].append(reading.od)
+            angles[channel] = reading.angle
+
+        pubsub.publish(
+            f"pioreactor/{unit}/{experiment}/{action_name}/percent_progress",
+            int(count / n_samples * 100),
         )
-        st.block_until_rpm_is_close_to_target(timeout=40)  # wait for maximum 2 minutes
-    else:
-        st = nullcontext()  # type: ignore
+        logger.debug(f"Progress: {count/n_samples:.0%}")
 
-    with st:
-        readings = defaultdict(list)
-        angles = {}
+        if count == n_samples:
+            break
 
-        # okay now start collecting
-        for count, batched_reading in enumerate(od_stream, start=1):
-            for channel, reading in batched_reading.ods.items():
-                readings[channel].append(reading.od)
-                angles[channel] = reading.angle
+    means = {}
+    variances = {}
+    autocorrelations = {}  # lag 1
 
-            pubsub.publish(
-                f"pioreactor/{unit}/{experiment}/{action_name}/percent_progress",
-                int(count / n_samples * 100),
+    for channel, od_reading_series in readings.items():
+        # measure the mean and publish. The mean will be used to normalize the readings in downstream jobs
+        assert len(od_reading_series) == n_samples
+        means[channel] = math_helpers.trimmed_mean(od_reading_series)
+        variances[channel] = math_helpers.trimmed_variance(
+            math_helpers.residuals_of_simple_linear_regression(
+                list(range(n_samples)), od_reading_series, trimmed=True
             )
-            logger.debug(f"Progress: {count/n_samples:.0%}")
+        )  # see issue #206
+        autocorrelations[channel] = math_helpers.correlation(
+            od_reading_series[:-1], od_reading_series[1:]
+        )
 
-            if count == n_samples:
-                break
-
-        means = {}
-        variances = {}
-        autocorrelations = {}  # lag 1
-
-        for channel, od_reading_series in readings.items():
-            # measure the mean and publish. The mean will be used to normalize the readings in downstream jobs
-            assert len(od_reading_series) == n_samples
-            means[channel] = math_helpers.trimmed_mean(od_reading_series)
-            variances[channel] = math_helpers.trimmed_variance(
-                math_helpers.residuals_of_simple_linear_regression(
-                    list(range(n_samples)), od_reading_series, trimmed=True
-                )
-            )  # see issue #206
-            autocorrelations[channel] = math_helpers.correlation(
-                od_reading_series[:-1], od_reading_series[1:]
+        # warn users that a blank is 0 - maybe this should be an error instead? TODO: link this to a docs page.
+        if means[channel] == 0.0:
+            logger.warning(
+                f"OD reading for PD Channel {channel} is 0.0 - that shouldn't be. Is there a loose connection, or an extra channel in the configuration's [od_config.photodiode_channel] section?"
             )
 
-            # warn users that a blank is 0 - maybe this should be an error instead? TODO: link this to a docs page.
-            if means[channel] == 0.0:
-                logger.warning(
-                    f"OD reading for PD Channel {channel} is 0.0 - that shouldn't be. Is there a loose connection, or an extra channel in the configuration's [od_config.photodiode_channel] section?"
-                )
+    logger.debug(f"observed data: {od_reading_series}")
+    logger.debug(f"measured mean: {means}")
+    logger.debug(f"measured variances: {variances}")
+    logger.debug(f"measured autocorrelations: {autocorrelations}")
 
-        logger.debug(f"observed data: {od_reading_series}")
-        logger.debug(f"measured mean: {means}")
-        logger.debug(f"measured variances: {variances}")
-        logger.debug(f"measured autocorrelations: {autocorrelations}")
-
-        return means, variances
+    return means, variances
 
 
 def delete_od_blank(unit=None, experiment=None):
