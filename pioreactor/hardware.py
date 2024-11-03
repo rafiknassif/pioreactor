@@ -9,6 +9,7 @@ from pioreactor.types import GpioPin
 from pioreactor.types import I2CPin
 from pioreactor.types import PdChannel
 from pioreactor.types import PwmChannel
+from pioreactor.types import LightRodChannel
 from pioreactor.version import hardware_version_info
 from pioreactor.version import rpi_version_info
 from pioreactor.whoami import is_testing_env
@@ -62,6 +63,12 @@ if hardware_version_info >= (1, 1):
 ADC = 0x48 if (0, 0) < hardware_version_info <= (1, 0) else 0x2C  # As of 24.8.22, =44. Prior it was 0x30=48.
 DAC = 0x49 if (0, 0) < hardware_version_info <= (1, 0) else 0x2C  # As of 24.8.22, =44. Prior it was 0x30=48
 TEMP = 0x4F
+LightRodTemp_ADDR : dict[LightRodChannel, list] = {  # I2C addrs of temp sensors for LR: A, B, C
+    "LR_A": [0x48, 0x49, 0x4A],
+    "LR_B": [0x4B, 0x4C, 0x4D],
+    "LR_C": [0x4E, 0x4F, 0x50]
+}
+
 
 
 # ADC map of function to hardware ADC channel

@@ -93,6 +93,7 @@ class PublishableSetting(t.TypedDict, total=False):
 
 JobState = t.Literal["init", "ready", "sleeping", "disconnected", "lost"]
 
+LightRodChannel = t.Literal["LR_A", "LR_B", "LR_C"]  # Define identifiers for each temp measured lightrod
 
 LedChannel = t.Literal["A", "B", "C", "D"]
 # these are strings! Don't make them ints, since ints suggest we can perform math on them, that's meaningless.
