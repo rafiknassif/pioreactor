@@ -270,6 +270,44 @@ def parse_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "temperature_c": temp.temperature,
     }
 
+def parse_lightrod_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
+    metadata = produce_metadata(topic)
+    LRT = msgspec_loads(payload, type=structs.Temperature)
+
+    return {
+        "experiment": metadata.experiment,
+        "pioreactor_unit": metadata.pioreactor_unit,
+        "timestamp": LRT.timestamp,
+        "top_temp": LRT.top_temp,
+        "middle_temp": LRT.middle_temp,
+        "bottom_temp": LRT.bottom_temp,
+    }
+
+
+def parse_lightrod_temperatures(topic: str, payload: pt.MQTTMessagePayload) -> dict:
+    metadata = produce_metadata(topic)
+    lightrod_readings = msgspec_loads(payload, type=structs.LightRodTemperatures)
+
+    # prepare dict for database
+    parsed_data = {
+        "experiment": metadata.experiment,
+        "pioreactor_unit": metadata.pioreactor_unit,
+        "timestamp": lightrod_readings.timestamp,  # Single timestamp for all readings
+        "temperatures": []  # populate this list with individual temperature entries
+    }
+
+    # iterate over each lightRodChannel and lightRodTemperature
+    for lightRod_channel, temp_data in lightrod_readings.temperatures.items():
+        parsed_data["temperatures"].append({
+            "lightRod_channel": lightRod_channel,
+            "top_temp": temp_data.top_temp,
+            "middle_temp": temp_data.middle_temp,
+            "bottom_temp": temp_data.bottom_temp,
+            "timestamp": temp_data.timestamp  # Individual timestamp if it varies from the overall one
+        })
+
+    return parsed_data
+
 
 def parse_automation_event(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
@@ -405,6 +443,11 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 "pioreactor/+/+/temperature_automation/temperature",
                 parse_temperature,
                 "temperature_readings",
+            ),
+            TopicToParserToTable(
+                "pioreactor/+/+/read_lightrod_temps_job/lightrod_temps",
+                parse_lightrod_temperatures,
+                "lightrod_temperatures",
             ),
             TopicToParserToTable(
                 "pioreactor/+/+/dosing_automation/alt_media_fraction",
