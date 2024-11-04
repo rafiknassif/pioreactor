@@ -28,7 +28,7 @@ CORE_REQUIREMENTS = [
     "python-dotenv==1.0.1",
     "Werkzeug==3.0.3",
     "packaging==24.1",
-    "filterpy==1.4.5",
+    "filterpy==1.4.4",
     # "lgpio; platform_machine!='armv7l' and platform_machine!='armv6l'", # primarily available with base image, or via apt-get install python3-lgpio
 ]
 
