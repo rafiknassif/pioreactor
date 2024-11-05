@@ -65,8 +65,8 @@ DAC = 0x49 if (0, 0) < hardware_version_info <= (1, 0) else 0x2C  # As of 24.8.2
 TEMP = 0x4F
 LightRodTemp_ADDR : dict[LightRodChannel, list] = {  # I2C addrs of temp sensors for LR: A, B, C
     "LR_A": [0x40, 0x48, 0x50],
-    # "LR_B": [0x41, 0x49, 0x51],
-    # "LR_C": [0x42, 0x4A, 0x52]
+     "LR_B": [0x40, 0x48, 0x50],
+     "LR_C": [0x40, 0x48, 0x50]
 }
 
 
