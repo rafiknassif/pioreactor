@@ -305,10 +305,7 @@ def parse_lightrod_temperatures(topic: str, payload: pt.MQTTMessagePayload) -> d
         parsed_data[f"{lightRod_channel}_bottom_temp"] = temp_data.bottom_temp
         parsed_data[f"{lightRod_channel}_timestamp"] = temp_data.timestamp
 
-    try:
-        logger.debug(parsed_data)
-    except:
-        x="aids"
+    logger.debug(parsed_data)
 
     return parsed_data
 
