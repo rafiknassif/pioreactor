@@ -106,7 +106,7 @@ if __name__ == "__main__":
     from pioreactor.whoami import get_assigned_experiment_name
 
     unit = get_unit_name()
-    experiment = get_unit_name(unit)
+    experiment = get_assigned_experiment_name(unit)
 
     job = ReadLightRodTempsJob(unit=unit, experiment=experiment)
 
