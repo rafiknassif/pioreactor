@@ -38,7 +38,7 @@ BEGIN
         LR_C_top_temp,
         LR_C_middle_temp,
         LR_C_bottom_temp,
-        LR_C_timestamp,
+        LR_C_timestamp
     ) VALUES (
         new.pioreactor_unit,
         new.experiment,
@@ -54,7 +54,7 @@ BEGIN
         new.LR_C_top_temp,
         new.LR_C_middle_temp,
         new.LR_C_bottom_temp,
-        new.LR_C_timestamp,
+        new.LR_C_timestamp
     )
     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
         LR_A_top_temp=excluded.LR_A_top_temp,
