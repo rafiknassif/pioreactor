@@ -292,34 +292,27 @@ def parse_lightrod_temperatures(topic: str, payload: pt.MQTTMessagePayload) -> d
     logger = create_logger("lightrod_parse-testing")
     logger.debug("parsing lightrod temperature")
 
-    # prepare dict for database
     parsed_data = {
         "experiment": metadata.experiment,
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": lightrod_readings.timestamp,  # Single timestamp for all readings
-        "temperatures": []  # populate this list with individual temperature entries
     }
-    for lightRod, temperature in lightrod_readings.temperatures.items():
-        logger.debug(
-            f"LightRod: {lightRod} | "
-            f"Top: {temperature.top_temp}℃, "
-            f"Middle: {temperature.middle_temp}℃, "
-
-            f"Bottom: {temperature.bottom_temp}℃ | "
-            f"Timestamp: {temperature.timestamp}"
-        )
 
     # iterate over each lightRodChannel and lightRodTemperature
+    # flattening each temperature into the main dictionary
     for lightRod_channel, temp_data in lightrod_readings.temperatures.items():
-        parsed_data["temperatures"].append({
-            "lightRod_channel": lightRod_channel,
-            "top_temp": temp_data.top_temp,
-            "middle_temp": temp_data.middle_temp,
-            "bottom_temp": temp_data.bottom_temp,
-            "timestamp": temp_data.timestamp  # Individual timestamp if it varies from the overall one
-        })
+        parsed_data[f"{lightRod_channel}_top_temp"] = temp_data.top_temp
+        parsed_data[f"{lightRod_channel}_middle_temp"] = temp_data.middle_temp
+        parsed_data[f"{lightRod_channel}_bottom_temp"] = temp_data.bottom_temp
+        parsed_data[f"{lightRod_channel}_timestamp"] = temp_data.timestamp
+
+    try:
+        logger.debug(parsed_data)
+    except:
+        x="aids"
 
     return parsed_data
+
 
 
 def parse_automation_event(topic: str, payload: pt.MQTTMessagePayload) -> dict:

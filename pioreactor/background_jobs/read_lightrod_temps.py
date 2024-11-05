@@ -59,7 +59,7 @@ class ReadLightRodTemps(BackgroundJob):
             timestamp=current_utc_datetime(),
             temperatures=lightrod_dict,
         )
-        self.log_lightrod_temperatures(lightRod_temperatures)
+        #self.log_lightrod_temperatures(lightRod_temperatures)
         self.lightrod_temps = lightRod_temperatures
 
     def log_lightrod_temperatures(self, lightRod_temperatures):
