@@ -50,9 +50,9 @@ class ReadLightRodTemps(BackgroundJob):
                 temps[i] = self._read_average_temperature(drivers[i])
 
             lightrod_dict[lightRod] = LightRodTemperature(
-                top_temp=round(temps[0], 2),
-                middle_temp=round(temps[1], 2),
-                bottom_temp=round(temps[2], 2),
+                top_temp=float(round(temps[0], 2)),
+                middle_temp=float(round(temps[1], 2)),
+                bottom_temp=float(round(temps[2], 2)),
                 timestamp=current_utc_datetime(),
             )
         lightRod_temperatures = LightRodTemperatures(
