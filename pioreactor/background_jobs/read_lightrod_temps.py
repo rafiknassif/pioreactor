@@ -54,12 +54,22 @@ class ReadLightRodTempsJob(BackgroundJob):
                 bottom_temp=round(temps[2], 2),
                 timestamp=current_utc_datetime(),
             )
-        lightRod_temperatures = LightRodTemperature(
+        lightRod_temperatures = LightRodTemperatures(
             timestamp=current_utc_datetime(),
             temperatures=lightrod_dict,
         )
-
+        self.log_lightrod_temperatures(lightRod_temperatures)
         return lightRod_temperatures
+
+    def log_lightrod_temperatures(self, lightRod_temperatures):
+        for lightRod, temperature in lightRod_temperatures.temperatures.items():
+            self.logger.debug(
+                f"LightRod: {lightRod} | "
+                f"Top: {temperature.top_temp}℃, "
+                f"Middle: {temperature.middle_temp}℃, "
+                f"Bottom: {temperature.bottom_temp}℃ | "
+                f"Timestamp: {temperature.timestamp}"
+            )
 
     def on_disconnected(self) -> None:
         with suppress(AttributeError):
