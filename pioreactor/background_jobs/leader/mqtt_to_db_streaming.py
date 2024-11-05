@@ -272,7 +272,7 @@ def parse_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
 
 def parse_lightrod_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
-    LRT = msgspec_loads(payload, type=structs.Temperature)
+    LRT = msgspec_loads(payload, type=structs.LightRodTemperature)
 
     return {
         "experiment": metadata.experiment,
@@ -445,7 +445,7 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 "temperature_readings",
             ),
             TopicToParserToTable(
-                "pioreactor/+/+/read_lightrod_temps_job/lightrod_temps",
+                "pioreactor/+/+/read_lightrod_temps/lightrod_temps",
                 parse_lightrod_temperatures,
                 "lightrod_temperatures",
             ),

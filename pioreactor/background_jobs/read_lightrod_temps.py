@@ -11,9 +11,9 @@ from pioreactor.utils.temps import TMP1075
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
 
 
-class ReadLightRodTempsJob(BackgroundJob):
+class ReadLightRodTemps(BackgroundJob):
 
-    job_name="read_lightrod_temps_job"
+    job_name="read_lightrod_temps"
     published_settings = {
         'warning_threshold': {'datatype': "float", "unit": "℃", "settable": True},
         "lightrod_temps": {"datatype": "LightRodTemperatures", "settable": False}
@@ -24,6 +24,7 @@ class ReadLightRodTempsJob(BackgroundJob):
         super().__init__(unit=unit, experiment=experiment)
         self.initializeDrivers(LightRodTemp_ADDR)
         self.set_warning_threshold(temp_thresh)
+        self.lightrod_temps = None  # initialize for mqtt broadcast
 
         self.read_lightrod_temperature_timer = RepeatedTimer(
             30,
@@ -39,7 +40,7 @@ class ReadLightRodTempsJob(BackgroundJob):
         }
 
     def set_warning_threshold(self, temp_thresh):
-        self.TEMP_THRESHOLD = temp_thresh
+        self.warning_threshold = temp_thresh
 
     def read_temps(self):
         lightrod_dict = {}
@@ -59,7 +60,7 @@ class ReadLightRodTempsJob(BackgroundJob):
             temperatures=lightrod_dict,
         )
         self.log_lightrod_temperatures(lightRod_temperatures)
-        return lightRod_temperatures
+        self.lightrod_temps = lightRod_temperatures
 
     def log_lightrod_temperatures(self, lightRod_temperatures):
         for lightRod, temperature in lightRod_temperatures.temperatures.items():
@@ -67,6 +68,7 @@ class ReadLightRodTempsJob(BackgroundJob):
                 f"LightRod: {lightRod} | "
                 f"Top: {temperature.top_temp}℃, "
                 f"Middle: {temperature.middle_temp}℃, "
+                
                 f"Bottom: {temperature.bottom_temp}℃ | "
                 f"Timestamp: {temperature.timestamp}"
             )
@@ -102,23 +104,46 @@ class ReadLightRodTempsJob(BackgroundJob):
         return averaged_temp
 
     def _check_if_exceeds_max_temp(self, temp: float) -> bool:
-        if temp > self.TEMP_THRESHOLD:
+        if temp > self.warning_threshold:
 
             self.logger.warning(
-                f"Temperature of light rod has exceeded {self.TEMP_THRESHOLD}℃ - currently {temp}℃. Some action will be taken maybe idk"
+                f"Temperature of light rod has exceeded {self.warning_threshold}℃ - currently {temp}℃. Some action will be taken maybe idk"
                 # TODO implement overtemperature correction action
             )
 
-        return temp > self.TEMP_THRESHOLD
+        return temp > self.warning_threshold
 
-if __name__ == "__main__":
-    from pioreactor.whoami import get_unit_name
-    from pioreactor.whoami import get_assigned_experiment_name
+# if __name__ == "__main__":
+#     from pioreactor.whoami import get_unit_name
+#     from pioreactor.whoami import get_assigned_experiment_name
+#
+#     unit = get_unit_name()
+#     experiment = get_assigned_experiment_name(unit)
+#
+#     job = ReadLightRodTempsJob(unit=unit, experiment=experiment)
+#
+#
+#     job.block_until_disconnected()
+
+import click
+
+@click.command(name="read_lightrod_temps")
+@click.option(
+    "--warning-threshold",
+    default=40,
+    show_default=True,
+    type=click.FloatRange(0, 100, clamp=True),
+)
+def click_read_lightrod_temps(warning_threshold):
+
+    from pioreactor.whoami import get_unit_name, get_assigned_experiment_name
 
     unit = get_unit_name()
     experiment = get_assigned_experiment_name(unit)
 
-    job = ReadLightRodTempsJob(unit=unit, experiment=experiment)
-
-
+    job = ReadLightRodTemps(
+        temp_thresh=warning_threshold,
+        unit=unit,
+        experiment=experiment,
+    )
     job.block_until_disconnected()
