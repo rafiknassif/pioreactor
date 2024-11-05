@@ -1,3 +1,5 @@
+DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_lightrod_temperatures;
+
 CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_lightrod_temperatures AFTER INSERT ON lightrod_temperatures
 BEGIN
     INSERT INTO pioreactor_unit_activity_data(

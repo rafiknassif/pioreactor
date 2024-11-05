@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# NOTE: you must call chmod +x on this file to make it executable before attempting to run it!!
+
 set -x
 set -e
 
@@ -17,10 +19,6 @@ touch $DB-wal
 chmod -R 770 $STORAGE_DIR
 chown -R $USERNAME:www-data $STORAGE_DIR
 chmod g+s $STORAGE_DIR
-
-sqlite3 $DB < DROP TABLE IF EXISTS lightrod_temperatures
-sqlite3 $DB < DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_lightrod_temperatures
-
 
 sqlite3 $DB < sql/sqlite_configuration.sql
 sqlite3 $DB < sql/create_tables.sql

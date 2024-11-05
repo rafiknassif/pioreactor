@@ -1,3 +1,5 @@
+--DROP TABLE IF EXISTS lightrod_temperatures;
+
 CREATE TABLE IF NOT EXISTS lightrod_temperatures (
     experiment TEXT NOT NULL,
     pioreactor_unit TEXT NOT NULL,
