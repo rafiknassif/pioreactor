@@ -78,10 +78,6 @@ def od_statistics(
             int(count / n_samples * 100),
         )
         logger.debug(f"Progress: {count/n_samples:.0%}")
-        st.block_until_rpm_is_close_to_target(timeout=40)  # wait for stirring to be reasonable.
-    else:
-        st = nullcontext()  # type: ignore
-
         if count == n_samples:
             break
 
