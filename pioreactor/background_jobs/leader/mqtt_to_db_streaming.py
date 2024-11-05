@@ -163,10 +163,7 @@ def parse_od(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
     od_reading = msgspec_loads(payload, type=structs.ODReading)
 
-    from pioreactor.logging import create_logger
-    logger = create_logger("parse-od-testing")
-
-    data = {
+    return {
         "experiment": metadata.experiment,
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": od_reading.timestamp,
@@ -174,26 +171,18 @@ def parse_od(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "angle": int(od_reading.angle),
         "channel": int(od_reading.channel),
     }
-    logger.debug(data)
-    return data
 
 
 def parse_od_filtered(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
     od_reading = msgspec_loads(payload, type=structs.ODFiltered)
 
-    from pioreactor.logging import create_logger
-    logger = create_logger("parse-od-filtered-testing")
-
-    data = {
+    return {
         "experiment": metadata.experiment,
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": od_reading.timestamp,
         "normalized_od_reading": od_reading.od_filtered,
     }
-    logger.debug(data)
-    return data
-
 
 def parse_od_blank(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
