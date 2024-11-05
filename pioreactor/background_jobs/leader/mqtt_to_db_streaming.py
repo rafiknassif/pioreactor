@@ -288,6 +288,10 @@ def parse_lightrod_temperatures(topic: str, payload: pt.MQTTMessagePayload) -> d
     metadata = produce_metadata(topic)
     lightrod_readings = msgspec_loads(payload, type=structs.LightRodTemperatures)
 
+    from pioreactor.logging import create_logger
+    logger = create_logger("lightrod_parse-testing")
+    logger.debug("parsing lightrod temperature")
+
     # prepare dict for database
     parsed_data = {
         "experiment": metadata.experiment,
@@ -295,6 +299,15 @@ def parse_lightrod_temperatures(topic: str, payload: pt.MQTTMessagePayload) -> d
         "timestamp": lightrod_readings.timestamp,  # Single timestamp for all readings
         "temperatures": []  # populate this list with individual temperature entries
     }
+    for lightRod, temperature in lightrod_readings.temperatures.items():
+        logger.debug(
+            f"LightRod: {lightRod} | "
+            f"Top: {temperature.top_temp}℃, "
+            f"Middle: {temperature.middle_temp}℃, "
+
+            f"Bottom: {temperature.bottom_temp}℃ | "
+            f"Timestamp: {temperature.timestamp}"
+        )
 
     # iterate over each lightRodChannel and lightRodTemperature
     for lightRod_channel, temp_data in lightrod_readings.temperatures.items():
