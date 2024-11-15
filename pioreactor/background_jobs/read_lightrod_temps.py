@@ -9,6 +9,7 @@ from pioreactor.structs import LightRodTemperature
 from pioreactor.structs import LightRodTemperatures
 from pioreactor.utils.temps import TMP1075
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
+from pioreactor.config import config
 
 
 class ReadLightRodTemps(BackgroundJob):
@@ -18,7 +19,7 @@ class ReadLightRodTemps(BackgroundJob):
         'warning_threshold': {'datatype': "float", "unit": "℃", "settable": True},
         "lightrod_temps": {"datatype": "LightRodTemperatures", "settable": False}
     }
-    TEMP_THRESHOLD= 40  # over-temperature warning level [degrees C]
+    TEMP_THRESHOLD = 40  # over-temperature warning level [degrees C]
 
     def __init__(self, unit, experiment, temp_thresh=TEMP_THRESHOLD):
         super().__init__(unit=unit, experiment=experiment)
@@ -26,8 +27,11 @@ class ReadLightRodTemps(BackgroundJob):
         self.set_warning_threshold(temp_thresh)
         self.lightrod_temps = None  # initialize for mqtt broadcast
 
+        dt = 1/(config.getfloat("lightrod_temp_reading.config", "samples_per_second", fallback=0.033))
+
+
         self.read_lightrod_temperature_timer = RepeatedTimer(
-            30,
+            dt,
             self.read_temps,
             job_name=self.job_name,
             run_immediately=False,
