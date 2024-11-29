@@ -124,7 +124,7 @@ class ReadLightRodTemps(BackgroundJob):
                 unit=self.unit,
                 experiment=self.experiment,
                 pubsub_client=self.pub_client,
-                source_of_event=f"{self.job_name}:{self.automation_name}",
+                source_of_event=f"{self.job_name}",
             )
 
             if success:
