@@ -110,9 +110,7 @@ class ReadLightRodTemps(BackgroundJob):
         return averaged_temp
 
     def _check_if_exceeds_max_temp(self, temp: float) -> bool:
-        warned = False
-        if temp > self.warning_threshold and warned == False:
-            warned = True
+        if temp > self.warning_threshold:
             self.logger.warning(
                 f"Temperature of light rod has exceeded {self.warning_threshold}℃ - currently {temp}℃. Some action will be taken maybe idk"
                 # TODO implement overtemperature correction action
@@ -129,10 +127,7 @@ class ReadLightRodTemps(BackgroundJob):
 
             if success:
                 self.logger.warning("lights were turned off due to high temp")
-            
-        else:
-            warned = False
-        
+
         return temp > self.warning_threshold
 
 # if __name__ == "__main__":
