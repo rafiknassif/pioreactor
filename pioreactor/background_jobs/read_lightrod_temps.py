@@ -11,6 +11,7 @@ from pioreactor.structs import LightRodTemperatures
 from pioreactor.utils.temps import TMP1075
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
 from pioreactor.config import config
+from pioreactor.actions.led_intensity import led_intensity
 
 
 class ReadLightRodTemps(BackgroundJob):
@@ -109,23 +110,32 @@ class ReadLightRodTemps(BackgroundJob):
         return averaged_temp
 
     def _check_if_exceeds_max_temp(self, temp: float) -> bool:
-        if temp > self.warning_threshold:
-
+        warned = False
+        if temp > self.warning_threshold and warned == False:
+            warned = True
             self.logger.warning(
                 f"Temperature of light rod has exceeded {self.warning_threshold}℃ - currently {temp}℃. Some action will be taken maybe idk"
                 # TODO implement overtemperature correction action
-                
+            )
+            
+            channel = 'B'
+            success = led_intensity(
+                {channel: 0},
+                unit=self.unit,
+                experiment=self.experiment,
+                pubsub_client=self.pub_client,
+                source_of_event=f"{self.job_name}:{self.automation_name}",
             )
 
-            payload = {
-                "B": 0
-            }
+            if success:
+                self.edited_channels.add(channel)
 
-            # Convert to JSON string
-            payload_json = json.dumps(payload)
 
-            self.publish(f"pioreactor/{self.unit}/{self.experiment}/leds/intensity", payload)
-
+            self.logger.warning(f"{self.automation_name} was unable to update channel {channel}.")
+            
+        else:
+            warned = False
+        
         return temp > self.warning_threshold
 
 # if __name__ == "__main__":
