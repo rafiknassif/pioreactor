@@ -1,6 +1,7 @@
 from contextlib import suppress
 from time import sleep
 import numpy as np
+import json
 
 from pioreactor import exc
 from pioreactor.background_jobs.base import BackgroundJob
@@ -113,7 +114,17 @@ class ReadLightRodTemps(BackgroundJob):
             self.logger.warning(
                 f"Temperature of light rod has exceeded {self.warning_threshold}℃ - currently {temp}℃. Some action will be taken maybe idk"
                 # TODO implement overtemperature correction action
+                
             )
+
+            payload = {
+                "B": 0
+            }
+
+            # Convert to JSON string
+            payload_json = json.dumps(payload)
+
+            self.publish(f"pioreactor/{self.unit}/{self.experiment}/leds/intensity", payload)
 
         return temp > self.warning_threshold
 

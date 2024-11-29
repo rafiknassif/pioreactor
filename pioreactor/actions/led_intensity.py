@@ -226,7 +226,7 @@ def led_intensity(
 @click.option(
     "--A",
     help="value between 0 and 100",
-    type=click.FloatRange(0, 100),
+    type=click.FloatRange(0, 75),
 )
 @click.option(
     "--B",
