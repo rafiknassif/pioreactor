@@ -128,10 +128,7 @@ class ReadLightRodTemps(BackgroundJob):
             )
 
             if success:
-                self.edited_channels.add(channel)
-
-
-            self.logger.warning(f"{self.automation_name} was unable to update channel {channel}.")
+                self.logger.warning("lights were turned off due to high temp")
             
         else:
             warned = False
