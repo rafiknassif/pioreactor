@@ -38,8 +38,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
-from json import dumps
-from json import loads
+from json import dumps, loads
 from time import sleep
 from typing import Generator
 
@@ -52,10 +51,9 @@ from pioreactor import types as pt
 from pioreactor import whoami
 from pioreactor.actions.od_blank import od_statistics
 from pioreactor.background_jobs.base import BackgroundJob
-from pioreactor.background_jobs.od_reading import VALID_PD_ANGLES, ODReader
+from pioreactor.background_jobs.od_reading import VALID_PD_ANGLES
 from pioreactor.config import config
-from pioreactor.pubsub import QOS
-from pioreactor.pubsub import subscribe
+from pioreactor.pubsub import QOS, subscribe, publish
 from pioreactor.utils import local_persistant_storage
 from pioreactor.utils.streaming_calculations import CultureGrowthUKF
 
@@ -68,7 +66,6 @@ class GrowthRateCalculator(BackgroundJob):
         ignore any cached calculated statistics from this experiment.
     source_obs_from_mqtt: bool
         listen for data from MQTT to respond to.
-
     """
 
     job_name = "growth_rate_calculating"
@@ -77,7 +74,7 @@ class GrowthRateCalculator(BackgroundJob):
             "datatype": "GrowthRate",
             "settable": False,
             "unit": "h⁻¹",
-            "persist": True,  #TODO: why persist?
+            "persist": True,
         },
         "od_filtered": {"datatype": "ODFiltered", "settable": False},
         "kalman_filter_outputs": {
@@ -88,7 +85,7 @@ class GrowthRateCalculator(BackgroundJob):
     }
 
     def __init__(
-    self,
+        self,
         unit: str,
         experiment: str,
         ignore_cache: bool = False,
@@ -105,18 +102,9 @@ class GrowthRateCalculator(BackgroundJob):
         )
         self.expected_dt = 1 / (60 * 60 * self.samples_per_second)
 
-        # Instead of initializing a new ODReader, reference the running instance
-        self.od_reader = None  # Placeholder, use a suitable connection method if required
-
     def on_ready(self) -> None:
-        # this is here since the below is long running, and if kept in the init(), there is a large window where
-        # two growth_rate_calculating jobs can be started.
-
-        # Note that this function runs in the __post__init__, i.e. in the same frame as __init__, i.e.
-        # when we initialize the class. Thus, we need to handle errors and cleanup resources gracefully.
-
+        # Initialization when job is marked as READY.
         if hasattr(self, "ukf"):
-            # we've already done this, don't do it again. Ex: pause to resume
             return
 
         try:
@@ -131,7 +119,6 @@ class GrowthRateCalculator(BackgroundJob):
                 self.initial_acc,
             ) = self.get_initial_values()
         except Exception as e:
-            # something happened - abort
             self.logger.info("Aborting early.")
             self.logger.debug("Aborting early.", exc_info=True)
             self.clean_up()
@@ -261,16 +248,13 @@ class GrowthRateCalculator(BackgroundJob):
         # why sleep? Users sometimes spam jobs, and if stirring and gr start closely there can be a race to secure HALL_SENSOR. This gives stirring priority.
         sleep(1)  # Adjusted as stirring is not used.
 
-        # Save the original sampling interval
-        original_interval = 1 / self.samples_per_second
-
         try:
-            # Adjust the sampling rate for statistics collection
-            if hasattr(self, "od_reader") and self.od_reader is not None:
-                self.od_reader.update_sampling_interval(1 / self.stats_samples_per_second)
-                self.logger.info("Sampling rate switched to stats_samples_per_second for OD normalization metrics.")
-            else:
-                self.logger.warning("No ODReader instance available for updating sampling interval.")
+            # Adjust the sampling rate using MQTT
+            publish(
+                f"pioreactor/{self.unit}/{self.experiment}/od_reading/update_interval",
+                str(1 / self.stats_samples_per_second),
+            )
+            self.logger.info("Published request to update sampling interval to stats_samples_per_second.")
 
             # Perform OD statistics calculation
             means, variances = od_statistics(
@@ -285,10 +269,12 @@ class GrowthRateCalculator(BackgroundJob):
             )
             self.logger.info("Completed OD normalization metrics.")
         finally:
-            # Restore the original sampling interval
-            if hasattr(self, "od_reader") and self.od_reader is not None:
-                self.od_reader.update_sampling_interval(original_interval)
-                self.logger.info("Restored sampling rate to samples_per_second.")
+            # Restore the original sampling interval using MQTT
+            publish(
+                f"pioreactor/{self.unit}/{self.experiment}/od_reading/update_interval",
+                str(1 / self.samples_per_second),
+            )
+            self.logger.info("Published request to restore sampling interval to samples_per_second.")
 
         with local_persistant_storage("od_normalization_mean") as cache:
             if self.experiment not in cache:
