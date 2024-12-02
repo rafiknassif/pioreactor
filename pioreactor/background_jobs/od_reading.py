@@ -103,6 +103,7 @@ from pioreactor.background_jobs.base import LoggerMixin
 from pioreactor.config import config
 from pioreactor.hardware import ADC_CHANNEL_FUNCS
 from pioreactor.pubsub import publish
+from pioreactor.pubsub import QOS
 from pioreactor.utils import argextrema
 from pioreactor.utils import local_intermittent_storage
 from pioreactor.utils import local_persistant_storage
@@ -1158,7 +1159,7 @@ class ODReader(BackgroundJob):
                 self.logger.warning(f"Ignored invalid sampling interval: {new_interval}")
         except ValueError as e:
             self.logger.error(f"Failed to decode sampling interval: {e}")
-            
+
     def update_sampling_interval(self, new_interval: float) -> None:
         """
         Dynamically updates the sampling interval for the ADC reader.
