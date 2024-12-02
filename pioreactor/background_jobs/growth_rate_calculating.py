@@ -103,7 +103,8 @@ class GrowthRateCalculator(BackgroundJob):
         self.stats_samples_per_second = config.getfloat(
             "od_reading.config", "stats_samples_per_second", fallback=self.samples_per_second
         )  # New variable to handle separate statistics sampling rate
-
+        self.expected_dt = 1 / (60 * 60 * self.samples_per_second)
+        
     def on_ready(self) -> None:
         # this is here since the below is long running, and if kept in the init(), there is a large window where
         # two growth_rate_calculating jobs can be started.
