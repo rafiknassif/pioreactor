@@ -1172,7 +1172,7 @@ class ODReader(BackgroundJob):
             self.record_from_adc,
             job_name=self.job_name,
             run_immediately=False,
-        ).start()
+        )
 
 
     def start_ir_led(self) -> None:
