@@ -251,47 +251,47 @@ class GrowthRateCalculator(BackgroundJob):
                 "Is there an OD Reading that is 0? Maybe there's a loose photodiode connection?"
             )
 
-def _compute_and_cache_od_statistics(
-    self,
-) -> tuple[dict[pt.PdChannel, float], dict[pt.PdChannel, float]]:
-    # why sleep? Users sometimes spam jobs, and if stirring and gr start closely there can be a race to secure HALL_SENSOR. This gives stirring priority.
-    sleep(1)  # i dont use stirring so dont need 5 sec
+    def _compute_and_cache_od_statistics(
+        self,
+    ) -> tuple[dict[pt.PdChannel, float], dict[pt.PdChannel, float]]:
+        # why sleep? Users sometimes spam jobs, and if stirring and gr start closely there can be a race to secure HALL_SENSOR. This gives stirring priority.
+        sleep(1)  # i dont use stirring so dont need 5 sec
 
-    # Save the original sampling interval
-    original_interval = 1 / config.getfloat("od_reading.config", "samples_per_second")
+        # Save the original sampling interval
+        original_interval = 1 / config.getfloat("od_reading.config", "samples_per_second")
 
-    # Adjust the sampling rate for statistics collection
-    self.od_reader.update_sampling_interval(1 / config.getfloat(
-        "od_reading.config", "stats_samples_per_second", fallback=1 / original_interval
-    ))
-    self.logger.info(f"Sampling rate switched to stats_samples_per_second for OD normalization metrics.")
+        # Adjust the sampling rate for statistics collection
+        self.od_reader.update_sampling_interval(1 / config.getfloat(
+            "od_reading.config", "stats_samples_per_second", fallback=1 / original_interval
+        ))
+        self.logger.info(f"Sampling rate switched to stats_samples_per_second for OD normalization metrics.")
 
-    try:
-        means, variances = od_statistics(
-            self._yield_od_readings_from_mqtt(),
-            action_name="od_normalization",
-            n_samples=config.getint(
-                "growth_rate_calculating.config", "samples_for_od_statistics", fallback=35
-            ),
-            unit=self.unit,
-            experiment=self.experiment,
-            logger=self.logger,
-        )
-        self.logger.info("Completed OD normalization metrics.")
-    finally:
-        # Restore the original sampling interval
-        self.od_reader.update_sampling_interval(original_interval)
-        self.logger.info("Sampling rate restored to samples_per_second.")
+        try:
+            means, variances = od_statistics(
+                self._yield_od_readings_from_mqtt(),
+                action_name="od_normalization",
+                n_samples=config.getint(
+                    "growth_rate_calculating.config", "samples_for_od_statistics", fallback=35
+                ),
+                unit=self.unit,
+                experiment=self.experiment,
+                logger=self.logger,
+            )
+            self.logger.info("Completed OD normalization metrics.")
+        finally:
+            # Restore the original sampling interval
+            self.od_reader.update_sampling_interval(original_interval)
+            self.logger.info("Sampling rate restored to samples_per_second.")
 
-    with local_persistant_storage("od_normalization_mean") as cache:
-        if self.experiment not in cache:
-            cache[self.experiment] = dumps(means)
+        with local_persistant_storage("od_normalization_mean") as cache:
+            if self.experiment not in cache:
+                cache[self.experiment] = dumps(means)
 
-    with local_persistant_storage("od_normalization_variance") as cache:
-        if self.experiment not in cache:
-            cache[self.experiment] = dumps(variances)
+        with local_persistant_storage("od_normalization_variance") as cache:
+            if self.experiment not in cache:
+                cache[self.experiment] = dumps(variances)
 
-    return means, variances
+        return means, variances
 
 
     def get_initial_values(self) -> tuple[float, float, float]:
