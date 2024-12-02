@@ -88,7 +88,7 @@ class GrowthRateCalculator(BackgroundJob):
     }
 
     def __init__(
-        self,
+    self,
         unit: str,
         experiment: str,
         ignore_cache: bool = False,
@@ -105,18 +105,8 @@ class GrowthRateCalculator(BackgroundJob):
         )
         self.expected_dt = 1 / (60 * 60 * self.samples_per_second)
 
-        # Initialize ODReader
-        channel_angle_map = {  # Replace with actual configuration
-            "1": "90",
-            "2": "45",
-        }
-        self.od_reader = ODReader(
-            channel_angle_map=channel_angle_map,
-            interval=1 / self.samples_per_second,
-            adc_reader=None,  # Provide ADCReader instance if required
-            unit=self.unit,
-            experiment=self.experiment,
-        )
+        # Instead of initializing a new ODReader, reference the running instance
+        self.od_reader = None  # Placeholder, use a suitable connection method if required
 
     def on_ready(self) -> None:
         # this is here since the below is long running, and if kept in the init(), there is a large window where
@@ -276,10 +266,13 @@ class GrowthRateCalculator(BackgroundJob):
 
         try:
             # Adjust the sampling rate for statistics collection
-            if hasattr(self, "od_reader"):
+            if hasattr(self, "od_reader") and self.od_reader is not None:
                 self.od_reader.update_sampling_interval(1 / self.stats_samples_per_second)
                 self.logger.info("Sampling rate switched to stats_samples_per_second for OD normalization metrics.")
+            else:
+                self.logger.warning("No ODReader instance available for updating sampling interval.")
 
+            # Perform OD statistics calculation
             means, variances = od_statistics(
                 self._yield_od_readings_from_mqtt(),
                 action_name="od_normalization",
@@ -293,7 +286,7 @@ class GrowthRateCalculator(BackgroundJob):
             self.logger.info("Completed OD normalization metrics.")
         finally:
             # Restore the original sampling interval
-            if hasattr(self, "od_reader"):
+            if hasattr(self, "od_reader") and self.od_reader is not None:
                 self.od_reader.update_sampling_interval(original_interval)
                 self.logger.info("Restored sampling rate to samples_per_second.")
 
@@ -306,7 +299,6 @@ class GrowthRateCalculator(BackgroundJob):
                 cache[self.experiment] = dumps(variances)
 
         return means, variances
-
 
     def get_initial_values(self) -> tuple[float, float, float]:
         if self.ignore_cache:
