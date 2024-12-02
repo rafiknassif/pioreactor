@@ -102,9 +102,22 @@ class GrowthRateCalculator(BackgroundJob):
         self.samples_per_second = config.getfloat("od_reading.config", "samples_per_second")
         self.stats_samples_per_second = config.getfloat(
             "od_reading.config", "stats_samples_per_second", fallback=self.samples_per_second
-        )  # New variable to handle separate statistics sampling rate
+        )
         self.expected_dt = 1 / (60 * 60 * self.samples_per_second)
-        
+
+        # Initialize ODReader
+        channel_angle_map = {  # Replace with actual configuration
+            "1": "90",
+            "2": "45",
+        }
+        self.od_reader = ODReader(
+            channel_angle_map=channel_angle_map,
+            interval=1 / self.samples_per_second,
+            adc_reader=None,  # Provide ADCReader instance if required
+            unit=self.unit,
+            experiment=self.experiment,
+        )
+
     def on_ready(self) -> None:
         # this is here since the below is long running, and if kept in the init(), there is a large window where
         # two growth_rate_calculating jobs can be started.
@@ -256,18 +269,17 @@ class GrowthRateCalculator(BackgroundJob):
         self,
     ) -> tuple[dict[pt.PdChannel, float], dict[pt.PdChannel, float]]:
         # why sleep? Users sometimes spam jobs, and if stirring and gr start closely there can be a race to secure HALL_SENSOR. This gives stirring priority.
-        sleep(1)  # i dont use stirring so dont need 5 sec
+        sleep(1)  # Adjusted as stirring is not used.
 
         # Save the original sampling interval
-        original_interval = 1 / config.getfloat("od_reading.config", "samples_per_second")
-
-        # Adjust the sampling rate for statistics collection
-        self.od_reader.update_sampling_interval(1 / config.getfloat(
-            "od_reading.config", "stats_samples_per_second", fallback=1 / original_interval
-        ))
-        self.logger.info(f"Sampling rate switched to stats_samples_per_second for OD normalization metrics.")
+        original_interval = 1 / self.samples_per_second
 
         try:
+            # Adjust the sampling rate for statistics collection
+            if hasattr(self, "od_reader"):
+                self.od_reader.update_sampling_interval(1 / self.stats_samples_per_second)
+                self.logger.info("Sampling rate switched to stats_samples_per_second for OD normalization metrics.")
+
             means, variances = od_statistics(
                 self._yield_od_readings_from_mqtt(),
                 action_name="od_normalization",
@@ -281,8 +293,9 @@ class GrowthRateCalculator(BackgroundJob):
             self.logger.info("Completed OD normalization metrics.")
         finally:
             # Restore the original sampling interval
-            self.od_reader.update_sampling_interval(original_interval)
-            self.logger.info("Sampling rate restored to samples_per_second.")
+            if hasattr(self, "od_reader"):
+                self.od_reader.update_sampling_interval(original_interval)
+                self.logger.info("Restored sampling rate to samples_per_second.")
 
         with local_persistant_storage("od_normalization_mean") as cache:
             if self.experiment not in cache:
