@@ -893,6 +893,13 @@ class ODReader(BackgroundJob):
 
         self.record_from_adc_timer = None
 
+        # Subscribe to MQTT topic for sampling interval updates
+        self.subscribe_and_callback(
+            self._handle_interval_update,
+            f"pioreactor/{self.unit}/{self.experiment}/od_reading/update_interval",
+            qos=QOS.AT_LEAST_ONCE,
+        )
+
         # Initialize IR LED Reference Tracker and Calibration Transformer
         if ir_led_reference_tracker is None:
             self.logger.debug("Not tracking IR intensity.")
@@ -1137,7 +1144,21 @@ class ODReader(BackgroundJob):
                 self.logger.debug(f"Error in post_function={post_function.__name__}.", exc_info=True)
 
         return od_readings
-
+    
+    def _handle_interval_update(self, message: pt.MQTTMessage) -> None:
+        """
+        Handle updates to the sampling interval from MQTT messages.
+        """
+        try:
+            new_interval = float(message.payload.decode("utf-8"))
+            if new_interval > 0:
+                self.update_sampling_interval(new_interval)
+                self.logger.info(f"Updated sampling interval to {new_interval} seconds via MQTT.")
+            else:
+                self.logger.warning(f"Ignored invalid sampling interval: {new_interval}")
+        except ValueError as e:
+            self.logger.error(f"Failed to decode sampling interval: {e}")
+            
     def update_sampling_interval(self, new_interval: float) -> None:
         """
         Dynamically updates the sampling interval for the ADC reader.
@@ -1148,7 +1169,7 @@ class ODReader(BackgroundJob):
         self.logger.info(f"Sampling interval updated to {self.interval} seconds.")
         if self.record_from_adc_timer:
             self.record_from_adc_timer.change_interval(self.interval)
-            
+
     def start_ir_led(self) -> None:
         r = led_utils.led_intensity(
             {self.ir_channel: self.ir_led_intensity},
