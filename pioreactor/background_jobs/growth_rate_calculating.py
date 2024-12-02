@@ -52,7 +52,7 @@ from pioreactor import types as pt
 from pioreactor import whoami
 from pioreactor.actions.od_blank import od_statistics
 from pioreactor.background_jobs.base import BackgroundJob
-from pioreactor.background_jobs.od_reading import VALID_PD_ANGLES
+from pioreactor.background_jobs.od_reading import VALID_PD_ANGLES, ODReader
 from pioreactor.config import config
 from pioreactor.pubsub import QOS
 from pioreactor.pubsub import subscribe
