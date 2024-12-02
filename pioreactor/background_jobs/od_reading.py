@@ -1161,15 +1161,19 @@ class ODReader(BackgroundJob):
             self.logger.error(f"Failed to decode sampling interval: {e}")
 
     def update_sampling_interval(self, new_interval: float) -> None:
-        """
-        Dynamically updates the sampling interval for the ADC reader.
-        """
         if new_interval <= 0:
             raise ValueError("Sampling interval must be positive.")
         self.interval = new_interval
         self.logger.info(f"Sampling interval updated to {self.interval} seconds.")
         if self.record_from_adc_timer:
-            self.record_from_adc_timer.change_interval(self.interval)
+            self.record_from_adc_timer.stop()  # Stop the existing timer
+        self.record_from_adc_timer = timing.RepeatedTimer(
+            self.interval,
+            self.record_from_adc,
+            job_name=self.job_name,
+            run_immediately=False,
+        ).start()
+
 
     def start_ir_led(self) -> None:
         r = led_utils.led_intensity(
