@@ -883,6 +883,17 @@ class ODReader(BackgroundJob):
 
         self.adc_reader = adc_reader
 
+
+        # Store default and stats-specific intervals for dynamic sampling rates
+        self.default_interval = 1 / config.getfloat("od_reading.config", "samples_per_second")
+        self.stats_interval = 1 / config.getfloat(
+            "od_reading.config", "stats_samples_per_second", fallback=self.default_interval
+        )
+        self.interval = interval or self.default_interval  # Start with default interval
+
+        self.record_from_adc_timer = None
+
+        # Initialize IR LED Reference Tracker and Calibration Transformer
         if ir_led_reference_tracker is None:
             self.logger.debug("Not tracking IR intensity.")
             self.ir_led_reference_tracker = NullIrLedReferenceTracker()
@@ -1127,6 +1138,17 @@ class ODReader(BackgroundJob):
 
         return od_readings
 
+    def update_sampling_interval(self, new_interval: float) -> None:
+        """
+        Dynamically updates the sampling interval for the ADC reader.
+        """
+        if new_interval <= 0:
+            raise ValueError("Sampling interval must be positive.")
+        self.interval = new_interval
+        self.logger.info(f"Sampling interval updated to {self.interval} seconds.")
+        if self.record_from_adc_timer:
+            self.record_from_adc_timer.change_interval(self.interval)
+            
     def start_ir_led(self) -> None:
         r = led_utils.led_intensity(
             {self.ir_channel: self.ir_led_intensity},
