@@ -226,30 +226,24 @@ class ADCReader(LoggerMixin):
         return testing_signals
 
     def compute_dynamic_zero_offset(self) -> dict[pt.PdChannel, float]:
-        """
-        Compute the dynamic zero offset (zero-light condition) using a small sample size.
-        This is calculated before each measurement to dynamically adjust for current conditions.
-
-        Returns:
-            A dictionary of dynamic offsets for each photodiode channel.
-        """
         offsets = {}
         sample_count = 32  # Number of samples to average for dynamic offset
         aggregated_signals = {channel: [] for channel in self.channels}
 
-        # Collect multiple samples
+        # Collect multiple samples in raw ADC counts
         for _ in range(sample_count):
             for pd_channel in self.channels:
                 adc_channel = ADC_CHANNEL_FUNCS[pd_channel]
                 signal = self.adc.read_from_channel(adc_channel)
-                aggregated_signals[pd_channel].append(self.adc.from_raw_to_voltage(signal))
+                aggregated_signals[pd_channel].append(signal)
 
-        # Calculate mean offset for each channel
+        # Calculate mean offset in raw ADC counts for each channel
         for channel, signals in aggregated_signals.items():
             offsets[channel] = sum(signals) / len(signals)
 
-        self.logger.debug(f"Dynamic zero offsets computed: {offsets}")
+        self.logger.debug(f"Dynamic zero offsets (raw ADC counts): {offsets}")
         return offsets
+
 
     def set_offsets(self, batched_readings: PdChannelToVoltage) -> None:
         """
