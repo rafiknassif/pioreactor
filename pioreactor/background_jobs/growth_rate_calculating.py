@@ -104,6 +104,10 @@ class GrowthRateCalculator(BackgroundJob):
 
     def on_ready(self) -> None:
         # Initialization when job is marked as READY.
+        # this is here since the below is long running, and if kept in the init(), there is a large window where
+        # two growth_rate_calculating jobs can be started.
+        # Note that this function runs in the __post__init__, i.e. in the same frame as __init__, i.e.
+        # when we initialize the class. Thus, we need to handle errors and cleanup resources gracefully.
         if hasattr(self, "ukf"):
             return
 

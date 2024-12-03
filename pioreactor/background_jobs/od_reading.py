@@ -443,6 +443,7 @@ class ADCReader(LoggerMixin):
 
         Returns:
             dict[pt.PdChannel, float]: A dictionary with specified channels and their processed readings.
+            Ex: {"1": 0.10240, "2": 0.1023459}
         """
         if not self._setup_complete:
             raise ValueError("Must call tune_adc() first.")
@@ -452,8 +453,8 @@ class ADCReader(LoggerMixin):
 
         channels = self.channels
         read_from_channel = self.adc.read_from_channel
-
-        # Pre-allocate arrays for aggregated signals
+        
+        # we pre-allocate these arrays to make the for loop faster => more accurate
         aggregated_signals: dict[pt.PdChannel, list[pt.AnalogValue]] = {
             channel: [0.0] * oversampling_count for channel in channels
         }
@@ -464,7 +465,7 @@ class ADCReader(LoggerMixin):
         try:
             with catchtime() as time_since_start:
                 for counter in range(oversampling_count):
-                    with catchtime() as time_sampling_took_to_run:
+                    with catchtime() as time_sampling_took_to_run:# the time_sampling_took_to_run() reduces the variance by accounting for the duration of each sampling.
                         for pd_channel in channels:
                             adc_channel = ADC_CHANNEL_FUNCS[pd_channel]
                             timestamps[pd_channel][counter] = time_since_start()
@@ -473,8 +474,8 @@ class ADCReader(LoggerMixin):
                     sleep(
                         max(
                             0,
-                            -time_sampling_took_to_run() + 0.85 / (oversampling_count - 1)
-                            + 0.0012 * ((counter * 0.618034) % 1),
+                            -time_sampling_took_to_run() + 0.85 / (oversampling_count - 1)# aim for 0.85s per read
+                            + 0.0012 * ((counter * 0.618034) % 1), # this is to artificially jitter the samples, so that we observe less aliasing. That constant is phi.
                         )
                     )
 
@@ -519,10 +520,11 @@ class ADCReader(LoggerMixin):
                 # Convert to voltage
                 best_estimate_of_signal_v = self.adc.from_raw_to_voltage(best_estimate_of_signal_)
 
-                # Ensure non-negative values
+                # force value to be non-negative. Negative values can still occur due to the IR LED reference
                 batched_estimates_[channel] = max(best_estimate_of_signal_v, 0)
 
-                # Check for high voltage warnings or shut down to protect hardware
+                # check if more than 3.x V, and shut down to prevent damage to ADC.
+                # we use max_signal to modify the PGA, too
                 max_signal = max(max_signal, best_estimate_of_signal_v)
 
             self.check_on_max(max_signal)
@@ -531,7 +533,8 @@ class ADCReader(LoggerMixin):
             # the max signal should determine the ADS1x15's gain
             self.max_signal_moving_average.update(max_signal)
             
-            # Update gain dynamically based on the maximum signal
+            # check if using correct gain
+            # this may need to be adjusted for higher rates of data collection
             if self.dynamic_gain:
                 m = self.max_signal_moving_average.get_latest()
                 self.adc.check_on_gain(m)
@@ -1116,8 +1119,10 @@ class ODReader(BackgroundJob):
                 pre_function()
             except Exception:
                 self.logger.debug(f"Error in pre_function={pre_function.__name__}.", exc_info=True)
-
-        with led_utils.change_leds_intensities_temporarily(
+        
+        # we put a soft lock on the LED channels - it's up to the
+        # other jobs to make sure they check the locks.
+        with led_utils.change_leds_intensities_temporarily(#desired_state=self.ir_led_on_and_rest_off_state, #changed in orded not to turn on ir light source for duration it takes to disable light source. may need to bring back when i calculate offset for every measurement
             {ch: 0.0 for ch in led_utils.ALL_LED_CHANNELS},
             unit=self.unit,
             experiment=self.experiment,
