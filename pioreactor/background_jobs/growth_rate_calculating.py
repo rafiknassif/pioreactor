@@ -410,7 +410,10 @@ class GrowthRateCalculator(BackgroundJob):
             if raw_signal is None:
                 raise ValueError(f"Missing 'od' value for channel {channel}. Observations: {observations}")
                 
-            dynamic_zero_offset = values.get("dynamic_zero_offset")  
+            dynamic_zero_offset = values.get("dynamic_zero_offset")
+            
+            self.logger.debug(f"raw value:`{raw_signal}` normalization mean: '{self.od_normalization_factors["1"]}' dynamic zero offset: '{dynamic_zero_offset}'")
+
             if dynamic_zero_offset is None:
                 # Scale the 'od' value using normalization factors and blanks
                 scaled_signals[channel] = _scale_and_shift(
