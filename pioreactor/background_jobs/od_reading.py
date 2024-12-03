@@ -493,8 +493,11 @@ class ADCReader(LoggerMixin):
                 # Use dynamic zero offset if provided, otherwise fallback to stored adc_offsets
                 offset = (
                     dynamic_zero_offset.get(channel, 0.0)
-                    if dynamic_zero_offset is not None
+                    if dynamic_zero_offset is not None and channel in dynamic_zero_offset
                     else self.adc_offsets.get(channel, 0.0)
+                )
+                self.logger.debug(
+                    f"Offset for channel {channel} applied from {'dynamic_zero_offset' if dynamic_zero_offset is not None and channel in dynamic_zero_offset else 'blank (static) offset'}: {offset}"
                 )
                 shifted_signals = self._remove_offset_from_signal(
                     aggregated_signals[channel], offset
@@ -864,16 +867,20 @@ class ODReader(BackgroundJob):
         "ir_led_intensity": {"datatype": "float", "settable": True, "unit": "%"},
         "interval": {"datatype": "float", "settable": False, "unit": "s"},
         "relative_intensity_of_ir_led": {"datatype": "float", "settable": False},
-        "ods": {"datatype": "ODReadings", "settable": False},
-        "od1": {"datatype": "ODReading", "settable": False},
-        "od2": {"datatype": "ODReading", "settable": False},
+        # "ods": {"datatype": "ODReadings", "settable": False},
+        # "od1": {"datatype": "ODReading", "settable": False},
+        # "od2": {"datatype": "ODReading", "settable": False},
+        
+        "ods": {"datatype": "Dynamic_Offset_ODReadings", "settable": False},
+        "od1": {"datatype": "Dynamic_Offset_ODReading", "settable": False},
+        "od2": {"datatype": "Dynamic_Offset_ODReading", "settable": False},
     }
 
     _pre_read: list[Callable] = []
     _post_read: list[Callable] = []
-    od1: structs.ODReading
-    od2: structs.ODReading
-    ods: structs.ODReadings
+    od1: structs.Dynamic_Offset_ODReading
+    od2: structs.Dynamic_Offset_ODReading
+    ods: structs.Dynamic_Offset_ODReadings
 
     def __init__(
         self,
@@ -1099,14 +1106,7 @@ class ODReader(BackgroundJob):
         else:
             return {self.ir_channel: self.ir_led_intensity}
 
-    def record_from_adc(self) -> structs.ODReadings:
-        """
-        Take a recording of the current OD of the culture.
-        Includes a dynamically calculated zero-light offset (dynamic_zero_offset).
-
-        Returns:
-            structs.ODReadings: A data structure containing processed OD readings.
-        """
+    def record_from_adc(self) -> structs.Dynamic_Offset_ODReadings:
         if self.first_od_obs_time is None:
             self.first_od_obs_time = time()
 
@@ -1117,7 +1117,6 @@ class ODReader(BackgroundJob):
             except Exception:
                 self.logger.debug(f"Error in pre_function={pre_function.__name__}.", exc_info=True)
 
-        # Adjust LED intensities for reading
         with led_utils.change_leds_intensities_temporarily(
             {ch: 0.0 for ch in led_utils.ALL_LED_CHANNELS},
             unit=self.unit,
@@ -1143,14 +1142,15 @@ class ODReader(BackgroundJob):
                 self.stop_ir_led()
                 sleep(0.1)
 
-                od_readings = structs.ODReadings(
+                od_readings = structs.Dynamic_Offset_ODReadings(
                     timestamp=timestamp_of_readings,
                     ods={
-                        channel: structs.ODReading(
+                        channel: structs.Dynamic_Offset_ODReading(
                             od=od_reading_by_channel[channel],
                             angle=angle,
                             timestamp=timestamp_of_readings,
                             channel=channel,
+                            dynamic_zero_offset=dynamic_zero_offset
                         )
                         for channel, angle in self.channel_angle_map.items()
                     },
@@ -1308,7 +1308,7 @@ class ODReader(BackgroundJob):
     def __iter__(self) -> ODReader:
         return self
 
-    def __next__(self) -> structs.ODReadings:
+    def __next__(self) -> structs.Dynamic_Offset_ODReadings:
         while self._set_for_iterating.wait():
             self._set_for_iterating.clear()
             assert self.ods is not None
