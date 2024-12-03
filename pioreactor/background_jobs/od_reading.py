@@ -494,7 +494,7 @@ class ADCReader(LoggerMixin):
             if os.environ.get("DEBUG") is not None:
                 self.logger.debug(f"{timestamps=}")
                 self.logger.debug(f"{aggregated_signals=}")
-                
+
             for channel in self.channels:
                 # Use dynamic zero offset if provided, otherwise fallback to stored adc_offsets
                 offset = (
@@ -531,6 +531,9 @@ class ADCReader(LoggerMixin):
             self.check_on_max(max_signal)
             self.batched_readings = batched_estimates_
 
+            # the max signal should determine the ADS1x15's gain
+            self.max_signal_moving_average.update(max_signal)
+            
             # Update gain dynamically based on the maximum signal
             if self.dynamic_gain:
                 m = self.max_signal_moving_average.get_latest()
