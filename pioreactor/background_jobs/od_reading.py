@@ -225,6 +225,32 @@ class ADCReader(LoggerMixin):
         )
         return testing_signals
 
+    def compute_dynamic_zero_offset(self) -> dict[pt.PdChannel, float]:
+        """
+        Compute the dynamic zero offset (zero-light condition) using a small sample size.
+        This is calculated before each measurement to dynamically adjust for current conditions.
+
+        Returns:
+            A dictionary of dynamic offsets for each photodiode channel.
+        """
+        offsets = {}
+        sample_count = 32  # Number of samples to average for dynamic offset
+        aggregated_signals = {channel: [] for channel in self.channels}
+
+        # Collect multiple samples
+        for _ in range(sample_count):
+            for pd_channel in self.channels:
+                adc_channel = ADC_CHANNEL_FUNCS[pd_channel]
+                signal = self.adc.read_from_channel(adc_channel)
+                aggregated_signals[pd_channel].append(self.adc.from_raw_to_voltage(signal))
+
+        # Calculate mean offset for each channel
+        for channel, signals in aggregated_signals.items():
+            offsets[channel] = sum(signals) / len(signals)
+
+        self.logger.debug(f"Dynamic zero offsets computed: {offsets}")
+        return offsets
+
     def set_offsets(self, batched_readings: PdChannelToVoltage) -> None:
         """
         With the IR LED off, determine the offsets. These offsets are used later to shift the raw signals such that "dark" is 0.
@@ -413,18 +439,16 @@ class ADCReader(LoggerMixin):
     ) -> list[pt.AnalogValue]:
         return [x - offset for x in signals]
 
-    def take_reading(self) -> PdChannelToVoltage:
+    def take_reading(self, dynamic_zero_offset: dict[pt.PdChannel, float] = None) -> PdChannelToVoltage:
         """
         Sample from the ADS - likely this has been optimized for use for optical density in the Pioreactor system.
+        Supports applying a dynamic zero-light offset in place of stored adc_offsets.
 
+        Args:
+            dynamic_zero_offset (dict[pt.PdChannel, float]): Optional. A dictionary of dynamically computed zero offsets.
 
-        Returns
-        ---------
-        readings: dict
-            a dict with specified channels and their reading
-            Ex: {"1": 0.10240, "2": 0.1023459}
-
-
+        Returns:
+            dict[pt.PdChannel, float]: A dictionary with specified channels and their processed readings.
         """
         if not self._setup_complete:
             raise ValueError("Must call tune_adc() first.")
@@ -435,7 +459,7 @@ class ADCReader(LoggerMixin):
         channels = self.channels
         read_from_channel = self.adc.read_from_channel
 
-        # we pre-allocate these arrays to make the for loop faster => more accurate
+        # Pre-allocate arrays for aggregated signals
         aggregated_signals: dict[pt.PdChannel, list[pt.AnalogValue]] = {
             channel: [0.0] * oversampling_count for channel in channels
         }
@@ -455,30 +479,24 @@ class ADCReader(LoggerMixin):
                     sleep(
                         max(
                             0,
-                            -time_sampling_took_to_run()  # the time_sampling_took_to_run() reduces the variance by accounting for the duration of each sampling.
-                            + 0.85 / (oversampling_count - 1)  # aim for 0.85s per read
-                            + 0.0012
-                            * (
-                                (counter * 0.618034) % 1
-                            ),  # this is to artificially jitter the samples, so that we observe less aliasing. That constant is phi.
+                            -time_sampling_took_to_run() + 0.85 / (oversampling_count - 1)
+                            + 0.0012 * ((counter * 0.618034) % 1),
                         )
                     )
 
             batched_estimates_: PdChannelToVoltage = {}
 
-            if self.most_appropriate_AC_hz is None:
-                self.most_appropriate_AC_hz = self.determine_most_appropriate_AC_hz(
-                    timestamps, aggregated_signals
-                )
-
-            if os.environ.get("DEBUG") is not None:
-                self.logger.debug(f"{timestamps=}")
-                self.logger.debug(f"{aggregated_signals=}")
-
             for channel in self.channels:
-                shifted_signals = self._remove_offset_from_signal(
-                    aggregated_signals[channel], self.adc_offsets.get(channel, 0.0)
+                # Use dynamic zero offset if provided, otherwise fallback to stored adc_offsets
+                offset = (
+                    dynamic_zero_offset.get(channel, 0.0)
+                    if dynamic_zero_offset is not None
+                    else self.adc_offsets.get(channel, 0.0)
                 )
+                shifted_signals = self._remove_offset_from_signal(
+                    aggregated_signals[channel], offset
+                )
+
                 (
                     best_estimate_of_signal_,
                     *_other_param_estimates,
@@ -492,39 +510,29 @@ class ADCReader(LoggerMixin):
                     penalizer_C=(self.penalizer / self.oversampling_count),
                 )
 
-                # convert to voltage
+                # Convert to voltage
                 best_estimate_of_signal_v = self.adc.from_raw_to_voltage(best_estimate_of_signal_)
 
-                # force value to be non-negative. Negative values can still occur due to the IR LED reference
+                # Ensure non-negative values
                 batched_estimates_[channel] = max(best_estimate_of_signal_v, 0)
 
-                # check if more than 3.x V, and shut down to prevent damage to ADC.
-                # we use max_signal to modify the PGA, too
+                # Check for high voltage warnings or shut down to protect hardware
                 max_signal = max(max_signal, best_estimate_of_signal_v)
 
             self.check_on_max(max_signal)
             self.batched_readings = batched_estimates_
 
-            # the max signal should determine the ADS1x15's gain
-            self.max_signal_moving_average.update(max_signal)
-
-            # check if using correct gain
-            # this may need to be adjusted for higher rates of data collection
+            # Update gain dynamically based on the maximum signal
             if self.dynamic_gain:
                 m = self.max_signal_moving_average.get_latest()
                 self.adc.check_on_gain(m)
 
             return batched_estimates_
-        except OSError as e:
-            self.logger.debug(e, exc_info=True)
-            self.logger.error(
-                "Detected i2c error - is everything well connected? Check Heating PCB connection & HAT connection."
-            )
-            raise e
         except Exception as e:
             self.logger.debug(e, exc_info=True)
             self.logger.error(e)
             raise e
+
 
     def determine_most_appropriate_AC_hz(
         self,
@@ -1088,21 +1096,23 @@ class ODReader(BackgroundJob):
     def record_from_adc(self) -> structs.ODReadings:
         """
         Take a recording of the current OD of the culture.
+        Includes a dynamically calculated zero-light offset (dynamic_zero_offset).
 
+        Returns:
+            structs.ODReadings: A data structure containing processed OD readings.
         """
         if self.first_od_obs_time is None:
             self.first_od_obs_time = time()
 
+        # Pre-read callbacks
         for pre_function in self.pre_read_callbacks:
             try:
                 pre_function()
             except Exception:
                 self.logger.debug(f"Error in pre_function={pre_function.__name__}.", exc_info=True)
 
-        # we put a soft lock on the LED channels - it's up to the
-        # other jobs to make sure they check the locks.
+        # Adjust LED intensities for reading
         with led_utils.change_leds_intensities_temporarily(
-            #desired_state=self.ir_led_on_and_rest_off_state, #changed in orded not to turn on ir light source for duration it takes to disable light source. may need to bring back when i calculate offset for every measurement
             {ch: 0.0 for ch in led_utils.ALL_LED_CHANNELS},
             unit=self.unit,
             experiment=self.experiment,
@@ -1112,17 +1122,31 @@ class ODReader(BackgroundJob):
         ):
             sleep(2)
             with led_utils.lock_leds_temporarily(self.non_ir_led_channels):
+                # Compute dynamic zero offset after turning off LEDs but before turning on the IR LED
+                dynamic_zero_offset = self.adc_reader.compute_dynamic_zero_offset()  # Compute here
+                sleep(0.1)
+
+                # Turn on the IR LED
                 self.start_ir_led()
                 sleep(0.1)
+
+                # Take raw readings and subtract dynamic offset where previously the blank was subtracted
+                raw_readings = self.adc_reader.take_reading()
+                corrected_readings = {
+                    channel: max(raw_readings[channel] - dynamic_zero_offset.get(channel, 0.0), 0)
+                    for channel in raw_readings
+                }
+
                 timestamp_of_readings = timing.current_utc_datetime()
-                od_reading_by_channel = self._read_from_adc_and_transform()
+
                 self.stop_ir_led()
                 sleep(0.1)
+
                 od_readings = structs.ODReadings(
                     timestamp=timestamp_of_readings,
                     ods={
                         channel: structs.ODReading(
-                            od=od_reading_by_channel[channel],
+                            od=corrected_readings[channel],
                             angle=angle,
                             timestamp=timestamp_of_readings,
                             channel=channel,
@@ -1135,9 +1159,7 @@ class ODReader(BackgroundJob):
         for channel, _ in self.channel_angle_map.items():
             setattr(self, f"od{channel}", od_readings.ods[channel])
 
-        self._log_relative_intensity_of_ir_led()
-        self._unblock_internal_event()
-
+        # Post-read callbacks
         for post_function in self.post_read_callbacks:
             try:
                 post_function(od_readings)
