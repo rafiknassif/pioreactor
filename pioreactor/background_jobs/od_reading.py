@@ -486,6 +486,15 @@ class ADCReader(LoggerMixin):
 
             batched_estimates_: PdChannelToVoltage = {}
 
+            if self.most_appropriate_AC_hz is None:
+                self.most_appropriate_AC_hz = self.determine_most_appropriate_AC_hz(
+                    timestamps, aggregated_signals
+                )
+
+            if os.environ.get("DEBUG") is not None:
+                self.logger.debug(f"{timestamps=}")
+                self.logger.debug(f"{aggregated_signals=}")
+                
             for channel in self.channels:
                 # Use dynamic zero offset if provided, otherwise fallback to stored adc_offsets
                 offset = (
