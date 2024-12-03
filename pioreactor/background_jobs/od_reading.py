@@ -1150,7 +1150,7 @@ class ODReader(BackgroundJob):
                             angle=angle,
                             timestamp=timestamp_of_readings,
                             channel=channel,
-                            dynamic_zero_offset=dynamic_zero_offset
+                            dynamic_zero_offset=dynamic_zero_offset[channel]
                         )
                         for channel, angle in self.channel_angle_map.items()
                     },
