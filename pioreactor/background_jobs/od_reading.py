@@ -1128,23 +1128,18 @@ class ODReader(BackgroundJob):
         ):
             sleep(2)
             with led_utils.lock_leds_temporarily(self.non_ir_led_channels):
-                # Compute dynamic zero offset after turning off LEDs but before turning on the IR LED
-                dynamic_zero_offset = self.adc_reader.compute_dynamic_zero_offset()  # Compute here
+                # Compute dynamic zero offset in raw ADC counts
+                dynamic_zero_offset = self.adc_reader.compute_dynamic_zero_offset()
                 sleep(0.1)
 
                 # Turn on the IR LED
                 self.start_ir_led()
                 sleep(0.1)
 
-                # Take raw readings and subtract dynamic offset where previously the blank was subtracted
-                raw_readings = self.adc_reader.take_reading()
-                corrected_readings = {
-                    channel: max(raw_readings[channel] - dynamic_zero_offset.get(channel, 0.0), 0)
-                    for channel in raw_readings
-                }
-
+                # Subtract offset in raw ADC counts directly in downstream processing
                 timestamp_of_readings = timing.current_utc_datetime()
-
+                od_reading_by_channel = self._read_from_adc_and_transform(dynamic_zero_offset)
+                
                 self.stop_ir_led()
                 sleep(0.1)
 
@@ -1152,7 +1147,7 @@ class ODReader(BackgroundJob):
                     timestamp=timestamp_of_readings,
                     ods={
                         channel: structs.ODReading(
-                            od=corrected_readings[channel],
+                            od=od_reading_by_channel[channel],
                             angle=angle,
                             timestamp=timestamp_of_readings,
                             channel=channel,
@@ -1173,6 +1168,7 @@ class ODReader(BackgroundJob):
                 self.logger.debug(f"Error in post_function={post_function.__name__}.", exc_info=True)
 
         return od_readings
+
     
     def _handle_interval_update(self, message: pt.MQTTMessage) -> None:
         """
@@ -1281,7 +1277,7 @@ class ODReader(BackgroundJob):
             self.clean_up()
             raise KeyError("`IR` value not found in section.")
 
-    def _read_from_adc_and_transform(self) -> PdChannelToVoltage:
+    def _read_from_adc_and_transform(self, dynamic_zero_offset: dict[pt.PdChannel, float]) -> PdChannelToVoltage:
         """
         Read from the ADC. This function normalizes by the IR ref.
 
@@ -1289,7 +1285,7 @@ class ODReader(BackgroundJob):
         -----
         The IR LED needs to be turned on for this function to report accurate OD signals.
         """
-        batched_readings = self.adc_reader.take_reading()
+        batched_readings = self.adc_reader.take_reading(dynamic_zero_offset)
         ir_output_reading = self.ir_led_reference_tracker.pop_reference_reading(batched_readings)
         self.ir_led_reference_tracker.update(ir_output_reading)
 
