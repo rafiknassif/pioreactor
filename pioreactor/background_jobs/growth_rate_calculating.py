@@ -38,8 +38,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
-from json import dumps
-from json import loads
+from json import dumps, loads
 from time import sleep
 from typing import Generator
 
@@ -54,8 +53,7 @@ from pioreactor.actions.od_blank import od_statistics
 from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.background_jobs.od_reading import VALID_PD_ANGLES
 from pioreactor.config import config
-from pioreactor.pubsub import QOS
-from pioreactor.pubsub import subscribe
+from pioreactor.pubsub import QOS, subscribe, publish
 from pioreactor.utils import local_persistant_storage
 from pioreactor.utils.streaming_calculations import CultureGrowthUKF
 
@@ -68,7 +66,6 @@ class GrowthRateCalculator(BackgroundJob):
         ignore any cached calculated statistics from this experiment.
     source_obs_from_mqtt: bool
         listen for data from MQTT to respond to.
-
     """
 
     job_name = "growth_rate_calculating"
@@ -77,7 +74,7 @@ class GrowthRateCalculator(BackgroundJob):
             "datatype": "GrowthRate",
             "settable": False,
             "unit": "h⁻¹",
-            "persist": True,  #TODO: why persist?
+            "persist": True,
         },
         "od_filtered": {"datatype": "ODFiltered", "settable": False},
         "kalman_filter_outputs": {
@@ -99,17 +96,19 @@ class GrowthRateCalculator(BackgroundJob):
         self.source_obs_from_mqtt = source_obs_from_mqtt
         self.ignore_cache = ignore_cache
         self.time_of_previous_observation: datetime | None = None
-        self.expected_dt = 1 / (60 * 60 * config.getfloat("od_reading.config", "samples_per_second"))
+        self.samples_per_second = config.getfloat("od_reading.config", "samples_per_second")
+        self.stats_samples_per_second = config.getfloat(
+            "od_reading.config", "stats_samples_per_second", fallback=self.samples_per_second
+        )
+        self.expected_dt = 1 / (60 * 60 * self.samples_per_second)
 
     def on_ready(self) -> None:
+        # Initialization when job is marked as READY.
         # this is here since the below is long running, and if kept in the init(), there is a large window where
         # two growth_rate_calculating jobs can be started.
-
         # Note that this function runs in the __post__init__, i.e. in the same frame as __init__, i.e.
         # when we initialize the class. Thus, we need to handle errors and cleanup resources gracefully.
-
         if hasattr(self, "ukf"):
-            # we've already done this, don't do it again. Ex: pause to resume
             return
 
         try:
@@ -124,7 +123,6 @@ class GrowthRateCalculator(BackgroundJob):
                 self.initial_acc,
             ) = self.get_initial_values()
         except Exception as e:
-            # something happened - abort
             self.logger.info("Aborting early.")
             self.logger.debug("Aborting early.", exc_info=True)
             self.clean_up()
@@ -252,18 +250,35 @@ class GrowthRateCalculator(BackgroundJob):
         self,
     ) -> tuple[dict[pt.PdChannel, float], dict[pt.PdChannel, float]]:
         # why sleep? Users sometimes spam jobs, and if stirring and gr start closely there can be a race to secure HALL_SENSOR. This gives stirring priority.
-        sleep(5)
-        means, variances = od_statistics(
-            self._yield_od_readings_from_mqtt(),
-            action_name="od_normalization",
-            n_samples=config.getint(
-                "growth_rate_calculating.config", "samples_for_od_statistics", fallback=35
-            ),
-            unit=self.unit,
-            experiment=self.experiment,
-            logger=self.logger,
-        )
-        self.logger.info("Completed OD normalization metrics.")
+        sleep(1)  # Adjusted as stirring is not used.
+
+        try:
+            # Adjust the sampling rate using MQTT
+            publish(
+                f"pioreactor/{self.unit}/{self.experiment}/od_reading/update_interval",
+                str(1 / self.stats_samples_per_second),
+            )
+            self.logger.info("Published request to update sampling interval to stats_samples_per_second.")
+
+            # Perform OD statistics calculation
+            means, variances = od_statistics(
+                self._yield_od_readings_from_mqtt(),
+                action_name="od_normalization",
+                n_samples=config.getint(
+                    "growth_rate_calculating.config", "samples_for_od_statistics", fallback=35
+                ),
+                unit=self.unit,
+                experiment=self.experiment,
+                logger=self.logger,
+            )
+            self.logger.info("Completed OD normalization metrics.")
+        finally:
+            # Restore the original sampling interval using MQTT
+            publish(
+                f"pioreactor/{self.unit}/{self.experiment}/od_reading/update_interval",
+                str(1 / self.samples_per_second),
+            )
+            self.logger.info("Published request to restore sampling interval to samples_per_second.")
 
         with local_persistant_storage("od_normalization_mean") as cache:
             if self.experiment not in cache:
@@ -342,7 +357,7 @@ class GrowthRateCalculator(BackgroundJob):
         if msg is None:
             return 1.0  # default?
 
-        od_readings = decode(msg.payload, type=structs.ODReadings)
+        od_readings = decode(msg.payload, type=structs.Dynamic_Offset_ODReadings)
         scaled_ods = self.scale_raw_observations(self._batched_raw_od_readings_to_dict(od_readings.ods))
         assert scaled_ods is not None
         return mean(scaled_ods.values())
@@ -385,16 +400,34 @@ class GrowthRateCalculator(BackgroundJob):
         else:
             self.ukf.scale_OD_variance_for_next_n_seconds(factor, minutes * 60)
 
-    def scale_raw_observations(self, observations: dict[pt.PdChannel, float]) -> dict[pt.PdChannel, float]:
+    def scale_raw_observations(self, observations: dict[pt.PdChannel, dict[str, float]]) -> dict[pt.PdChannel, float]:
+        """
+        Scales the raw observations using normalization factors and blanks.
+        Accepts input where observations are nested dictionaries containing 'od' and 'dynamic_zero_offset'.
+        """
         def _scale_and_shift(obs, shift, scale) -> float:
             return (obs - shift) / (scale - shift)
 
-        scaled_signals = {
-            channel: _scale_and_shift(
-                raw_signal, self.od_blank[channel], self.od_normalization_factors[channel]
-            )
-            for channel, raw_signal in observations.items()
-        }
+        scaled_signals = {}
+        for channel, values in observations.items():
+            raw_signal = values.get("od")  # Extract 'od'
+            if raw_signal is None:
+                raise ValueError(f"Missing 'od' value for channel {channel}. Observations: {observations}")
+                
+            dynamic_zero_offset = values.get("dynamic_zero_offset")
+            
+            self.logger.debug(f"raw value:`{raw_signal}` normalization mean: '{self.od_normalization_factors['1']}' dynamic zero offset: '{dynamic_zero_offset}'")
+
+            if dynamic_zero_offset is None:
+                # Scale the 'od' value using normalization factors and blanks
+                scaled_signals[channel] = _scale_and_shift(
+                    raw_signal, self.od_blank[channel], self.od_normalization_factors[channel]
+                )
+            else:
+                # Scale the 'od' value using normalization factors and blanks
+                scaled_signals[channel] = _scale_and_shift(
+                    raw_signal, dynamic_zero_offset, self.od_normalization_factors[channel]
+                )
 
         if any(v <= 0.0 for v in scaled_signals.values()):
             raise ValueError(f"Negative normalized value(s) observed: {scaled_signals}.")
@@ -406,7 +439,7 @@ class GrowthRateCalculator(BackgroundJob):
             return
 
         try:
-            od_readings = decode(message.payload, type=structs.ODReadings)
+            od_readings = decode(message.payload, type=structs.Dynamic_Offset_ODReadings)
             self.update_state_from_observation(od_readings)
         except DecodeError:
             self.logger.debug(f"Decode error in `{message.payload.decode()}` to structs.ODReadings")
@@ -414,7 +447,7 @@ class GrowthRateCalculator(BackgroundJob):
         return
 
     def update_state_from_observation(
-        self, od_readings: structs.ODReadings
+        self, od_readings: structs.Dynamic_Offset_ODReadings
     ) -> tuple[structs.GrowthRate, structs.ODFiltered, structs.KalmanFilterOutput]:
         """
         this is like _update_state_from_observation, but also updates attributes, caches, mqtt
@@ -440,7 +473,7 @@ class GrowthRateCalculator(BackgroundJob):
         return self.growth_rate, self.od_filtered, self.kalman_filter_outputs
 
     def _update_state_from_observation(
-        self, od_readings: structs.ODReadings
+        self, od_readings: structs.Dynamic_Offset_ODReadings
     ) -> tuple[structs.GrowthRate, structs.ODFiltered, structs.KalmanFilterOutput]:
         timestamp = od_readings.timestamp
 
@@ -527,12 +560,20 @@ class GrowthRateCalculator(BackgroundJob):
 
     @staticmethod
     def _batched_raw_od_readings_to_dict(
-        raw_od_readings: dict[pt.PdChannel, structs.ODReading]
-    ) -> dict[pt.PdChannel, pt.OD]:
+        raw_od_readings: dict[pt.PdChannel, structs.Dynamic_Offset_ODReading]
+    ) -> dict[pt.PdChannel, dict[str, pt.OD]]:
         """
-        Extract the od floats from ODReading but keep the same keys
+        Extract the 'od' and 'dynamic_zero_offset' floats from Dynamic_Offset_ODReading but keep the same keys.
+        Returns a dictionary where each key is a channel, and the value is another dictionary with 'od' and 'dynamic_zero_offset'.
         """
-        return {channel: raw_od_readings[channel].od for channel in sorted(raw_od_readings, reverse=True)}
+        return {
+            channel: {
+                "od": raw_od_readings[channel].od,
+                "dynamic_zero_offset": raw_od_readings[channel].dynamic_zero_offset,
+            }
+            for channel in sorted(raw_od_readings, reverse=True)
+        }
+
 
     def _yield_od_readings_from_mqtt(self) -> Generator[structs.ODReadings, None, None]:
         counter = 0

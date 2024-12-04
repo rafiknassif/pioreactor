@@ -103,6 +103,7 @@ from pioreactor.background_jobs.base import LoggerMixin
 from pioreactor.config import config
 from pioreactor.hardware import ADC_CHANNEL_FUNCS
 from pioreactor.pubsub import publish
+from pioreactor.pubsub import QOS
 from pioreactor.utils import argextrema
 from pioreactor.utils import local_intermittent_storage
 from pioreactor.utils import local_persistant_storage
@@ -223,6 +224,26 @@ class ADCReader(LoggerMixin):
             f"ADC ready to read from PD channels {', '.join(map(str, self.channels))}, with gain {self.adc.gain}."
         )
         return testing_signals
+
+    def compute_dynamic_zero_offset(self) -> dict[pt.PdChannel, float]:
+        offsets = {}
+        sample_count = 32  # Number of samples to average for dynamic offset
+        aggregated_signals = {channel: [] for channel in self.channels}
+
+        # Collect multiple samples in raw ADC counts
+        for _ in range(sample_count):
+            for pd_channel in self.channels:
+                adc_channel = ADC_CHANNEL_FUNCS[pd_channel]
+                signal = self.adc.read_from_channel(adc_channel)
+                aggregated_signals[pd_channel].append(signal)
+
+        # Calculate mean offset in raw ADC counts for each channel
+        for channel, signals in aggregated_signals.items():
+            offsets[channel] = sum(signals) / len(signals)
+
+        self.logger.debug(f"Dynamic zero offsets (raw ADC counts): {offsets}")
+        return offsets
+
 
     def set_offsets(self, batched_readings: PdChannelToVoltage) -> None:
         """
@@ -412,18 +433,17 @@ class ADCReader(LoggerMixin):
     ) -> list[pt.AnalogValue]:
         return [x - offset for x in signals]
 
-    def take_reading(self) -> PdChannelToVoltage:
+    def take_reading(self, dynamic_zero_offset: dict[pt.PdChannel, float] = None) -> PdChannelToVoltage:
         """
         Sample from the ADS - likely this has been optimized for use for optical density in the Pioreactor system.
+        Supports applying a dynamic zero-light offset in place of stored adc_offsets.
 
+        Args:
+            dynamic_zero_offset (dict[pt.PdChannel, float]): Optional. A dictionary of dynamically computed zero offsets.
 
-        Returns
-        ---------
-        readings: dict
-            a dict with specified channels and their reading
+        Returns:
+            dict[pt.PdChannel, float]: A dictionary with specified channels and their processed readings.
             Ex: {"1": 0.10240, "2": 0.1023459}
-
-
         """
         if not self._setup_complete:
             raise ValueError("Must call tune_adc() first.")
@@ -433,7 +453,7 @@ class ADCReader(LoggerMixin):
 
         channels = self.channels
         read_from_channel = self.adc.read_from_channel
-
+        
         # we pre-allocate these arrays to make the for loop faster => more accurate
         aggregated_signals: dict[pt.PdChannel, list[pt.AnalogValue]] = {
             channel: [0.0] * oversampling_count for channel in channels
@@ -445,7 +465,7 @@ class ADCReader(LoggerMixin):
         try:
             with catchtime() as time_since_start:
                 for counter in range(oversampling_count):
-                    with catchtime() as time_sampling_took_to_run:
+                    with catchtime() as time_sampling_took_to_run:# the time_sampling_took_to_run() reduces the variance by accounting for the duration of each sampling.
                         for pd_channel in channels:
                             adc_channel = ADC_CHANNEL_FUNCS[pd_channel]
                             timestamps[pd_channel][counter] = time_since_start()
@@ -454,12 +474,8 @@ class ADCReader(LoggerMixin):
                     sleep(
                         max(
                             0,
-                            -time_sampling_took_to_run()  # the time_sampling_took_to_run() reduces the variance by accounting for the duration of each sampling.
-                            + 0.85 / (oversampling_count - 1)  # aim for 0.85s per read
-                            + 0.0012
-                            * (
-                                (counter * 0.618034) % 1
-                            ),  # this is to artificially jitter the samples, so that we observe less aliasing. That constant is phi.
+                            -time_sampling_took_to_run() + 0.85 / (oversampling_count - 1)# aim for 0.85s per read
+                            + 0.0012 * ((counter * 0.618034) % 1), # this is to artificially jitter the samples, so that we observe less aliasing. That constant is phi.
                         )
                     )
 
@@ -475,9 +491,19 @@ class ADCReader(LoggerMixin):
                 self.logger.debug(f"{aggregated_signals=}")
 
             for channel in self.channels:
-                shifted_signals = self._remove_offset_from_signal(
-                    aggregated_signals[channel], self.adc_offsets.get(channel, 0.0)
+                # Use dynamic zero offset if provided, otherwise fallback to stored adc_offsets
+                offset = (
+                    dynamic_zero_offset.get(channel, 0.0)
+                    if dynamic_zero_offset is not None and channel in dynamic_zero_offset
+                    else self.adc_offsets.get(channel, 0.0)
                 )
+                self.logger.debug(
+                    f"Offset for channel {channel} applied from {'dynamic_zero_offset' if dynamic_zero_offset is not None and channel in dynamic_zero_offset else 'blank (static) offset'}: {offset}"
+                )
+                shifted_signals = self._remove_offset_from_signal(
+                    aggregated_signals[channel], offset
+                )
+
                 (
                     best_estimate_of_signal_,
                     *_other_param_estimates,
@@ -491,7 +517,7 @@ class ADCReader(LoggerMixin):
                     penalizer_C=(self.penalizer / self.oversampling_count),
                 )
 
-                # convert to voltage
+                # Convert to voltage
                 best_estimate_of_signal_v = self.adc.from_raw_to_voltage(best_estimate_of_signal_)
 
                 # force value to be non-negative. Negative values can still occur due to the IR LED reference
@@ -506,7 +532,7 @@ class ADCReader(LoggerMixin):
 
             # the max signal should determine the ADS1x15's gain
             self.max_signal_moving_average.update(max_signal)
-
+            
             # check if using correct gain
             # this may need to be adjusted for higher rates of data collection
             if self.dynamic_gain:
@@ -514,16 +540,11 @@ class ADCReader(LoggerMixin):
                 self.adc.check_on_gain(m)
 
             return batched_estimates_
-        except OSError as e:
-            self.logger.debug(e, exc_info=True)
-            self.logger.error(
-                "Detected i2c error - is everything well connected? Check Heating PCB connection & HAT connection."
-            )
-            raise e
         except Exception as e:
             self.logger.debug(e, exc_info=True)
             self.logger.error(e)
             raise e
+
 
     def determine_most_appropriate_AC_hz(
         self,
@@ -849,16 +870,20 @@ class ODReader(BackgroundJob):
         "ir_led_intensity": {"datatype": "float", "settable": True, "unit": "%"},
         "interval": {"datatype": "float", "settable": False, "unit": "s"},
         "relative_intensity_of_ir_led": {"datatype": "float", "settable": False},
-        "ods": {"datatype": "ODReadings", "settable": False},
-        "od1": {"datatype": "ODReading", "settable": False},
-        "od2": {"datatype": "ODReading", "settable": False},
+        # "ods": {"datatype": "ODReadings", "settable": False},
+        # "od1": {"datatype": "ODReading", "settable": False},
+        # "od2": {"datatype": "ODReading", "settable": False},
+        
+        "ods": {"datatype": "Dynamic_Offset_ODReadings", "settable": False},
+        "od1": {"datatype": "Dynamic_Offset_ODReading", "settable": False},
+        "od2": {"datatype": "Dynamic_Offset_ODReading", "settable": False},
     }
 
     _pre_read: list[Callable] = []
     _post_read: list[Callable] = []
-    od1: structs.ODReading
-    od2: structs.ODReading
-    ods: structs.ODReadings
+    od1: structs.Dynamic_Offset_ODReading
+    od2: structs.Dynamic_Offset_ODReading
+    ods: structs.Dynamic_Offset_ODReadings
 
     def __init__(
         self,
@@ -883,6 +908,24 @@ class ODReader(BackgroundJob):
 
         self.adc_reader = adc_reader
 
+
+        # Store default and stats-specific intervals for dynamic sampling rates
+        self.default_interval = 1 / config.getfloat("od_reading.config", "samples_per_second")
+        self.stats_interval = 1 / config.getfloat(
+            "od_reading.config", "stats_samples_per_second", fallback=self.default_interval
+        )
+        self.interval = interval or self.default_interval  # Start with default interval
+
+        self.record_from_adc_timer = None
+
+        # Subscribe to MQTT topic for sampling interval updates
+        self.subscribe_and_callback(
+            self._handle_interval_update,
+            f"pioreactor/{self.unit}/{self.experiment}/od_reading/update_interval",
+            qos=QOS.AT_LEAST_ONCE,
+        )
+
+        # Initialize IR LED Reference Tracker and Calibration Transformer
         if ir_led_reference_tracker is None:
             self.logger.debug("Not tracking IR intensity.")
             self.ir_led_reference_tracker = NullIrLedReferenceTracker()
@@ -1066,24 +1109,20 @@ class ODReader(BackgroundJob):
         else:
             return {self.ir_channel: self.ir_led_intensity}
 
-    def record_from_adc(self) -> structs.ODReadings:
-        """
-        Take a recording of the current OD of the culture.
-
-        """
+    def record_from_adc(self) -> structs.Dynamic_Offset_ODReadings:
         if self.first_od_obs_time is None:
             self.first_od_obs_time = time()
 
+        # Pre-read callbacks
         for pre_function in self.pre_read_callbacks:
             try:
                 pre_function()
             except Exception:
                 self.logger.debug(f"Error in pre_function={pre_function.__name__}.", exc_info=True)
-
+        
         # we put a soft lock on the LED channels - it's up to the
         # other jobs to make sure they check the locks.
-        with led_utils.change_leds_intensities_temporarily(
-            #desired_state=self.ir_led_on_and_rest_off_state, #changed in orded not to turn on ir light source for duration it takes to disable light source. may need to bring back when i calculate offset for every measurement
+        with led_utils.change_leds_intensities_temporarily(#desired_state=self.ir_led_on_and_rest_off_state, #changed in orded not to turn on ir light source for duration it takes to disable light source. may need to bring back when i calculate offset for every measurement
             {ch: 0.0 for ch in led_utils.ALL_LED_CHANNELS},
             unit=self.unit,
             experiment=self.experiment,
@@ -1093,20 +1132,30 @@ class ODReader(BackgroundJob):
         ):
             sleep(2)
             with led_utils.lock_leds_temporarily(self.non_ir_led_channels):
+                # Compute dynamic zero offset in raw ADC counts
+                dynamic_zero_offset = self.adc_reader.compute_dynamic_zero_offset()
+                sleep(0.1)
+
+                # Turn on the IR LED
                 self.start_ir_led()
                 sleep(0.1)
+
+                # Subtract offset in raw ADC counts directly in downstream processing
                 timestamp_of_readings = timing.current_utc_datetime()
-                od_reading_by_channel = self._read_from_adc_and_transform()
+                od_reading_by_channel = self._read_from_adc_and_transform(dynamic_zero_offset)
+                
                 self.stop_ir_led()
                 sleep(0.1)
-                od_readings = structs.ODReadings(
+
+                od_readings = structs.Dynamic_Offset_ODReadings(
                     timestamp=timestamp_of_readings,
                     ods={
-                        channel: structs.ODReading(
+                        channel: structs.Dynamic_Offset_ODReading(
                             od=od_reading_by_channel[channel],
                             angle=angle,
                             timestamp=timestamp_of_readings,
                             channel=channel,
+                            dynamic_zero_offset=dynamic_zero_offset[channel]
                         )
                         for channel, angle in self.channel_angle_map.items()
                     },
@@ -1116,9 +1165,7 @@ class ODReader(BackgroundJob):
         for channel, _ in self.channel_angle_map.items():
             setattr(self, f"od{channel}", od_readings.ods[channel])
 
-        self._log_relative_intensity_of_ir_led()
-        self._unblock_internal_event()
-
+        # Post-read callbacks
         for post_function in self.post_read_callbacks:
             try:
                 post_function(od_readings)
@@ -1126,6 +1173,50 @@ class ODReader(BackgroundJob):
                 self.logger.debug(f"Error in post_function={post_function.__name__}.", exc_info=True)
 
         return od_readings
+
+    
+    def _handle_interval_update(self, message: pt.MQTTMessage) -> None:
+        """
+        Handle updates to the sampling interval from MQTT messages.
+        """
+        try:
+            new_interval = float(message.payload.decode("utf-8"))
+            if new_interval > 0:
+                self.update_sampling_interval(new_interval)
+                self.logger.info(f"Updated sampling interval to {new_interval} seconds via MQTT.")
+            else:
+                self.logger.warning(f"Ignored invalid sampling interval: {new_interval}")
+        except ValueError as e:
+            self.logger.error(f"Failed to decode sampling interval: {e}")
+
+
+    def update_sampling_interval(self, new_interval: float) -> None:
+        """
+        Dynamically update the sampling interval for the ADC reader.
+        """
+        if new_interval <= 0:
+            raise ValueError("Sampling interval must be positive.")
+        self.logger.info(f"Updating sampling interval to {new_interval} seconds.")
+
+        if self.record_from_adc_timer:
+            # Pause the timer before making changes
+            self.record_from_adc_timer.pause()
+            # Update the interval
+            self.record_from_adc_timer.interval = new_interval
+            # Unpause the timer to continue execution
+            self.record_from_adc_timer.unpause()
+            self.logger.info(f"Sampling interval successfully updated to {new_interval} seconds.")
+        else:
+            # If no timer exists, create a new one
+            self.logger.warning("No active timer found, starting a new timer.")
+            self.record_from_adc_timer = timing.RepeatedTimer(
+                interval=new_interval,
+                function=self.record_from_adc,
+                job_name=self.job_name,
+                run_immediately=False,
+            ).start()
+        self.interval = new_interval
+
 
     def start_ir_led(self) -> None:
         r = led_utils.led_intensity(
@@ -1191,7 +1282,7 @@ class ODReader(BackgroundJob):
             self.clean_up()
             raise KeyError("`IR` value not found in section.")
 
-    def _read_from_adc_and_transform(self) -> PdChannelToVoltage:
+    def _read_from_adc_and_transform(self, dynamic_zero_offset: dict[pt.PdChannel, float]) -> PdChannelToVoltage:
         """
         Read from the ADC. This function normalizes by the IR ref.
 
@@ -1199,7 +1290,7 @@ class ODReader(BackgroundJob):
         -----
         The IR LED needs to be turned on for this function to report accurate OD signals.
         """
-        batched_readings = self.adc_reader.take_reading()
+        batched_readings = self.adc_reader.take_reading(dynamic_zero_offset)
         ir_output_reading = self.ir_led_reference_tracker.pop_reference_reading(batched_readings)
         self.ir_led_reference_tracker.update(ir_output_reading)
 
@@ -1222,7 +1313,7 @@ class ODReader(BackgroundJob):
     def __iter__(self) -> ODReader:
         return self
 
-    def __next__(self) -> structs.ODReadings:
+    def __next__(self) -> structs.Dynamic_Offset_ODReadings:
         while self._set_for_iterating.wait():
             self._set_for_iterating.clear()
             assert self.ods is not None
