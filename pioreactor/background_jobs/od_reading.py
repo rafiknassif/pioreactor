@@ -1155,7 +1155,7 @@ class ODReader(BackgroundJob):
                             angle=angle,
                             timestamp=timestamp_of_readings,
                             channel=channel,
-                            dynamic_zero_offset=dynamic_zero_offset[channel]
+                            dynamic_zero_offset=self.adc_reader.adc.from_raw_to_voltage(dynamic_zero_offset[channel])
                         )
                         for channel, angle in self.channel_angle_map.items()
                     },
