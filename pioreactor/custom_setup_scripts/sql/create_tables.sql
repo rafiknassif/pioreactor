@@ -18,6 +18,9 @@
 --    LR_C_timestamp TEXT,
 --    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
 --);
+--
+--CREATE INDEX IF NOT EXISTS lightrod_temperatures_ix
+--ON lightrod_temperatures (experiment, pioreactor_unit, timestamp);
 
 DROP TABLE IF EXISTS pbr_temperature;
 
@@ -29,8 +32,8 @@ CREATE TABLE IF NOT EXISTS pbr_temperature (
     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS lightrod_temperatures_ix
-ON lightrod_temperatures (experiment, pioreactor_unit, timestamp);
+CREATE INDEX IF NOT EXISTSpbr_temperature_ix
+ON pbr_temperature (experiment, pioreactor_unit, timestamp);
 
 
 DROP TABLE IF EXISTS pioreactor_unit_activity_data;
