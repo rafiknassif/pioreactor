@@ -1,21 +1,31 @@
 --DROP TABLE IF EXISTS lightrod_temperatures;
 
-CREATE TABLE IF NOT EXISTS lightrod_temperatures (
+--CREATE TABLE IF NOT EXISTS lightrod_temperatures (
+--    experiment TEXT NOT NULL,
+--    pioreactor_unit TEXT NOT NULL,
+--    timestamp TEXT NOT NULL,
+--    LR_A_top_temp REAL,
+--    LR_A_middle_temp REAL,
+--    LR_A_bottom_temp REAL,
+--    LR_A_timestamp TEXT,
+--    LR_B_top_temp REAL,
+--    LR_B_middle_temp REAL,
+--    LR_B_bottom_temp REAL,
+--    LR_B_timestamp TEXT,
+--    LR_C_top_temp REAL,
+--    LR_C_middle_temp REAL,
+--    LR_C_bottom_temp REAL,
+--    LR_C_timestamp TEXT,
+--    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+--);
+
+DROP TABLE IF EXISTS pbr_temperature;
+
+CREATE TABLE IF NOT EXISTS pbr_temperature (
     experiment TEXT NOT NULL,
     pioreactor_unit TEXT NOT NULL,
     timestamp TEXT NOT NULL,
-    LR_A_top_temp REAL,
-    LR_A_middle_temp REAL,
-    LR_A_bottom_temp REAL,
-    LR_A_timestamp TEXT,
-    LR_B_top_temp REAL,
-    LR_B_middle_temp REAL,
-    LR_B_bottom_temp REAL,
-    LR_B_timestamp TEXT,
-    LR_C_top_temp REAL,
-    LR_C_middle_temp REAL,
-    LR_C_bottom_temp REAL,
-    LR_C_timestamp TEXT,
+    pbr_temperature REAL,
     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
 );
 
@@ -53,6 +63,7 @@ CREATE TABLE IF NOT EXISTS pioreactor_unit_activity_data (
     LR_C_middle_temp REAL,
     LR_C_bottom_temp REAL,
     LR_C_timestamp TEXT,
+    pbr_temperature REAL,
     FOREIGN KEY (experiment) REFERENCES experiments (
         experiment
     ) ON DELETE CASCADE
