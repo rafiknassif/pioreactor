@@ -328,7 +328,7 @@ def parse_pbr_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "experiment": metadata.experiment,
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": temp.timestamp,
-        "temperature_c": temp.temperature,
+        "pbr_temperature": temp.temperature,
     }
 
 def parse_pbr_pH(topic: str, payload: pt.MQTTMessagePayload) -> dict:
@@ -339,7 +339,7 @@ def parse_pbr_pH(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "experiment": metadata.experiment,
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": ph.timestamp,
-        "temperature_c": ph.pH,
+        "pbr_ph": ph.pH,
     }
 
 def parse_automation_event(topic: str, payload: pt.MQTTMessagePayload) -> dict:
