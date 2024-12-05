@@ -20,6 +20,7 @@ from pioreactor.whoami import am_I_leader
 
 
 from pioreactor.background_jobs.read_lightrod_temps import click_read_lightrod_temps
+from pioreactor.background_jobs.read_pbr_temp import  click_read_pbr_temp
 # required to "discover" automations
 
 
@@ -53,6 +54,7 @@ run.add_command(actions.pump_calibration.click_pump_calibration)
 run.add_command(actions.od_calibration.click_od_calibration)
 
 run.add_command(click_read_lightrod_temps)
+run.add_command(click_read_pbr_temp)
 
 # TODO: this only adds to `pio run` - what if users want to add a high level command? Examples?
 for plugin in plugin_management.get_plugins().values():
