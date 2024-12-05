@@ -88,7 +88,7 @@ class ReadPBRPH(BackgroundJob):
             )
 
         averaged_pH = running_sum / running_count
-        self._check_if_exceeds_temp_range(averaged_pH)
+        self._check_if_exceeds_ph_range(averaged_pH)
 
         return averaged_pH
 
