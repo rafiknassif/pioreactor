@@ -26,7 +26,8 @@ class ReadPBRTemp(BackgroundJob):
     def __init__(self, unit, experiment, upper_warning_threshold=35, lower_warning_threshold=18):
         super().__init__(unit=unit, experiment=experiment)
         self.initializeDrivers(Thermocouple_ADDR)
-        self.set_warning_threshold(upper_warning_threshold, lower_warning_threshold)
+        self.set_upper_warning_threshold(upper_warning_threshold)
+        self.set_lower_warning_threshold(lower_warning_threshold)
         self.PBR_temp = None  # initialize for mqtt broadcast
 
         dt = 1 / (config.getfloat("lightrod_temp_reading.config", "samples_per_second", fallback=0.033))
