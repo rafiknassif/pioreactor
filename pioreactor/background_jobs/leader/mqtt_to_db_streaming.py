@@ -316,7 +316,7 @@ def parse_lightrod_temperatures(topic: str, payload: pt.MQTTMessagePayload) -> d
         parsed_data[f"{lightRod_channel}_bottom_temp"] = temp_data.bottom_temp
         parsed_data[f"{lightRod_channel}_timestamp"] = temp_data.timestamp
 
-    logger.debug(parsed_data)
+    # logger.debug(parsed_data)
 
     return parsed_data
 
@@ -328,7 +328,7 @@ def parse_pbr_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "experiment": metadata.experiment,
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": temp.timestamp,
-        "pbr_temperature": temp.temperature,
+        "pbr_temperature_c": temp.temperature,
     }
 
 def parse_pbr_pH(topic: str, payload: pt.MQTTMessagePayload) -> dict:
@@ -339,7 +339,7 @@ def parse_pbr_pH(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "experiment": metadata.experiment,
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": ph.timestamp,
-        "pbr_ph": ph.pH,
+        "pbr_ph_ph": ph.pH,
     }
 
 def parse_automation_event(topic: str, payload: pt.MQTTMessagePayload) -> dict:

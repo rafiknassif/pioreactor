@@ -19,21 +19,21 @@
 --    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
 --);
 --
---CREATE INDEX IF NOT EXISTS lightrod_temperatures_ix
---ON lightrod_temperatures (experiment, pioreactor_unit, timestamp);
+CREATE INDEX IF NOT EXISTS lightrod_temperatures_ix
+ON lightrod_temperatures (experiment, pioreactor_unit, timestamp);
 
---DROP TABLE IF EXISTS pbr_temperature;
---
---CREATE TABLE IF NOT EXISTS pbr_temperature (
---    experiment TEXT NOT NULL,
---    pioreactor_unit TEXT NOT NULL,
---    timestamp TEXT NOT NULL,
---    pbr_temperature REAL,
---    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
---);
---
---CREATE INDEX IF NOT EXISTS pbr_temperature_ix
---ON pbr_temperature (experiment, pioreactor_unit, timestamp);
+DROP TABLE IF EXISTS pbr_temperature;
+
+CREATE TABLE IF NOT EXISTS pbr_temperature (
+    experiment TEXT NOT NULL,
+    pioreactor_unit TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    pbr_temperature_c REAL,
+    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS pbr_temperature_ix
+ON pbr_temperature (experiment, pioreactor_unit, timestamp);
 
 DROP TABLE IF EXISTS pbr_ph;
 
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS pbr_ph (
     experiment TEXT NOT NULL,
     pioreactor_unit TEXT NOT NULL,
     timestamp TEXT NOT NULL,
-    pbr_ph REAL,
+    pbr_ph_ph REAL,
     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
 );
 
@@ -79,8 +79,8 @@ CREATE TABLE IF NOT EXISTS pioreactor_unit_activity_data (
     LR_C_middle_temp REAL,
     LR_C_bottom_temp REAL,
     LR_C_timestamp TEXT,
-    pbr_temperature REAL,
-    pbr_ph REAL,
+    pbr_temperature_c REAL,
+    pbr_ph_ph REAL,
     FOREIGN KEY (experiment) REFERENCES experiments (
         experiment
     ) ON DELETE CASCADE
