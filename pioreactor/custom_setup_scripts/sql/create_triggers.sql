@@ -51,21 +51,40 @@
 --END;
 
 
-DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_pbr_temperature;
+--DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_pbr_temperature;
+--
+--CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_pbr_temperature AFTER INSERT ON pbr_temperature
+--BEGIN
+--    INSERT INTO pioreactor_unit_activity_data(
+--        pioreactor_unit,
+--        experiment,
+--        timestamp,
+--        pbr_temperature
+--    ) VALUES (
+--        new.pioreactor_unit,
+--        new.experiment,
+--        new.timestamp,
+--        new.pbr_temperature
+--    )
+--    ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+--        pbr_temperature=excluded.pbr_temperature;
+--END;
 
-CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_pbr_temperature AFTER INSERT ON pbr_temperature
+DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_pbr_ph;
+
+CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_pbr_ph AFTER INSERT ON pbr_ph
 BEGIN
     INSERT INTO pioreactor_unit_activity_data(
         pioreactor_unit,
         experiment,
         timestamp,
-        pbr_temperature
+        pbr_ph
     ) VALUES (
         new.pioreactor_unit,
         new.experiment,
         new.timestamp,
-        new.pbr_temperature
+        new.pbr_ph
     )
     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
-        pbr_temperature=excluded.pbr_temperature;
+        pbr_ph=excluded.pbr_ph;
 END;

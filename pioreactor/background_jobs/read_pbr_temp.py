@@ -30,7 +30,7 @@ class ReadPBRTemp(BackgroundJob):
         self.set_lower_warning_threshold(lower_warning_threshold)
         self.PBR_temp = None  # initialize for mqtt broadcast
 
-        dt = 1 / (config.getfloat("lightrod_temp_reading.config", "samples_per_second", fallback=0.033))
+        dt = 1 / (config.getfloat("pbr_temp_reading.config", "samples_per_second", fallback=0.033))
 
         self.read_pbr_temperature_timer = RepeatedTimer(
             dt,
