@@ -68,6 +68,7 @@ LightRodTemp_ADDR : dict[LightRodChannel, list] = {  # I2C addrs of temp sensors
      "LR_B": [0x40, 0x48, 0x50],
      "LR_C": [0x40, 0x48, 0x50]
 }
+Thermocouple_ADDR = 0x67  # addr for mcp9600 thermocouple used to measure PBR growth media temp
 
 
 

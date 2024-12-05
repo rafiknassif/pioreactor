@@ -8,4 +8,5 @@ crudini==0.9.5
 filterpy==1.4.5
 iniparse==0.5
 six==1.16.0
+i2cdevice==1.0.0
 # lgpio; platform_machine!='armv7l' and platform_machine!='armv6l' # preinstalled on base image

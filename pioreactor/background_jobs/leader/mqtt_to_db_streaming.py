@@ -320,7 +320,16 @@ def parse_lightrod_temperatures(topic: str, payload: pt.MQTTMessagePayload) -> d
 
     return parsed_data
 
+def parse_pbr_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
+    metadata = produce_metadata(topic)
+    temp = msgspec_loads(payload, type=structs.Temperature)
 
+    return {
+        "experiment": metadata.experiment,
+        "pioreactor_unit": metadata.pioreactor_unit,
+        "timestamp": temp.timestamp,
+        "temperature_c": temp.temperature,
+    }
 
 def parse_automation_event(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
@@ -461,6 +470,11 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 "pioreactor/+/+/read_lightrod_temps/lightrod_temps",
                 parse_lightrod_temperatures,
                 "lightrod_temperatures",
+            ),
+            TopicToParserToTable(
+                "pioreactor/+/+/read_pbr_temp/PBR_temp",
+                parse_pbr_temperature,
+                "pbr_temperature",
             ),
             TopicToParserToTable(
                 "pioreactor/+/+/dosing_automation/alt_media_fraction",
