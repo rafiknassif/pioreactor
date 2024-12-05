@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS pbr_temperature (
     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTSpbr_temperature_ix
+CREATE INDEX IF NOT EXISTS pbr_temperature_ix
 ON pbr_temperature (experiment, pioreactor_unit, timestamp);
 
 

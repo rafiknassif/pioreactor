@@ -64,8 +64,8 @@ BEGIN
         new.pioreactor_unit,
         new.experiment,
         new.timestamp,
-        new.pbr_temperature,
+        new.pbr_temperature
     )
     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
-        pbr_temperature=excluded.pbr_temperature,
+        pbr_temperature=excluded.pbr_temperature;
 END;
