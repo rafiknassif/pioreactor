@@ -40,7 +40,7 @@ import struct
 
 __version__ = '0.0.4'
 
-CHIP_ID = 0x40
+CHIP_ID = 0x41
 I2C_ADDRESSES = list(range(0x60, 0x68))
 I2C_ADDRESS_DEFAULT = 0x66
 I2C_ADDRESS_ALTERNATE = 0x67
