@@ -84,4 +84,5 @@ CREATE TABLE IF NOT EXISTS pioreactor_unit_activity_data (
     FOREIGN KEY (experiment) REFERENCES experiments (
         experiment
     ) ON DELETE CASCADE
+    UNIQUE (experiment, pioreactor_unit, timestamp)
 );
