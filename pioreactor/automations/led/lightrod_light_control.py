@@ -73,13 +73,13 @@ class LightrodLightControl(LEDAutomationJob):
             for channel in self.channels:
                 self.set_led_intensity(channel, self.light_intensity)
 
-    def set_duration(self, duration: float) -> None:
-        """
-        Set duration dynamically (overrides default behavior).
-        """
-        if duration != 1:
-            self.logger.warning("Duration should be set to 1.")
-        super().set_duration(duration)
+    # def set_duration(self, duration: float) -> None:
+    #     """
+    #     Set duration dynamically (overrides default behavior).
+    #     """
+    #     if duration != 1:
+    #         self.logger.warning("Duration should be set to 1.")
+    #     super().set_duration(duration)
 
     def set_state(self, state: str) -> None:
         """
