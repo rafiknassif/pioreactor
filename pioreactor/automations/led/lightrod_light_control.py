@@ -2,10 +2,9 @@ from pioreactor.automations.led.base import LEDAutomationJob
 from pioreactor.types import LedChannel
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
+from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
 from typing import Optional
 import time
-from pioreactor.pubsub import publish
-
 
 
 class LightrodLightControl(LEDAutomationJob):
@@ -25,7 +24,7 @@ class LightrodLightControl(LEDAutomationJob):
     ):
         super().__init__(**kwargs)
         self.light_intensity = float(light_intensity)
-        self.channels: list[LedChannel] = ["B"]
+        self.channels: list[LedChannel] = ["D", "C"]
         self.light_active: bool = False
 
     def on_init(self):
@@ -33,19 +32,16 @@ class LightrodLightControl(LEDAutomationJob):
         Ensure read_lightrod_temps is running during initialization.
         """
         if not is_pio_job_running("read_lightrod_temps"):
-            self.logger.info("Starting read_lightrod_temps via MQTT.")
-            publish(f"pioreactor/{self.unit}/{self.experiment}/read_lightrod_temps/$state/set", "ready")
-
-            # Retry mechanism to wait for the job to transition to 'ready'
-            for attempt in range(10):  # Retry for up to 10 seconds
-                time.sleep(1)
+            self.logger.info("Starting read_lightrod_temps directly.")
+            try:
+                ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
+                time.sleep(2)  # Allow some time for the job to initialize
                 if is_pio_job_running("read_lightrod_temps"):
                     self.logger.info("read_lightrod_temps started successfully.")
-                    break
                 else:
-                    self.logger.debug(f"Waiting for read_lightrod_temps to start (attempt {attempt + 1}).")
-            else:
-                self.logger.warning("read_lightrod_temps failed to start after 10 seconds.")
+                    self.logger.warning("read_lightrod_temps failed to start.")
+            except Exception as e:
+                self.logger.error(f"Failed to start read_lightrod_temps: {e}")
         else:
             self.logger.info("read_lightrod_temps is already running.")
 
