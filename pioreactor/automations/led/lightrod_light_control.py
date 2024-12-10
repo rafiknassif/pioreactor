@@ -1,7 +1,9 @@
 from pioreactor.automations.led.base import LEDAutomationJob
 from pioreactor.types import LedChannel
 from pioreactor.automations import events
-import subprocess
+from pioreactor.utils import is_pio_job_running
+from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
+from contextlib import nullcontext
 
 
 class LightrodLightControl(LEDAutomationJob):
@@ -22,29 +24,27 @@ class LightrodLightControl(LEDAutomationJob):
         super().__init__(**kwargs)
         self.light_intensity = float(light_intensity)
         self.channels: list[LedChannel] = ["D", "C"]
-        self.lightrod_process = None
         self.light_active: bool = False
 
     def on_init(self):
         """
-        Turn on lightrod_temps during initialization.
+        Ensure read_lightrod_temps is running during initialization.
         """
-        try:
-            self.lightrod_process = subprocess.Popen(["python", "path/to/lightrod_temps.py"])
-            self.logger.info("lightrod_temps started.")
-        except Exception as e:
-            self.logger.error(f"Failed to start lightrod_temps: {e}")
-            self.clean_up()
+        if not is_pio_job_running("read_lightrod_temps"):
+            self.logger.info("Starting read_lightrod_temps.")
+            job = ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
+            job.block_until_ready(timeout=30)
+        else:
+            self.logger.info("read_lightrod_temps is already running.")
 
     def execute(self) -> events.AutomationEvent | None:
         """
-        Execute is called periodically and checks if lightrod_temps is running. It sets
-        LED intensity if the external process is active.
+        Execute periodically checks read_lightrod_temps status and sets LED intensity.
         """
-        if not self.is_lightrod_running():
-            self.logger.warning("lightrod_temps is not running. Turning off LED automation.")
+        if not is_pio_job_running("read_lightrod_temps"):
+            self.logger.warning("read_lightrod_temps is not running. Turning off LED automation.")
             self.clean_up()
-            return events.ChangedLedIntensity("Turned off LEDs due to lightrod_temps stopping.")
+            return events.ChangedLedIntensity("Turned off LEDs due to read_lightrod_temps stopping.")
 
         if not self.light_active:
             self.light_active = True
@@ -53,12 +53,6 @@ class LightrodLightControl(LEDAutomationJob):
             return events.ChangedLedIntensity(f"Turned on LEDs at intensity {self.light_intensity}%.")
 
         return None  # No change to report
-
-    def is_lightrod_running(self) -> bool:
-        """
-        Check if lightrod_temps process is still running.
-        """
-        return self.lightrod_process and self.lightrod_process.poll() is None
 
     def set_light_intensity(self, intensity: float | str):
         """
@@ -73,9 +67,6 @@ class LightrodLightControl(LEDAutomationJob):
         """
         Cleanup resources and turn off LEDs.
         """
-        if self.lightrod_process:
-            self.lightrod_process.terminate()
-            self.logger.info("lightrod_temps terminated.")
         self.light_active = False
         for channel in self.channels:
             self.set_led_intensity(channel, 0)
