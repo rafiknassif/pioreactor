@@ -4,6 +4,7 @@ from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
 from typing import Optional
+import time
 
 
 class LightrodLightControl(LEDAutomationJob):
@@ -33,6 +34,7 @@ class LightrodLightControl(LEDAutomationJob):
         if not is_pio_job_running("read_lightrod_temps"):
             self.logger.info("Starting read_lightrod_temps.")
             ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
+            time.sleep(2)  # Allow some time for read_lightrod_temps to initialize
             self.logger.info("read_lightrod_temps started successfully.")
         else:
             self.logger.info("read_lightrod_temps is already running.")
@@ -41,12 +43,17 @@ class LightrodLightControl(LEDAutomationJob):
         """
         Periodically checks read_lightrod_temps status and adjusts LED state accordingly.
         """
-        if not is_pio_job_running("read_lightrod_temps"):
+        self.logger.info("Executing LightrodLightControl check.")
+        is_running = is_pio_job_running("read_lightrod_temps")
+        self.logger.debug(f"read_lightrod_temps running status: {is_running}")
+
+        if not is_running:
             self.logger.warning("read_lightrod_temps has stopped. Turning off LED automation.")
             self.light_active = False
             for channel in self.channels:
                 self.set_led_intensity(channel, 0)
-            self.set_state(self.DISCONNECTED)
+            if self.state != self.DISCONNECTED:
+                self.set_state(self.DISCONNECTED)
             return events.ChangedLedIntensity("Turned off LEDs due to read_lightrod_temps stopping.")
 
         if not self.light_active:
@@ -54,7 +61,7 @@ class LightrodLightControl(LEDAutomationJob):
             for channel in self.channels:
                 self.set_led_intensity(channel, self.light_intensity)
             return events.ChangedLedIntensity(f"Turned on LEDs at intensity {self.light_intensity}%.")
-        
+
         return None
 
     def set_light_intensity(self, intensity: float | str):
