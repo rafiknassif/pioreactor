@@ -636,6 +636,7 @@ class JobManager:
         return
 
     def set_not_running(self, job_id: JobMetadataKey) -> None:
+        self.logger.info(f"Setting job {job_id} to not running.")
         update_query = "UPDATE pio_job_metadata SET is_running=0, ended_at=STRFTIME('%Y-%m-%dT%H:%M:%f000Z', 'NOW') WHERE id=(?)"
         self.cursor.execute(update_query, (job_id,))
         self.conn.commit()
