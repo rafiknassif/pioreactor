@@ -18,6 +18,13 @@ class ReadLightRodTemps(BackgroundJob):
         "lightrod_temps": {"datatype": "LightRodTemperatures", "settable": False},
     }
     TEMP_THRESHOLD = 40  # Over-temperature warning level [degrees C]
+    _instance = None  # Singleton instance reference
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is not None:
+            raise RuntimeError("An instance of ReadLightRodTemps is already running.")
+        cls._instance = super().__new__(cls)
+        return cls._instance
 
     def __init__(self, unit, experiment, temp_thresh=TEMP_THRESHOLD):
         super().__init__(unit=unit, experiment=experiment)
@@ -83,9 +90,13 @@ class ReadLightRodTemps(BackgroundJob):
         if self.tmp_driver_map:
             for drivers in self.tmp_driver_map.values():
                 for driver in drivers:
-                    driver.clean_up()
+                    # No specific clean_up required, dereference the object
+                    del driver
 
         self.tmp_driver_map = None
+
+        # Release the singleton instance
+        ReadLightRodTemps._instance = None
 
     def _read_average_temperature(self, driver) -> float:
         """Read the current temperature from a sensor, in Celsius."""

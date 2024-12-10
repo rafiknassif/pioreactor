@@ -4,17 +4,19 @@ from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from typing import Optional
 import time
+import threading
 
 
 class LightrodLightControl(LEDAutomationJob):
     """
-    Lightrod light control automation for managing LED based on lightrod_temps status.
+    Lightrod light control automation for managing LED based on read_lightrod_temps status.
     """
 
     automation_name: str = "lightrod_light_control"
     published_settings = {
         "light_intensity": {"datatype": "float", "settable": True, "unit": "%"},
     }
+    lock = threading.Lock()  # Lock to prevent simultaneous start attempts
 
     def __init__(
         self,
@@ -30,20 +32,21 @@ class LightrodLightControl(LEDAutomationJob):
         """
         Ensure read_lightrod_temps is running during initialization.
         """
-        if not is_pio_job_running("read_lightrod_temps"):
-            self.logger.info("Starting read_lightrod_temps directly.")
-            try:
-                from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
-                ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
-                time.sleep(5)  # Allow some time for the job to initialize
-                if is_pio_job_running("read_lightrod_temps"):
-                    self.logger.info("read_lightrod_temps started successfully.")
-                else:
-                    self.logger.warning("read_lightrod_temps failed to start.")
-            except Exception as e:
-                self.logger.error(f"Failed to start read_lightrod_temps: {e}")
-        else:
-            self.logger.info("read_lightrod_temps is already running.")
+        with self.lock:
+            if not is_pio_job_running("read_lightrod_temps"):
+                self.logger.info("Starting read_lightrod_temps directly.")
+                try:
+                    from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
+                    ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
+                    time.sleep(5)  # Allow some time for the job to initialize
+                    if is_pio_job_running("read_lightrod_temps"):
+                        self.logger.info("read_lightrod_temps started successfully.")
+                    else:
+                        self.logger.warning("read_lightrod_temps failed to start.")
+                except Exception as e:
+                    self.logger.error(f"Failed to start read_lightrod_temps: {e}")
+            else:
+                self.logger.info("read_lightrod_temps is already running.")
 
     def execute(self) -> Optional[events.AutomationEvent]:
         """
