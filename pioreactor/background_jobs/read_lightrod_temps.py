@@ -2,7 +2,6 @@ from contextlib import suppress
 from time import sleep
 import numpy as np
 from pioreactor import exc
-
 from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.hardware import LightRodTemp_ADDR
 from pioreactor.structs import LightRodTemperature, LightRodTemperatures
@@ -10,7 +9,8 @@ from pioreactor.utils.temps import TMP1075
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
 from pioreactor.config import config
 from pioreactor.actions.led_intensity import led_intensity
-
+from pioreactor.utils import is_pio_job_running
+from pioreactor.pubsub import prune_retained_messages
 
 class ReadLightRodTemps(BackgroundJob):
     job_name = "read_lightrod_temps"
@@ -21,6 +21,10 @@ class ReadLightRodTemps(BackgroundJob):
     TEMP_THRESHOLD = 40  # Over-temperature warning level [degrees C]
 
     def __init__(self, unit, experiment, temp_thresh=TEMP_THRESHOLD):
+        # Check if job is already running
+        if is_pio_job_running(self.job_name):
+            raise RuntimeError(f"{self.job_name} is already running. Cannot start a duplicate instance.")
+
         super().__init__(unit=unit, experiment=experiment)
 
         self.initializeDrivers(LightRodTemp_ADDR)
@@ -78,6 +82,9 @@ class ReadLightRodTemps(BackgroundJob):
         """
         with suppress(AttributeError):
             self.read_lightrod_temperature_timer.cancel()
+        
+        # Ensure job metadata is cleaned up
+        prune_retained_messages(f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/#")
 
     def _read_average_temperature(self, driver) -> float:
         """
@@ -143,6 +150,11 @@ def click_read_lightrod_temps(warning_threshold):
 
     unit = get_unit_name()
     experiment = get_assigned_experiment_name(unit)
+
+    # Check if job is already running
+    if is_pio_job_running("read_lightrod_temps"):
+        click.echo("read_lightrod_temps is already running. Exiting.")
+        return
 
     job = ReadLightRodTemps(
         temp_thresh=warning_threshold,
