@@ -4,6 +4,8 @@ from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from typing import Optional
 import time
+from pioreactor.pubsub import publish
+
 
 
 class LightrodLightControl(LEDAutomationJob):
@@ -23,7 +25,7 @@ class LightrodLightControl(LEDAutomationJob):
     ):
         super().__init__(**kwargs)
         self.light_intensity = float(light_intensity)
-        self.channels: list[LedChannel] = ["D", "C"]
+        self.channels: list[LedChannel] = ["B"]
         self.light_active: bool = False
 
     def on_init(self):
@@ -32,7 +34,7 @@ class LightrodLightControl(LEDAutomationJob):
         """
         if not is_pio_job_running("read_lightrod_temps"):
             self.logger.info("Starting read_lightrod_temps via MQTT.")
-            self.pub_client.publish(f"pioreactor/{self.unit}/{self.experiment}/read_lightrod_temps/$state/set", "ready")
+            publish(f"pioreactor/{self.unit}/{self.experiment}/read_lightrod_temps/$state/set", "ready")
 
             # Retry mechanism to wait for the job to transition to 'ready'
             for attempt in range(10):  # Retry for up to 10 seconds
