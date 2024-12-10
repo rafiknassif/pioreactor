@@ -1,26 +1,29 @@
 from pioreactor.automations.led.base import LEDAutomationJob
-from pioreactor.utils import logger
-from pioreactor.pubsub import publish
 from pioreactor.types import LedChannel
+from pioreactor.automations import events
 import subprocess
-import time
 
 
 class LightrodLightControl(LEDAutomationJob):
     """
     Lightrod light control automation for managing LED based on lightrod_temps status.
     """
-    automation_name = "lightrod_light_control"
+
+    automation_name: str = "lightrod_light_control"
     published_settings = {
         "light_intensity": {"datatype": "float", "settable": True, "unit": "%"},
     }
 
-    def __init__(self, light_intensity: float | str, **kwargs):
+    def __init__(
+        self,
+        light_intensity: float | str,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.light_intensity = float(light_intensity)
-        # Hardcoding channels as in LightDarkCycle
-        self.channels: list[LedChannel] = ["B"]
+        self.channels: list[LedChannel] = ["D", "C"]
         self.lightrod_process = None
+        self.light_active: bool = False
 
     def on_init(self):
         """
@@ -28,44 +31,43 @@ class LightrodLightControl(LEDAutomationJob):
         """
         try:
             self.lightrod_process = subprocess.Popen(["python", "path/to/lightrod_temps.py"])
-            logger.info("lightrod_temps started.")
+            self.logger.info("lightrod_temps started.")
         except Exception as e:
-            logger.error(f"Failed to start lightrod_temps: {e}")
+            self.logger.error(f"Failed to start lightrod_temps: {e}")
             self.clean_up()
 
-    def process(self):
+    def execute(self) -> events.AutomationEvent | None:
         """
-        Main loop to control LED based on lightrod_temps status.
+        Execute is called periodically and checks if lightrod_temps is running. It sets
+        LED intensity if the external process is active.
         """
-        try:
-            while self.is_running:
-                if not self.is_lightrod_running():
-                    logger.warning("lightrod_temps is not running. Turning off LED automation.")
-                    self.clean_up()
-                    break
-
-                self.set_leds_intensity(self.light_intensity)
-                time.sleep(1)
-        except Exception as e:
-            logger.error(f"Error in Lightrod light process: {e}")
-        finally:
+        if not self.is_lightrod_running():
+            self.logger.warning("lightrod_temps is not running. Turning off LED automation.")
             self.clean_up()
+            return events.ChangedLedIntensity("Turned off LEDs due to lightrod_temps stopping.")
 
-    def is_lightrod_running(self):
+        if not self.light_active:
+            self.light_active = True
+            for channel in self.channels:
+                self.set_led_intensity(channel, self.light_intensity)
+            return events.ChangedLedIntensity(f"Turned on LEDs at intensity {self.light_intensity}%.")
+
+        return None  # No change to report
+
+    def is_lightrod_running(self) -> bool:
         """
         Check if lightrod_temps process is still running.
         """
         return self.lightrod_process and self.lightrod_process.poll() is None
 
-    def set_leds_intensity(self, intensity):
+    def set_light_intensity(self, intensity: float | str):
         """
-        Set the LED intensity for all hardcoded channels.
+        Set light intensity dynamically.
         """
-        for channel in self.channels:
-            publish(
-                f"pioreactor/{self.unit}/{self.experiment}/leds/{channel}/intensity",
-                intensity,
-            )
+        self.light_intensity = float(intensity)
+        if self.light_active:
+            for channel in self.channels:
+                self.set_led_intensity(channel, self.light_intensity)
 
     def clean_up(self):
         """
@@ -73,5 +75,7 @@ class LightrodLightControl(LEDAutomationJob):
         """
         if self.lightrod_process:
             self.lightrod_process.terminate()
-            logger.info("lightrod_temps terminated.")
-        self.set_leds_intensity(0)
+            self.logger.info("lightrod_temps terminated.")
+        self.light_active = False
+        for channel in self.channels:
+            self.set_led_intensity(channel, 0)
