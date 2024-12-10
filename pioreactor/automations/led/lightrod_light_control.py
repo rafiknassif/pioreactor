@@ -2,7 +2,6 @@ from pioreactor.automations.led.base import LEDAutomationJob
 from pioreactor.types import LedChannel
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
-from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
 from typing import Optional
 import time
 
@@ -24,7 +23,7 @@ class LightrodLightControl(LEDAutomationJob):
     ):
         super().__init__(**kwargs)
         self.light_intensity = float(light_intensity)
-        self.channels: list[LedChannel] = ["D", "C"]
+        self.channels: list[LedChannel] = ["B"]
         self.light_active: bool = False
 
     def on_init(self):
@@ -34,8 +33,9 @@ class LightrodLightControl(LEDAutomationJob):
         if not is_pio_job_running("read_lightrod_temps"):
             self.logger.info("Starting read_lightrod_temps directly.")
             try:
+                from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
                 ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
-                time.sleep(2)  # Allow some time for the job to initialize
+                time.sleep(5)  # Allow some time for the job to initialize
                 if is_pio_job_running("read_lightrod_temps"):
                     self.logger.info("read_lightrod_temps started successfully.")
                 else:
