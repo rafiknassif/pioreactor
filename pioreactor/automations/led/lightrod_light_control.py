@@ -37,8 +37,17 @@ class LightrodLightControl(LEDAutomationJob):
                 "ready",
                 qos=1,
             )
-            time.sleep(2)  # Allow some time for read_lightrod_temps to initialize
-            self.logger.info("read_lightrod_temps started successfully.")
+
+            # Retry mechanism to wait for the job to transition to 'ready'
+            for attempt in range(10):  # Retry for up to 10 seconds
+                time.sleep(1)
+                if is_pio_job_running("read_lightrod_temps"):
+                    self.logger.info("read_lightrod_temps started successfully.")
+                    break
+                else:
+                    self.logger.debug(f"Waiting for read_lightrod_temps to start (attempt {attempt + 1}).")
+            else:
+                self.logger.warning("read_lightrod_temps failed to start after 10 seconds.")
         else:
             self.logger.info("read_lightrod_temps is already running.")
 
