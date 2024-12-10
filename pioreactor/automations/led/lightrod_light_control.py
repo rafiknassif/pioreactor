@@ -3,7 +3,7 @@ from pioreactor.types import LedChannel
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from typing import Optional
-import subprocess
+import time
 import threading
 
 
@@ -34,24 +34,17 @@ class LightrodLightControl(LEDAutomationJob):
         """
         with self.lock:
             if not is_pio_job_running("read_lightrod_temps"):
-                self.logger.info("Starting read_lightrod_temps using pio run.")
+                self.logger.info("Starting read_lightrod_temps directly.")
                 try:
-                    # Call `pio run` to start `read_lightrod_temps`
-                    result = subprocess.run(
-                        ["pio", "run", "read_lightrod_temps"],
-                        capture_output=True,
-                        text=True,
-                    )
-
-                    # Log output and check for errors
-                    if result.returncode == 0:
+                    from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
+                    ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
+                    time.sleep(5)  # Allow some time for the job to initialize
+                    if is_pio_job_running("read_lightrod_temps"):
                         self.logger.info("read_lightrod_temps started successfully.")
                     else:
-                        self.logger.error(
-                            f"Failed to start read_lightrod_temps: {result.stderr.strip()}"
-                        )
+                        self.logger.warning("read_lightrod_temps failed to start.")
                 except Exception as e:
-                    self.logger.error(f"Error while starting read_lightrod_temps: {e}")
+                    self.logger.error(f"Failed to start read_lightrod_temps: {e}")
             else:
                 self.logger.info("read_lightrod_temps is already running.")
 
