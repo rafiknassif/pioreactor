@@ -3,6 +3,7 @@ from pioreactor.types import LedChannel
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
+from time import sleep
 
 
 class LightrodLightControl(LEDAutomationJob):
@@ -24,6 +25,7 @@ class LightrodLightControl(LEDAutomationJob):
         self.light_intensity = float(light_intensity)
         self.channels: list[LedChannel] = ["D", "C"]
         self.light_active: bool = False
+        self.check_interval = 1  # Interval in seconds to check lightrod_temps status
 
     def on_init(self):
         """
@@ -38,20 +40,24 @@ class LightrodLightControl(LEDAutomationJob):
 
     def execute(self) -> events.AutomationEvent | None:
         """
-        Execute periodically checks read_lightrod_temps status and sets LED intensity.
+        Periodically checks read_lightrod_temps status and adjusts LED state accordingly.
         """
-        if not is_pio_job_running("read_lightrod_temps"):
-            self.logger.warning("read_lightrod_temps is not running. Turning off LED automation.")
-            self.clean_up()
-            return events.ChangedLedIntensity("Turned off LEDs due to read_lightrod_temps stopping.")
+        while self.is_running:
+            if not is_pio_job_running("read_lightrod_temps"):
+                self.logger.warning("read_lightrod_temps has stopped. Turning off LED automation.")
+                self.clean_up()
+                return events.ChangedLedIntensity("Turned off LEDs due to read_lightrod_temps stopping.")
 
-        if not self.light_active:
-            self.light_active = True
-            for channel in self.channels:
-                self.set_led_intensity(channel, self.light_intensity)
-            return events.ChangedLedIntensity(f"Turned on LEDs at intensity {self.light_intensity}%.")
+            if not self.light_active:
+                self.light_active = True
+                for channel in self.channels:
+                    self.set_led_intensity(channel, self.light_intensity)
+                self.logger.info(f"Turned on LEDs at intensity {self.light_intensity}%.")
+                return events.ChangedLedIntensity(f"Turned on LEDs at intensity {self.light_intensity}%.")
 
-        return None  # No change to report
+            sleep(self.check_interval)  # Wait before checking again
+
+        return None
 
     def set_light_intensity(self, intensity: float | str):
         """
@@ -69,3 +75,4 @@ class LightrodLightControl(LEDAutomationJob):
         self.light_active = False
         for channel in self.channels:
             self.set_led_intensity(channel, 0)
+        self.logger.info("LEDs turned off.")
