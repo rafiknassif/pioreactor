@@ -32,11 +32,7 @@ class LightrodLightControl(LEDAutomationJob):
         """
         if not is_pio_job_running("read_lightrod_temps"):
             self.logger.info("Starting read_lightrod_temps via MQTT.")
-            self.pub_client.publish(
-                f"pioreactor/{self.unit}/{self.experiment}/read_lightrod_temps/$state/set",
-                "ready",
-                qos=1,
-            )
+            self.pub_client.publish(f"pioreactor/{self.unit}/{self.experiment}/read_lightrod_temps/$state/set", "ready")
 
             # Retry mechanism to wait for the job to transition to 'ready'
             for attempt in range(10):  # Retry for up to 10 seconds
