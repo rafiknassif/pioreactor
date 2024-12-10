@@ -2,7 +2,6 @@ from pioreactor.automations.led.base import LEDAutomationJob
 from pioreactor.types import LedChannel
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
-from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
 from typing import Optional
 import time
 
@@ -32,8 +31,12 @@ class LightrodLightControl(LEDAutomationJob):
         Ensure read_lightrod_temps is running during initialization.
         """
         if not is_pio_job_running("read_lightrod_temps"):
-            self.logger.info("Starting read_lightrod_temps.")
-            ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
+            self.logger.info("Starting read_lightrod_temps via MQTT.")
+            self.pub_client.publish(
+                f"pioreactor/{self.unit}/{self.experiment}/read_lightrod_temps/$state/set",
+                "ready",
+                qos=1,
+            )
             time.sleep(2)  # Allow some time for read_lightrod_temps to initialize
             self.logger.info("read_lightrod_temps started successfully.")
         else:
@@ -72,14 +75,6 @@ class LightrodLightControl(LEDAutomationJob):
         if self.light_active:
             for channel in self.channels:
                 self.set_led_intensity(channel, self.light_intensity)
-
-    # def set_duration(self, duration: float) -> None:
-    #     """
-    #     Set duration dynamically (overrides default behavior).
-    #     """
-    #     if duration != 1:
-    #         self.logger.warning("Duration should be set to 1.")
-    #     super().set_duration(duration)
 
     def set_state(self, state: str) -> None:
         """
