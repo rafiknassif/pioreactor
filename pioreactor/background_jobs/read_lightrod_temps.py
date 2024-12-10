@@ -2,6 +2,7 @@ from contextlib import suppress
 from time import sleep
 import numpy as np
 from pioreactor import exc
+
 from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.hardware import LightRodTemp_ADDR
 from pioreactor.structs import LightRodTemperature, LightRodTemperatures
@@ -9,7 +10,6 @@ from pioreactor.utils.temps import TMP1075
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
 from pioreactor.config import config
 from pioreactor.actions.led_intensity import led_intensity
-from pioreactor.pubsub import prune_retained_messages
 
 
 class ReadLightRodTemps(BackgroundJob):
@@ -21,18 +21,14 @@ class ReadLightRodTemps(BackgroundJob):
     TEMP_THRESHOLD = 40  # Over-temperature warning level [degrees C]
 
     def __init__(self, unit, experiment, temp_thresh=TEMP_THRESHOLD):
-        # Prevent duplicate instances
-        self._check_for_duplicate_activity()
-
         super().__init__(unit=unit, experiment=experiment)
 
         self.initializeDrivers(LightRodTemp_ADDR)
         self.set_warning_threshold(temp_thresh)
-        self.lightrod_temps = None
+        self.lightrod_temps = None  # Initialize for MQTT broadcast
 
         dt = 1 / (config.getfloat("lightrod_temp_reading.config", "samples_per_second", fallback=0.033))
 
-        self.logger.debug(f"Setting up RepeatedTimer with interval {dt} seconds.")
         self.read_lightrod_temperature_timer = RepeatedTimer(
             dt,
             self.read_temps,
@@ -40,22 +36,25 @@ class ReadLightRodTemps(BackgroundJob):
             run_immediately=False,
         ).start()
 
-        # Set state to READY after successful initialization
-        self.set_state(self.READY)
-
     def initializeDrivers(self, addr_map):
-        self.logger.debug(f"Initializing temperature drivers for {self.job_name}.")
+        """
+        Initialize temperature sensor drivers.
+        """
         self.tmp_driver_map = {
             LightRod: [TMP1075(address=addr) for addr in addresses]
             for LightRod, addresses in addr_map.items()
         }
 
     def set_warning_threshold(self, temp_thresh):
-        self.logger.debug(f"Setting warning threshold to {temp_thresh}℃.")
+        """
+        Set the warning threshold for light rod temperatures.
+        """
         self.warning_threshold = temp_thresh
 
     def read_temps(self):
-        self.logger.debug("Reading temperatures from light rods.")
+        """
+        Read temperatures from the light rods and publish them.
+        """
         lightrod_dict = {}
         for lightRod, drivers in self.tmp_driver_map.items():
             temps = np.zeros(3)
@@ -72,12 +71,21 @@ class ReadLightRodTemps(BackgroundJob):
             timestamp=current_utc_datetime(),
             temperatures=lightrod_dict,
         )
-        self.logger.debug(f"Updated light rod temperatures: {self.lightrod_temps}.")
+
+    def on_disconnected(self) -> None:
+        """
+        Handle disconnection and clean up resources.
+        """
+        with suppress(AttributeError):
+            self.read_lightrod_temperature_timer.cancel()
 
     def _read_average_temperature(self, driver) -> float:
-        self.logger.debug("Reading average temperature from driver.")
+        """
+        Read the current temperature from a sensor, in Celsius.
+        """
         running_sum, running_count = 0.0, 0
         try:
+            # Read temperature multiple times to reduce variance
             for _ in range(6):
                 running_sum += driver.get_temperature()
                 running_count += 1
@@ -90,11 +98,18 @@ class ReadLightRodTemps(BackgroundJob):
 
         averaged_temp = running_sum / running_count
         self._check_if_exceeds_max_temp(averaged_temp)
+
         return averaged_temp
 
     def _check_if_exceeds_max_temp(self, temp: float) -> bool:
+        """
+        Check if the temperature exceeds the warning threshold.
+        """
         if temp > self.warning_threshold:
-            self.logger.warning(f"Temperature exceeded threshold: {temp}℃.")
+            self.logger.warning(
+                f"Temperature of light rod has exceeded {self.warning_threshold}℃ - currently {temp}℃."
+            )
+            # Example action: Turn off LEDs if temperature is too high
             channel = 'B'
             success = led_intensity(
                 {channel: 0},
@@ -104,25 +119,9 @@ class ReadLightRodTemps(BackgroundJob):
                 source_of_event=f"{self.job_name}",
             )
             if success:
-                self.logger.warning("Lights turned off due to high temperature.")
+                self.logger.warning("Lights were turned off due to high temperature.")
+
         return temp > self.warning_threshold
-
-    def on_disconnected(self) -> None:
-        self.logger.debug("Disconnecting ReadLightRodTemps.")
-
-        with suppress(AttributeError):
-            self.read_lightrod_temperature_timer.cancel()
-
-        # Clean up job metadata and cached settings
-        self._remove_from_job_manager()
-        self._clear_caches()
-
-        self.set_state(self.DISCONNECTED)
-
-    def _clear_caches(self) -> None:
-        self.logger.debug("Clearing cached settings in MQTT.")
-        with suppress(Exception):
-            prune_retained_messages(f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/#")
 
 
 # CLI Command
@@ -145,12 +144,9 @@ def click_read_lightrod_temps(warning_threshold):
     unit = get_unit_name()
     experiment = get_assigned_experiment_name(unit)
 
-    try:
-        job = ReadLightRodTemps(
-            temp_thresh=warning_threshold,
-            unit=unit,
-            experiment=experiment,
-        )
-        job.block_until_disconnected()
-    except RuntimeError as e:
-        click.echo(str(e))
+    job = ReadLightRodTemps(
+        temp_thresh=warning_threshold,
+        unit=unit,
+        experiment=experiment,
+    )
+    job.block_until_disconnected()
