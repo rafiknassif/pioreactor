@@ -3,7 +3,6 @@ from pioreactor.types import LedChannel
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
-from contextlib import nullcontext
 
 
 class LightrodLightControl(LEDAutomationJob):
@@ -32,8 +31,8 @@ class LightrodLightControl(LEDAutomationJob):
         """
         if not is_pio_job_running("read_lightrod_temps"):
             self.logger.info("Starting read_lightrod_temps.")
-            job = ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
-            job.block_until_ready(timeout=30)
+            ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
+            self.logger.info("read_lightrod_temps started successfully.")
         else:
             self.logger.info("read_lightrod_temps is already running.")
 
