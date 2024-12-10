@@ -2,9 +2,8 @@ from pioreactor.automations.led.base import LEDAutomationJob
 from pioreactor.types import LedChannel
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
+from threading import Event
 from typing import Optional
-import time
-
 
 
 class LightrodLightControl(LEDAutomationJob):
@@ -22,19 +21,25 @@ class LightrodLightControl(LEDAutomationJob):
         light_intensity: float | str,
         **kwargs,
     ):
-        super().__init__(**kwargs)
-        self.light_intensity = float(light_intensity)
+        # Initialize required attributes first
         self.channels: list[LedChannel] = ["B"]
         self.light_active: bool = False
+        self._blocking_event = Event()  # Explicitly initialize the blocking event
+
+        # Call the parent class initializer
+        super().__init__(**kwargs)
+
+        # Additional initialization specific to this class
+        self.light_intensity = float(light_intensity)
 
     def on_init(self):
         """
         Ensure read_lightrod_temps is running during initialization.
         """
         if not is_pio_job_running("read_lightrod_temps"):
-            self.logger.error("read_lightrod_temps must be turned of firt.")
-            self.set_state(self.DISCONNECTED)
-
+            self.logger.error("read_lightrod_temps must be turned on first.")
+            # Raising an exception to cleanly abort initialization
+            raise RuntimeError("read_lightrod_temps is not running. Cannot initialize LightrodLightControl.")
         else:
             self.logger.info("read_lightrod_temps is already running.")
 
@@ -49,16 +54,18 @@ class LightrodLightControl(LEDAutomationJob):
         if not is_running:
             self.logger.warning("read_lightrod_temps has stopped. Turning off LED automation.")
             self.light_active = False
-            for channel in self.channels:
-                self.set_led_intensity(channel, 0)
+            if hasattr(self, "channels"):  # Ensure channels are initialized
+                for channel in self.channels:
+                    self.set_led_intensity(channel, 0)
             if self.state != self.DISCONNECTED:
                 self.set_state(self.DISCONNECTED)
             return events.ChangedLedIntensity("Turned off LEDs due to read_lightrod_temps stopping.")
 
         if not self.light_active:
             self.light_active = True
-            for channel in self.channels:
-                self.set_led_intensity(channel, self.light_intensity)
+            if hasattr(self, "channels"):  # Ensure channels are initialized
+                for channel in self.channels:
+                    self.set_led_intensity(channel, self.light_intensity)
             return events.ChangedLedIntensity(f"Turned on LEDs at intensity {self.light_intensity}%.")
 
         return None
@@ -69,8 +76,9 @@ class LightrodLightControl(LEDAutomationJob):
         """
         self.light_intensity = float(intensity)
         if self.light_active:
-            for channel in self.channels:
-                self.set_led_intensity(channel, self.light_intensity)
+            if hasattr(self, "channels"):  # Ensure channels are initialized
+                for channel in self.channels:
+                    self.set_led_intensity(channel, self.light_intensity)
 
     def set_state(self, state: str) -> None:
         """
@@ -80,5 +88,7 @@ class LightrodLightControl(LEDAutomationJob):
         if state == self.DISCONNECTED:
             self.logger.info("LightrodLightControl is now disconnected.")
             self.light_active = False
-            for channel in self.channels:
-                self.set_led_intensity(channel, 0)
+            # Ensure channels are safely managed
+            if hasattr(self, "channels"):  # Check if channels exist
+                for channel in self.channels:
+                    self.set_led_intensity(channel, 0)
