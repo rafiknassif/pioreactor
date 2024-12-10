@@ -32,8 +32,6 @@ from pioreactor.pubsub import patch_into
 from pioreactor.pubsub import subscribe_and_callback
 from pioreactor.utils.networking import resolve_to_address
 from pioreactor.utils.timing import current_utc_timestamp
-from pioreactor.logging import create_logger
-
 
 if TYPE_CHECKING:
     from pioreactor.pubsub import Client
@@ -343,15 +341,15 @@ def is_pio_job_running(target_jobs):
         target_jobs = (target_jobs,)
 
     results = []
+
     with JobManager() as jm:
         for job in target_jobs:
-            query = "SELECT is_running FROM pio_job_metadata WHERE job_name = ? AND is_running = 1"
-            jm.cursor.execute(query, (job,))
-            result = jm.cursor.fetchall()
-            jm.logger.debug(f"Job {job} running status query result: {result}")
-            results.append(len(result) > 0)
+            results.append(jm.is_job_running(job))
 
-    return results[0] if len(target_jobs) == 1 else results
+    if len(target_jobs) == 1:
+        return results[0]
+    else:
+        return results
 
 
 def get_cpu_temperature() -> float:
