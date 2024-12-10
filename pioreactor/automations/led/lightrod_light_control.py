@@ -4,7 +4,6 @@ from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from typing import Optional
 import time
-from pioreactor.pubsub import publish
 
 
 
@@ -33,19 +32,9 @@ class LightrodLightControl(LEDAutomationJob):
         Ensure read_lightrod_temps is running during initialization.
         """
         if not is_pio_job_running("read_lightrod_temps"):
-            self.logger.info("Starting read_lightrod_temps via MQTT.")
-            publish(f"pioreactor/{self.unit}/{self.experiment}/read_lightrod_temps/$state/set", "ready")
+            self.logger.error("read_lightrod_temps must be turned of firt.")
+            self.set_state(self.DISCONNECTED)
 
-            # Retry mechanism to wait for the job to transition to 'ready'
-            for attempt in range(10):  # Retry for up to 10 seconds
-                time.sleep(1)
-                if is_pio_job_running("read_lightrod_temps"):
-                    self.logger.info("read_lightrod_temps started successfully.")
-                    break
-                else:
-                    self.logger.debug(f"Waiting for read_lightrod_temps to start (attempt {attempt + 1}).")
-            else:
-                self.logger.warning("read_lightrod_temps failed to start after 10 seconds.")
         else:
             self.logger.info("read_lightrod_temps is already running.")
 
