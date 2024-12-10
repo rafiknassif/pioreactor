@@ -2,7 +2,6 @@ from contextlib import suppress
 from time import sleep
 import numpy as np
 
-from pioreactor import exc
 from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.hardware import LightRodTemp_ADDR
 from pioreactor.structs import LightRodTemperature, LightRodTemperatures
@@ -10,8 +9,6 @@ from pioreactor.utils.temps import TMP1075
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
 from pioreactor.config import config
 from pioreactor.actions.led_intensity import led_intensity
-from pioreactor.utils import JobManager
-import os
 
 
 class ReadLightRodTemps(BackgroundJob):
@@ -24,19 +21,6 @@ class ReadLightRodTemps(BackgroundJob):
 
     def __init__(self, unit, experiment, temp_thresh=TEMP_THRESHOLD):
         super().__init__(unit=unit, experiment=experiment)
-        self.job_id = None  # Initialize job_id
-
-        # Register the job with JobManager
-        with JobManager() as jm:
-            self.job_id = jm.register_and_set_running(
-                unit=unit,
-                experiment=experiment,
-                job_name=self.job_name,
-                job_source="read_lightrod_temps",
-                pid=os.getpid(),
-                leader="",
-                is_long_running_job=True,
-            )
 
         self.initializeDrivers(LightRodTemp_ADDR)
         self.set_warning_threshold(temp_thresh)
@@ -82,11 +66,10 @@ class ReadLightRodTemps(BackgroundJob):
                 bottom_temp=float(round(temps[2], 2)),
                 timestamp=current_utc_datetime(),
             )
-        lightRod_temperatures = LightRodTemperatures(
+        self.lightrod_temps = LightRodTemperatures(
             timestamp=current_utc_datetime(),
             temperatures=lightrod_dict,
         )
-        self.lightrod_temps = lightRod_temperatures  # Publish the temperatures via MQTT
 
     def on_disconnected(self) -> None:
         """
@@ -94,11 +77,6 @@ class ReadLightRodTemps(BackgroundJob):
         """
         with suppress(AttributeError):
             self.read_lightrod_temperature_timer.cancel()
-
-        # Update the job state in JobManager
-        with JobManager() as jm:
-            jm.set_not_running(self.job_id)
-            self.logger.info("read_lightrod_temps job marked as not running.")
 
     def _read_average_temperature(self, driver) -> float:
         """
