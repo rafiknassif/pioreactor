@@ -37,7 +37,7 @@ class LightrodLightControl(LEDAutomationJob):
                 self.logger.info("Starting read_lightrod_temps directly.")
                 try:
                     from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
-                    self.read_lightrod_job = ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
+                    ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
                     time.sleep(5)  # Allow some time for the job to initialize
                     if is_pio_job_running("read_lightrod_temps"):
                         self.logger.info("read_lightrod_temps started successfully.")
@@ -47,26 +47,6 @@ class LightrodLightControl(LEDAutomationJob):
                     self.logger.error(f"Failed to start read_lightrod_temps: {e}")
             else:
                 self.logger.info("read_lightrod_temps is already running.")
-                self.read_lightrod_job = None
-
-    def on_disconnected(self):
-        """
-        Ensure proper cleanup when LightrodLightControl is disconnected.
-        """
-        if self.light_active:
-            self.logger.info("Turning off LEDs as part of disconnection.")
-            for channel in self.channels:
-                self.set_led_intensity(channel, 0)
-
-        # Explicitly stop read_lightrod_temps if it was started by this job
-        if hasattr(self, "read_lightrod_job") and self.read_lightrod_job:
-            self.logger.info("Stopping read_lightrod_temps started by LightrodLightControl.")
-            try:
-                self.read_lightrod_job.clean_up()  # Trigger cleanup in read_lightrod_temps
-            except Exception as e:
-                self.logger.warning(f"Error stopping read_lightrod_temps: {e}")
-
-        super().on_disconnected()
 
     def execute(self) -> Optional[events.AutomationEvent]:
         """
