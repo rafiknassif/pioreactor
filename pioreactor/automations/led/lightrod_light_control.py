@@ -1,13 +1,13 @@
 from pioreactor.automations.led.base import LEDAutomationJob
 from pioreactor.types import LedChannel
 from pioreactor.automations import events
-from pioreactor.utils import publish_mqtt
+from pioreactor.utils import is_pio_job_running, publish_mqtt
 from typing import Optional
 
 
 class LightrodLightControl(LEDAutomationJob):
     """
-    Lightrod light control automation for managing LED based on remote ReadLightRodTemps status.
+    Lightrod light control automation for managing LED based on ReadLightRodTemps status.
     """
 
     automation_name: str = "lightrod_light_control"
@@ -25,28 +25,39 @@ class LightrodLightControl(LEDAutomationJob):
         self.channels: list[LedChannel] = ["B"]
         self.light_active: bool = False
 
-        # Trigger ReadLightRodTemps remotely
-        self.trigger_read_lightrod_temps()
+        # Ensure ReadLightRodTemps is running on initialization
+        self.ensure_read_lightrod_temps_running()
 
-    def trigger_read_lightrod_temps(self):
+    def ensure_read_lightrod_temps_running(self):
         """
-        Start the ReadLightRodTemps process remotely via MQTT or another method.
+        Ensure the ReadLightRodTemps process is running remotely.
         """
-        self.logger.info("Ensuring ReadLightRodTemps is running remotely.")
-        try:
-            publish_mqtt(
-                f"pioreactor/{self.unit}/{self.experiment}/background_jobs/read_lightrod_temps/start",
-                "start",
-            )
-            self.logger.info("Triggered ReadLightRodTemps remotely.")
-        except Exception as e:
-            self.logger.error(f"Failed to trigger ReadLightRodTemps: {e}")
+        self.logger.info("Ensuring ReadLightRodTemps is running.")
+        if not is_pio_job_running("read_lightrod_temps"):
+            try:
+                publish_mqtt(
+                    f"pioreactor/{self.unit}/{self.experiment}/background_jobs/read_lightrod_temps/start",
+                    "start",
+                )
+                self.logger.info("Triggered ReadLightRodTemps remotely.")
+            except Exception as e:
+                self.logger.error(f"Failed to trigger ReadLightRodTemps: {e}")
+        else:
+            self.logger.info("ReadLightRodTemps is already running.")
 
     def execute(self) -> Optional[events.AutomationEvent]:
         """
-        Periodically check status and adjust LED state.
+        Periodically check ReadLightRodTemps status and adjust LED state accordingly.
         """
         self.logger.info("Executing LightrodLightControl check.")
+
+        # Check ReadLightRodTemps status
+        is_running = is_pio_job_running("read_lightrod_temps")
+        self.logger.debug(f"ReadLightRodTemps running status: {is_running}")
+
+        if not is_running:
+            self.logger.warning("ReadLightRodTemps is not running. Attempting to restart remotely.")
+            self.ensure_read_lightrod_temps_running()
 
         if not self.light_active:
             self.light_active = True
