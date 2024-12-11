@@ -23,7 +23,7 @@ class ReadLightRodTemps(BackgroundJob):
     }
     TEMP_THRESHOLD = 40  # over-temperature warning level [degrees C]
 
-    def __init__(self, unit, experiment, temp_thresh=TEMP_THRESHOLD):
+    def __init__(self, unit, experiment, temp_thresh=TEMP_THRESHOLD) -> None:
         super(ReadLightRodTemps, self).__init__(unit=unit, experiment=experiment)
         self.initializeDrivers(LightRodTemp_ADDR)
         self.set_warning_threshold(temp_thresh)
@@ -82,7 +82,6 @@ class ReadLightRodTemps(BackgroundJob):
     def on_disconnected(self) -> None:
         with suppress(AttributeError):
             self.read_lightrod_temperature_timer.cancel()
-        self.clean_up()
 
 
     ########## Private & internal methods
