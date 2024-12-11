@@ -82,7 +82,6 @@ class ReadLightRodTemps(BackgroundJob):
     def on_disconnected(self) -> None:
         with suppress(AttributeError):
             self.read_lightrod_temperature_timer.cancel()
-        super().on_disconnected()
 
 
 
