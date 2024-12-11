@@ -53,11 +53,20 @@ class LightrodLightControl(LEDAutomationJob):
 
         # Check ReadLightRodTemps status
         is_running = is_pio_job_running("read_lightrod_temps")
-        self.logger.debug(f"ReadLightRodTemps running status: {is_running}")
+        self.logger.debug(f"read_lightrod_temps running status: {is_running}")
 
         if not is_running:
-            self.logger.warning("ReadLightRodTemps is not running. Attempting to restart remotely.")
+            self.logger.warning("read_lightrod_temps has stopped. Attempting to restart remotely.")
             self.ensure_read_lightrod_temps_running()
+            # Re-check status after attempting to restart
+            if not is_pio_job_running("read_lightrod_temps"):
+                self.logger.error("Failed to restart read_lightrod_temps. Turning off LED automation.")
+                self.light_active = False
+                for channel in self.channels:
+                    self.set_led_intensity(channel, 0)
+                if self.state != self.DISCONNECTED:
+                    self.set_state(self.DISCONNECTED)
+                return events.ChangedLedIntensity("Turned off LEDs due to read_lightrod_temps failure.")
 
         if not self.light_active:
             self.light_active = True
