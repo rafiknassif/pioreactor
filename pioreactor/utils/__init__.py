@@ -591,24 +591,54 @@ class JobManager:
         pid: int,
         leader: str,
         is_long_running_job: bool,
-    ) -> JobMetadataKey:
-        insert_query = "INSERT INTO pio_job_metadata (started_at, is_running, job_source, experiment, unit, job_name, leader, pid, is_long_running_job, ended_at) VALUES (STRFTIME('%Y-%m-%dT%H:%M:%f000Z', 'NOW'), 1, :job_source, :experiment, :unit, :job_name, :leader, :pid, :is_long_running_job, NULL);"
+    ) -> int:
+        # Check for existing row
+        existing_query = """
+        SELECT id FROM pio_job_metadata
+        WHERE job_name = :job_name AND unit = :unit AND experiment = :experiment
+        """
+        existing_job = self.cursor.execute(
+            existing_query,
+            {"job_name": job_name, "unit": unit, "experiment": experiment},
+        ).fetchone()
 
-        self.cursor.execute(
-            insert_query,
-            {
-                "unit": unit,
-                "experiment": experiment,
-                "job_source": job_source,
-                "pid": pid,
-                "leader": leader,
-                "job_name": job_name,
-                "is_long_running_job": is_long_running_job,
-            },
-        )
-        self.conn.commit()
-        assert isinstance(self.cursor.lastrowid, int)
-        return self.cursor.lastrowid
+        if existing_job:
+            # Update the existing row
+            update_query = """
+            UPDATE pio_job_metadata
+            SET is_running = 1, pid = :pid, leader = :leader,
+                started_at = STRFTIME('%Y-%m-%dT%H:%M:%f000Z', 'NOW'),
+                ended_at = NULL
+            WHERE id = :id
+            """
+            self.cursor.execute(
+                update_query,
+                {"pid": pid, "leader": leader, "id": existing_job[0]},
+            )
+            self.conn.commit()
+            return existing_job[0]
+        else:
+            # Insert a new row
+            insert_query = """
+            INSERT INTO pio_job_metadata (started_at, is_running, job_source, experiment, unit, job_name, leader, pid, is_long_running_job, ended_at)
+            VALUES (STRFTIME('%Y-%m-%dT%H:%M:%f000Z', 'NOW'), 1, :job_source, :experiment, :unit, :job_name, :leader, :pid, :is_long_running_job, NULL)
+            """
+            self.cursor.execute(
+                insert_query,
+                {
+                    "unit": unit,
+                    "experiment": experiment,
+                    "job_source": job_source,
+                    "pid": pid,
+                    "leader": leader,
+                    "job_name": job_name,
+                    "is_long_running_job": is_long_running_job,
+                },
+            )
+            self.conn.commit()
+            assert isinstance(self.cursor.lastrowid, int)
+            return self.cursor.lastrowid
+
 
     def upsert_setting(self, job_id: JobMetadataKey, setting: str, value: Any) -> None:
         if value is None:

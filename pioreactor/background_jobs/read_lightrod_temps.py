@@ -23,8 +23,8 @@ class ReadLightRodTemps(BackgroundJob):
     }
     TEMP_THRESHOLD = 40  # over-temperature warning level [degrees C]
 
-    def __init__(self, unit, experiment, temp_thresh=TEMP_THRESHOLD):
-        super().__init__(unit=unit, experiment=experiment)
+    def __init__(self, unit: str, experiment: str, temp_thresh=TEMP_THRESHOLD) -> None:
+        super(ReadLightRodTemps, self).__init__(unit=unit, experiment=experiment)
         self.initializeDrivers(LightRodTemp_ADDR)
         self.set_warning_threshold(temp_thresh)
         self.lightrod_temps = None  # initialize for mqtt broadcast
