@@ -1,22 +1,19 @@
 from pioreactor.automations.led.base import LEDAutomationJob
 from pioreactor.types import LedChannel
 from pioreactor.automations import events
-from pioreactor.utils import is_pio_job_running
+from pioreactor.utils import publish_mqtt
 from typing import Optional
-import time
-import threading
 
 
 class LightrodLightControl(LEDAutomationJob):
     """
-    Lightrod light control automation for managing LED based on read_lightrod_temps status.
+    Lightrod light control automation for managing LED based on remote ReadLightRodTemps status.
     """
 
     automation_name: str = "lightrod_light_control"
     published_settings = {
         "light_intensity": {"datatype": "float", "settable": True, "unit": "%"},
     }
-    lock = threading.Lock()  # Lock to prevent simultaneous start attempts
 
     def __init__(
         self,
@@ -28,42 +25,28 @@ class LightrodLightControl(LEDAutomationJob):
         self.channels: list[LedChannel] = ["B"]
         self.light_active: bool = False
 
-    def on_init(self):
+        # Trigger ReadLightRodTemps remotely
+        self.trigger_read_lightrod_temps()
+
+    def trigger_read_lightrod_temps(self):
         """
-        Ensure read_lightrod_temps is running during initialization.
+        Start the ReadLightRodTemps process remotely via MQTT or another method.
         """
-        with self.lock:
-            if not is_pio_job_running("read_lightrod_temps"):
-                self.logger.info("Starting read_lightrod_temps directly.")
-                try:
-                    from pioreactor.background_jobs.read_lightrod_temps import ReadLightRodTemps
-                    ReadLightRodTemps(unit=self.unit, experiment=self.experiment)
-                    time.sleep(5)  # Allow some time for the job to initialize
-                    if is_pio_job_running("read_lightrod_temps"):
-                        self.logger.info("read_lightrod_temps started successfully.")
-                    else:
-                        self.logger.warning("read_lightrod_temps failed to start.")
-                except Exception as e:
-                    self.logger.error(f"Failed to start read_lightrod_temps: {e}")
-            else:
-                self.logger.info("read_lightrod_temps is already running.")
+        self.logger.info("Ensuring ReadLightRodTemps is running remotely.")
+        try:
+            publish_mqtt(
+                f"pioreactor/{self.unit}/{self.experiment}/background_jobs/read_lightrod_temps/start",
+                "start",
+            )
+            self.logger.info("Triggered ReadLightRodTemps remotely.")
+        except Exception as e:
+            self.logger.error(f"Failed to trigger ReadLightRodTemps: {e}")
 
     def execute(self) -> Optional[events.AutomationEvent]:
         """
-        Periodically checks read_lightrod_temps status and adjusts LED state accordingly.
+        Periodically check status and adjust LED state.
         """
         self.logger.info("Executing LightrodLightControl check.")
-        is_running = is_pio_job_running("read_lightrod_temps")
-        self.logger.debug(f"read_lightrod_temps running status: {is_running}")
-
-        if not is_running:
-            self.logger.warning("read_lightrod_temps has stopped. Turning off LED automation.")
-            self.light_active = False
-            for channel in self.channels:
-                self.set_led_intensity(channel, 0)
-            if self.state != self.DISCONNECTED:
-                self.set_state(self.DISCONNECTED)
-            return events.ChangedLedIntensity("Turned off LEDs due to read_lightrod_temps stopping.")
 
         if not self.light_active:
             self.light_active = True
@@ -81,18 +64,3 @@ class LightrodLightControl(LEDAutomationJob):
         if self.light_active:
             for channel in self.channels:
                 self.set_led_intensity(channel, self.light_intensity)
-
-    def set_state(self, state: str) -> None:
-        """
-        Transition the automation state explicitly, excluding operations that affect ReadLightRodTemps.
-        """
-        if state == self.DISCONNECTED:
-            self.logger.info("LightrodLightControl is now disconnected.")
-            self.light_active = False
-            for channel in self.channels:
-                self.set_led_intensity(channel, 0)
-                
-        else:
-            # Call the parent's set_state for other state transitions
-            super().set_state(state)
-
