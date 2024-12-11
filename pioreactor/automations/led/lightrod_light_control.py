@@ -86,7 +86,7 @@ class LightrodLightControl(LEDAutomationJob):
         """
         Transition the automation state explicitly to avoid LOST status.
         """
-        super().set_state(state)
+        # super().set_state(state)
         if state == self.DISCONNECTED:
             self.logger.info("LightrodLightControl is now disconnected.")
             self.light_active = False
