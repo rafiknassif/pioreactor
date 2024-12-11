@@ -84,11 +84,15 @@ class LightrodLightControl(LEDAutomationJob):
 
     def set_state(self, state: str) -> None:
         """
-        Transition the automation state explicitly to avoid LOST status.
+        Transition the automation state explicitly, excluding operations that affect ReadLightRodTemps.
         """
-        # super().set_state(state)
         if state == self.DISCONNECTED:
             self.logger.info("LightrodLightControl is now disconnected.")
             self.light_active = False
             for channel in self.channels:
                 self.set_led_intensity(channel, 0)
+                
+        else:
+            # Call the parent's set_state for other state transitions
+            super().set_state(state)
+
