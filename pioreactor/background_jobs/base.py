@@ -789,7 +789,9 @@ class _BackgroundJob(metaclass=PostInitCaller):
 
     def _remove_from_job_manager(self) -> None:
         # TODO what happens if the job_id isn't found?
+        self.logger.debug("Remove lightrod job from job manager")
         if hasattr(self, "_job_id"):
+            self.logger.debug("has job ID!")
             with JobManager() as jm:
                 jm.set_not_running(self._job_id)
 
