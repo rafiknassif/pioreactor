@@ -3,6 +3,8 @@ from pioreactor.types import LedChannel
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running, publish_mqtt
 from typing import Optional
+from pioreactor import pubsub
+
 
 
 class LightrodLightControl(LEDAutomationJob):
@@ -35,7 +37,7 @@ class LightrodLightControl(LEDAutomationJob):
         self.logger.info("Ensuring ReadLightRodTemps is running.")
         if not is_pio_job_running("read_lightrod_temps"):
             try:
-                publish_mqtt(
+                pubsub.publish(
                     f"pioreactor/{self.unit}/{self.experiment}/background_jobs/read_lightrod_temps/start",
                     "start",
                 )
