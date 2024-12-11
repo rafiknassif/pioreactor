@@ -3,6 +3,7 @@ from pioreactor.types import LedChannel
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from pioreactor.background_jobs.read_lightrod_temps import click_read_lightrod_temps
+from click.testing import CliRunner
 from typing import Optional
 
 
@@ -31,14 +32,17 @@ class LightrodLightControl(LEDAutomationJob):
 
     def ensure_read_lightrod_temps_running(self):
         """
-        Ensure the ReadLightRodTemps process is running by calling the click command directly.
+        Ensure the ReadLightRodTemps process is running by invoking the Click command.
         """
         self.logger.info("Ensuring ReadLightRodTemps is running.")
         if not is_pio_job_running("read_lightrod_temps"):
             try:
-                # Directly call the click command for ReadLightRodTemps
-                click_read_lightrod_temps(40)  # Adjust the warning threshold as needed
-                self.logger.info("Triggered ReadLightRodTemps directly.")
+                runner = CliRunner()
+                result = runner.invoke(click_read_lightrod_temps, ["--warning-threshold", "40"])
+                if result.exit_code == 0:
+                    self.logger.info("Triggered ReadLightRodTemps successfully.")
+                else:
+                    self.logger.error(f"Failed to trigger ReadLightRodTemps: {result.output}")
             except Exception as e:
                 self.logger.error(f"Failed to trigger ReadLightRodTemps: {e}")
         else:
