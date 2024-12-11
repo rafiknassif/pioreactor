@@ -1,7 +1,7 @@
 from pioreactor.automations.led.base import LEDAutomationJob
 from pioreactor.types import LedChannel
 from pioreactor.automations import events
-from pioreactor.utils import is_pio_job_running, publish_mqtt
+from pioreactor.utils import is_pio_job_running
 from typing import Optional
 from pioreactor import pubsub
 
