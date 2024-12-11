@@ -80,17 +80,8 @@ class ReadLightRodTemps(BackgroundJob):
             )
 
     def on_disconnected(self) -> None:
-        """
-        Ensure proper cleanup when read_lightrod_temps is stopped.
-        """
         with suppress(AttributeError):
             self.read_lightrod_temperature_timer.cancel()
-
-        # Explicitly update the state in the JobManager
-        self.logger.info("Updating JobManager state to mark read_lightrod_temps as stopped.")
-        self._remove_from_job_manager()
-
-        super().on_disconnected()
 
 
     ########## Private & internal methods
