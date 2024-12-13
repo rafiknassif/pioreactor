@@ -328,7 +328,7 @@ def parse_max_lightrod_temperature(topic: str, payload: pt.MQTTMessagePayload) -
 
     parsed_data = {
         "experiment": metadata.experiment,
-        "pioreactor_unit": str(metadata.pioreactor_unit) + " - " + PlotLRTs.channel,
+        "pioreactor_unit": str(metadata.pioreactor_unit) + "-" + PlotLRTs.channel,
         "timestamp": PlotLRTs.timestamp,  # Single timestamp for all readings
         "max_temperature": PlotLRTs.max_temp
     }
