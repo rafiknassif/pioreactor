@@ -138,6 +138,10 @@ class Temperature(JSONPrintedStruct):
     timestamp: t.Annotated[datetime, Meta(tz=True)]
     temperature: float
 
+class PlotLightRodTemperatures(JSONPrintedStruct):
+    timestamp: t.Annotated[datetime, Meta(tz=True)]
+    channel: pt.LightRodChannel
+    max_temp: float
 
 class LightRodTemperature(JSONPrintedStruct):
     timestamp: t.Annotated[datetime, Meta(tz=True)]
