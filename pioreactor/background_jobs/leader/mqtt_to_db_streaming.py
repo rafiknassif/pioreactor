@@ -316,19 +316,55 @@ def parse_lightrod_temperatures(topic: str, payload: pt.MQTTMessagePayload) -> d
         parsed_data[f"{lightRod_channel}_bottom_temp"] = temp_data.bottom_temp
         parsed_data[f"{lightRod_channel}_timestamp"] = temp_data.timestamp
 
-    logger.debug(parsed_data)
+    # logger.debug(parsed_data)
 
     return parsed_data
+
+def parse_max_lightrod_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
+    metadata = produce_metadata(topic)
+    PlotLRTs = msgspec_loads(payload, type=structs.PlotLightRodTemperatures)
+
+
+
+    parsed_data = {
+        "experiment": metadata.experiment,
+        "pioreactor_unit": str(metadata.pioreactor_unit) + "-" + PlotLRTs.channel,
+        "timestamp": PlotLRTs.timestamp,  # Single timestamp for all readings
+        "max_temperature": PlotLRTs.max_temp
+    }
+    from pioreactor.logging import create_logger
+    logger = create_logger("max_lightrod_parse-testing")
+    logger.debug(f"Parsed LRT for plotting: {parsed_data}")
+
+    return parsed_data
+
 
 def parse_pbr_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
     temp = msgspec_loads(payload, type=structs.Temperature)
 
-    return {
+    parsed_data = {
         "experiment": metadata.experiment,
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": temp.timestamp,
-        "temperature_c": temp.temperature,
+        "pbr_temperature_c": temp.temperature,
+    }
+    from pioreactor.logging import create_logger
+    logger = create_logger("max_lightrod_parse-testing")
+    logger.debug(f"Parsed PBR TEMP: {parsed_data}")
+
+    return parsed_data
+
+
+def parse_pbr_pH(topic: str, payload: pt.MQTTMessagePayload) -> dict:
+    metadata = produce_metadata(topic)
+    ph = msgspec_loads(payload, type=structs.PH)
+
+    return {
+        "experiment": metadata.experiment,
+        "pioreactor_unit": metadata.pioreactor_unit,
+        "timestamp": ph.timestamp,
+        "pbr_ph_ph": ph.pH,
     }
 
 def parse_automation_event(topic: str, payload: pt.MQTTMessagePayload) -> dict:
@@ -472,9 +508,19 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 "lightrod_temperatures",
             ),
             TopicToParserToTable(
+                "pioreactor/+/+/read_lightrod_temps/max_lightrod_temp",
+                parse_max_lightrod_temperature,
+                "plot_lightrod_temperatures",
+            ),
+            TopicToParserToTable(
                 "pioreactor/+/+/read_pbr_temp/PBR_temp",
                 parse_pbr_temperature,
                 "pbr_temperature",
+            ),
+            TopicToParserToTable(
+                "pioreactor/+/+/read_pbr_ph/PBR_pH",
+                parse_pbr_pH,
+                "pbr_ph",
             ),
             TopicToParserToTable(
                 "pioreactor/+/+/dosing_automation/alt_media_fraction",

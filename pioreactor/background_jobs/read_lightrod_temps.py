@@ -8,18 +8,19 @@ from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.hardware import LightRodTemp_ADDR
 from pioreactor.structs import LightRodTemperature
 from pioreactor.structs import LightRodTemperatures
+from pioreactor.structs import PlotLightRodTemperatures
 from pioreactor.utils.temps import TMP1075
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
 from pioreactor.config import config
 from pioreactor.actions.led_intensity import led_intensity
+from pioreactor.whoami import get_unit_name, get_assigned_experiment_name
 
 
 class ReadLightRodTemps(BackgroundJob):
-
-    job_name="read_lightrod_temps"
+    job_name = "read_lightrod_temps"
     published_settings = {
         'warning_threshold': {'datatype': "float", "unit": "℃", "settable": True},
-        "lightrod_temps": {"datatype": "LightRodTemperatures", "settable": False}
+        "lightrod_temps": {"datatype": "LightRodTemperatures", "settable": False},
     }
     TEMP_THRESHOLD = 40  # over-temperature warning level [degrees C]
 
@@ -29,8 +30,7 @@ class ReadLightRodTemps(BackgroundJob):
         self.set_warning_threshold(temp_thresh)
         self.lightrod_temps = None  # initialize for mqtt broadcast
 
-        dt = 1/(config.getfloat("lightrod_temp_reading.config", "samples_per_second", fallback=0.033))
-
+        dt = 1 / (config.getfloat("lightrod_temp_reading.config", "samples_per_second", fallback=0.033))
 
         self.read_lightrod_temperature_timer = RepeatedTimer(
             dt,
@@ -61,12 +61,36 @@ class ReadLightRodTemps(BackgroundJob):
                 bottom_temp=float(round(temps[2], 2)),
                 timestamp=current_utc_datetime(),
             )
+        self.publish_max_temps(lightrod_dict)
         lightRod_temperatures = LightRodTemperatures(
             timestamp=current_utc_datetime(),
             temperatures=lightrod_dict,
         )
-        #self.log_lightrod_temperatures(lightRod_temperatures)
+        # self.log_lightrod_temperatures(lightRod_temperatures)
         self.lightrod_temps = lightRod_temperatures
+
+    def publish_max_temps(self, lightrod_dict):
+        unit = get_unit_name()
+        experiment = get_assigned_experiment_name(unit)
+
+        for lightRod, lightRodTemp in lightrod_dict.items():
+            self.logger.debug(f"Lightrod: {lightRod},  LRT: {lightRodTemp}")
+            max_temp = max(lightRodTemp.top_temp, lightRodTemp.middle_temp, lightRodTemp.bottom_temp)
+            self.logger.debug(f"max LRT: {max_temp}")
+
+            # Create PlotLightRodTemperatures object
+            plotTemp = PlotLightRodTemperatures(
+                timestamp=current_utc_datetime(),
+                channel=lightRod,
+                max_temp=max_temp
+            )
+
+            # Pass the object directly to publish
+            BackgroundJob.publish(
+                self,
+                topic=f"pioreactor/{unit}/{experiment}/read_lightrod_temps/max_lightrod_temp",
+                payload=plotTemp  # Publish as an object
+            )
 
     def log_lightrod_temperatures(self, lightRod_temperatures):
         for lightRod, temperature in lightRod_temperatures.temperatures.items():
@@ -74,7 +98,7 @@ class ReadLightRodTemps(BackgroundJob):
                 f"LightRod: {lightRod} | "
                 f"Top: {temperature.top_temp}℃, "
                 f"Middle: {temperature.middle_temp}℃, "
-                
+
                 f"Bottom: {temperature.bottom_temp}℃ | "
                 f"Timestamp: {temperature.timestamp}"
             )
@@ -82,7 +106,6 @@ class ReadLightRodTemps(BackgroundJob):
     def on_disconnected(self) -> None:
         with suppress(AttributeError):
             self.read_lightrod_temperature_timer.cancel()
-
 
     ########## Private & internal methods
 
@@ -115,7 +138,7 @@ class ReadLightRodTemps(BackgroundJob):
                 f"Temperature of light rod has exceeded {self.warning_threshold}℃ - currently {temp}℃. Some action will be taken maybe idk"
                 # TODO implement overtemperature correction action
             )
-            
+
             channel = 'B'
             success = led_intensity(
                 {channel: 0},
@@ -129,6 +152,7 @@ class ReadLightRodTemps(BackgroundJob):
                 self.logger.warning("lights were turned off due to high temp")
 
         return temp > self.warning_threshold
+
 
 # if __name__ == "__main__":
 #     from pioreactor.whoami import get_unit_name
@@ -144,6 +168,7 @@ class ReadLightRodTemps(BackgroundJob):
 
 import click
 
+
 @click.command(name="read_lightrod_temps")
 @click.option(
     "--warning-threshold",
@@ -152,9 +177,6 @@ import click
     type=click.FloatRange(0, 100, clamp=True),
 )
 def click_read_lightrod_temps(warning_threshold):
-
-    from pioreactor.whoami import get_unit_name, get_assigned_experiment_name
-
     unit = get_unit_name()
     experiment = get_assigned_experiment_name(unit)
 

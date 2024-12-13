@@ -61,3 +61,4 @@ class LightrodLightControl(LEDAutomationJob):
         if self.light_active:
             for channel in self.channels:
                 self.set_led_intensity(channel, self.light_intensity)
+
