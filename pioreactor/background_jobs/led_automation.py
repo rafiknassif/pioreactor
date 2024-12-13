@@ -328,7 +328,7 @@ available_led_automations: dict[str, type[LEDAutomationJob]] = {}
     show_default=True,
     required=True,
 )
-@click.option("--duration", default=60.0, help="Time, in minutes, between every monitor check")
+@click.option("--duration", default=.5, help="Time, in minutes, between every monitor check")
 @click.option(
     "--skip-first-run",
     type=click.IntRange(min=0, max=1),
