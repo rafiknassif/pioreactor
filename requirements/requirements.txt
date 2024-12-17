@@ -5,6 +5,9 @@ colorlog==6.7.0
 msgspec==0.18.5
 diskcache==5.6.3
 crudini==0.9.5
+#pillow and contourpy added to fix new python requirements to get filterpy working not yet tested
+pillow==10.4.0
+contourpy==1.2.1
 filterpy==1.4.5
 iniparse==0.5
 six==1.16.0

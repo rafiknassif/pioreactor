@@ -30,7 +30,7 @@ class LightrodLightControl(LEDAutomationJob):
         Periodically check ReadLightRodTemps status and adjust LED state accordingly.
         If ReadLightRodTemps is not running, log an error and disconnect.
         """
-        self.logger.info("Executing LightrodLightControl check.")
+        self.logger.debug("Executing LightrodLightControl check.")
 
         # Check if ReadLightRodTemps is running
         is_running = is_pio_job_running("read_lightrod_temps")
