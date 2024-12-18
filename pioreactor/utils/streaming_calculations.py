@@ -235,10 +235,10 @@ class CultureGrowthUKF:
         
         def f(x, dt):
             """State transition function"""
-            od, rate, acc = x
-            od_pred=(od+(rate*dt)+(0.5*acc*dt**2))
-            gr_pred= rate + (acc*dt)
-            x_pred = np.array([od_pred, gr_pred, acc])
+            od_ratio, specific_growth_rate, acc = x
+            od_pred_ratio=od_ratio*np.exp((specific_growth_rate*dt)+(0.5*acc*dt**2))
+            specific_growth_rate_pred= specific_growth_rate + (acc*dt)
+            x_pred = np.array([od_pred_ratio, specific_growth_rate_pred, acc])
             return x_pred
 
         def h(x):
@@ -261,7 +261,7 @@ class CultureGrowthUKF:
         
         # Predict
         self.ukf.predict(dt=dt)
-
+        '''
         # state_prediction = self.update_state_from_previous_state(self.state_, dt)
         # covariance_prediction = self.update_covariance_from_old_covariance(self.state_, self.covariance_, dt)
 
@@ -295,7 +295,7 @@ class CultureGrowthUKF:
         ### update estimates
         # self.state_ = state_prediction + kalman_gain_ @ residual_state
         # self.covariance_ = (np.eye(self.n_states) - kalman_gain_ @ H) @ covariance_prediction
-        
+        '''
         self.ukf.update(observation)
 
         return self.ukf.x, self.ukf.P
@@ -336,9 +336,8 @@ class CultureGrowthUKF:
         self._scale_covariance_timer.start()
 
         forward_scale_covariance()
-
+    '''
     # def update_state_from_previous_state(self, state, dt: float):
-    #     """
     #     Denoted "f" in literature, x_{k} = f(x_{k-1})
 
     #     state = [OD, r, a]
@@ -347,14 +346,12 @@ class CultureGrowthUKF:
     #     r_t  = r_{t-1} + a_{t-1}·Δt
     #     a_t  = a_{t-1}
 
-    #     """
     #     import numpy as np
 
     #     od, rate, acc = state
     #     return np.array([od * np.exp(rate * dt), rate + acc * dt, acc])
 
     # def _J_update_observations_from_state(self, state_prediction):
-    #     """
     #     Jacobian of observations model, encoded as update_observations_from_state
 
     #     measurement model is:
@@ -388,9 +385,7 @@ class CultureGrowthUKF:
     #     return jacobian @ covariance @ jacobian.T + self.process_noise_covariance
 
     # def update_observations_from_state(self, state_predictions):
-    #     """
     #     "h" in the literature, z_k = h(x_k).
-
     #     Return shape is (n_sensors,)
     #     """
     #     import numpy as np
@@ -404,7 +399,6 @@ class CultureGrowthUKF:
     #     return obs
 
     # def _J_update_state_from_previous_state(self, state, dt: float):
-    #     """
     #     The prediction process is (encoded in update_state_from_previous_state)
 
     #         state = [OD, r, a]
@@ -422,7 +416,6 @@ class CultureGrowthUKF:
     #     ]
 
 
-    #     """
     #     import numpy as np
 
     #     J = np.zeros((3, 3))
@@ -436,7 +429,7 @@ class CultureGrowthUKF:
     #     J[1, 2] = dt
 
     #     return J
-
+    '''
     @staticmethod
     def _is_positive_definite(A) -> bool:
         import numpy as np

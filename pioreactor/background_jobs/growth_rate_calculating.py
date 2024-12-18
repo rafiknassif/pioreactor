@@ -222,7 +222,7 @@ class GrowthRateCalculator(BackgroundJob):
         import numpy as np
 
         try:
-            scaling_obs_variances = np.array(
+            scaling_obs_variances = np.array( #in original code this was .diag not .array
                 [
                     self.od_variances[channel]
                     / (self.od_normalization_factors[channel] - self.od_blank[channel]) ** 2
@@ -386,7 +386,7 @@ class GrowthRateCalculator(BackgroundJob):
 
         return variances
 
-    def update_ukf_variance_after_event(self, minutes: float, factor: float) -> None:
+    def update_ukf_variance_after_event(self, minutes: float, factor: float) -> None: #look into this
         if whoami.is_testing_env():
             msg = subscribe(  # needs to be pubsub.subscribe (ie not sub_client.subscribe) since this is called in a callback
                 f"pioreactor/{self.unit}/{self.experiment}/od_reading/interval",
