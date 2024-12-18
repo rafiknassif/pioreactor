@@ -41,13 +41,7 @@ def calculate_od_statistics(od_readings, num_samples):
 
 
 # Main function to override `growth_rate_calculating` behavior
-def run_growth_rate_calculation_from_csv(csv_file_path, num_samples):
-    # Use "pio" as the unit name for all other operations
-    unit_name = "pio"
-
-    # Prompt user for unit name for the calculator
-    calculator_unit_name = input("Enter the data series name: ").strip()
-
+def run_growth_rate_calculation_from_csv(csv_file_path, unit_name, num_samples):
     # Get the current experiment name dynamically
     experiment_name = whoami.get_assigned_experiment_name(unit_name)
 
@@ -64,9 +58,9 @@ def run_growth_rate_calculation_from_csv(csv_file_path, num_samples):
         cache[experiment_name] = json.dumps(variance_per_channel)
     print("OD statistics stored in cache successfully.")
 
-    # Initialize the GrowthRateCalculator using the specified unit
+    # Initialize the GrowthRateCalculator
     calculator = GrowthRateCalculator(
-        unit=calculator_unit_name,  # Use the user-provided unit name
+        unit=unit_name,
         experiment=experiment_name,
         ignore_cache=False,  # Use cached values calculated earlier
         source_obs_from_mqtt=False  # Override source
@@ -107,6 +101,7 @@ def run_growth_rate_calculation_from_csv(csv_file_path, num_samples):
 # Example usage
 if __name__ == "__main__":
     csv_file_path = "pre_recorded_od_readings.csv"  # Path to the CSV file
+    unit_name = whoami.get_unit_name()  # Dynamically detect the current unit
     num_samples = 35  # Number of samples for statistics calculation
 
-    run_growth_rate_calculation_from_csv(csv_file_path, num_samples)
+    run_growth_rate_calculation_from_csv(csv_file_path, unit_name, num_samples)
