@@ -57,10 +57,12 @@ def publish_to_mqtt(reading, experiment, unit):
             reading["channel"]: {
                 "od": reading["od"],
                 "angle": "90",  # Adjust if needed
+                "timestamp": reading["timestamp"],  # Include reading-specific timestamp
+                "channel": reading["channel"],  # Include the channel explicitly
                 "dynamic_zero_offset": 0.0  # Adjust if needed
             }
         },
-        "timestamp": reading["timestamp"]
+        "timestamp": reading["timestamp"]  # Overall payload timestamp
     }
     publish(topic, json.dumps(payload), retain=False)
     print(f"Published to MQTT: {payload}")
