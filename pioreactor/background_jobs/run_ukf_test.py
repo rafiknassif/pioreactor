@@ -3,7 +3,8 @@ import json
 from datetime import datetime
 from statistics import mean, variance
 from pioreactor.utils import local_persistant_storage
-from growth_rate_calculating import GrowthRateCalculator
+from pioreactor.background_jobs.growth_rate_calculating import GrowthRateCalculator
+from pioreactor.structs import Dynamic_Offset_ODReadings, Dynamic_Offset_ODReading
 
 # Load pre-recorded OD readings from a CSV file
 def load_od_readings(file_path):
@@ -60,22 +61,23 @@ def process_od_readings(od_readings, calculator):
         timestamp = datetime.strptime(reading["timestamp"], "%Y-%m-%dT%H:%M:%S.%fZ")
         od_value = reading["od"]
 
-        # Create an observation structure for the calculator
-        observation = {
-            "timestamp": timestamp,
-            "ods": {
-                reading["channel"]: {  # Dynamic channel key
-                    "od": od_value,
-                    "angle": "90",  # Assuming a fixed angle; adjust as needed
-                    "dynamic_zero_offset": 0.0  # Adjust if needed
-                }
-            }
-        }
+        # Create a Dynamic_Offset_ODReadings object
+        od_readings_obj = Dynamic_Offset_ODReadings(
+            timestamp=timestamp,
+            ods={
+                reading["channel"]: Dynamic_Offset_ODReading(
+                    od=od_value,
+                    angle="90",  # Assuming a fixed angle; adjust as needed
+                    timestamp=timestamp,
+                    channel=reading["channel"],
+                    dynamic_zero_offset=0.0  # Adjust if needed
+                )
+            },
+        )
 
-        # Pass the observation to the calculator
+        # Pass the observation object to the calculator
         try:
-            # Fully update state and trigger storage and downstream tasks
-            growth_rate, od_filtered, kf_outputs = calculator.update_state_from_observation(observation)
+            growth_rate, od_filtered, kf_outputs = calculator.update_state_from_observation(od_readings_obj)
             print(f"Processed OD: {od_value} at {timestamp}. Growth Rate: {growth_rate.growth_rate}")
         except Exception as e:
             print(f"Error processing OD reading: {e}")
@@ -89,7 +91,7 @@ def main():
     # Parameters
     csv_file_path = "pre_recorded_od_readings.csv"  # Path to the CSV file
     experiment_name = "experiment1"  # Name of the experiment
-    unit_name = "unit1"  # Unit name
+    unit_name = "pio"  # Unit name
     num_samples = 35  # Number of samples to use for OD statistics calculation
 
     # Load OD readings
