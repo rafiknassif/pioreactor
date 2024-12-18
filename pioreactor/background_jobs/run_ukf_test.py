@@ -1,8 +1,11 @@
 import csv
 import json
+from datetime import datetime, timezone
 from statistics import mean, variance
 from pioreactor.utils import local_persistant_storage
-from pioreactor.pubsub import publish
+from pioreactor.background_jobs.growth_rate_calculating import GrowthRateCalculator
+from pioreactor.structs import Dynamic_Offset_ODReadings, Dynamic_Offset_ODReading
+from pioreactor import whoami
 
 
 # Load pre-recorded OD readings from a CSV file
@@ -19,7 +22,7 @@ def load_od_readings(file_path):
     return od_readings
 
 
-# Calculate OD statistics
+# Calculate OD statistics (mean and variance)
 def calculate_od_statistics(od_readings, num_samples):
     channels = set([reading["channel"] for reading in od_readings])
     mean_per_channel = {}
@@ -37,70 +40,68 @@ def calculate_od_statistics(od_readings, num_samples):
     return mean_per_channel, variance_per_channel
 
 
-# Store statistics in the appropriate cache
-def store_statistics_in_cache(mean_per_channel, variance_per_channel, experiment):
-    with local_persistant_storage("od_normalization_mean") as cache:
-        cache[experiment] = json.dumps(mean_per_channel)
-    with local_persistant_storage("od_normalization_variance") as cache:
-        cache[experiment] = json.dumps(variance_per_channel)
-    print("OD statistics stored in cache successfully.")
+# Main function to override `growth_rate_calculating` behavior
+def run_growth_rate_calculation_from_csv(csv_file_path, unit_name, num_samples):
+    # Get the current experiment name dynamically
+    experiment_name = whoami.get_assigned_experiment_name(unit_name)
 
-
-# Publish data to MQTT
-def publish_to_mqtt(reading, experiment, unit):
-    """
-    Publish the OD reading to the appropriate MQTT topic.
-    """
-    topic = f"pioreactor/{unit}/{experiment}/od_reading/ods"
-    payload = {
-        "ods": {
-            reading["channel"]: {
-                "od": reading["od"],
-                "angle": "90",  # Adjust if needed
-                "timestamp": reading["timestamp"],  # Include reading-specific timestamp
-                "channel": reading["channel"],  # Include the channel explicitly
-                "dynamic_zero_offset": 0.0  # Adjust if needed
-            }
-        },
-        "timestamp": reading["timestamp"]  # Overall payload timestamp
-    }
-    publish(topic, json.dumps(payload), retain=False)
-    print(f"Published to MQTT: {payload}")
-
-
-# Send OD readings to MQTT without delays
-def process_od_readings_with_mqtt_no_delay(od_readings, experiment, unit):
-    """
-    Send OD readings to MQTT without delays, preserving timestamps.
-    """
-    for reading in od_readings:
-        publish_to_mqtt(reading, experiment, unit)
-    print("All OD readings have been sent to MQTT.")
-
-
-# Main function
-def main():
-    # Parameters
-    csv_file_path = "pre_recorded_od_readings.csv"  # Path to the CSV file
-    experiment_name = "experiment1"  # Name of the experiment
-    unit_name = "pio"  # Unit name
-    num_samples = 35  # Number of samples to use for OD statistics calculation
-
-    print("Ensure that the `growth_rate_calculating` job is active and READY.")
-    input("Press Enter once you've confirmed that `growth_rate_calculating` is running and READY...")
-
-    # Load OD readings
+    # Load OD readings from CSV
     od_readings = load_od_readings(csv_file_path)
 
-    # Calculate OD statistics
+    # Calculate statistics
     mean_per_channel, variance_per_channel = calculate_od_statistics(od_readings, num_samples)
 
-    # Store OD statistics in the cache
-    store_statistics_in_cache(mean_per_channel, variance_per_channel, experiment_name)
+    # Substitute statistics into local persistent storage
+    with local_persistant_storage("od_normalization_mean") as cache:
+        cache[experiment_name] = json.dumps(mean_per_channel)
+    with local_persistant_storage("od_normalization_variance") as cache:
+        cache[experiment_name] = json.dumps(variance_per_channel)
+    print("OD statistics stored in cache successfully.")
 
-    # Send OD readings to MQTT
-    process_od_readings_with_mqtt_no_delay(od_readings, experiment_name, unit_name)
+    # Initialize the GrowthRateCalculator
+    calculator = GrowthRateCalculator(
+        unit=unit_name,
+        experiment=experiment_name,
+        ignore_cache=False,  # Use cached values calculated earlier
+        source_obs_from_mqtt=False  # Override source
+    )
+
+    # Process OD readings and simulate the `update_state_from_observation` method
+    for reading in od_readings:
+        # Convert timestamp to datetime object
+        timestamp = datetime.strptime(reading["timestamp"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+        od_value = reading["od"]
+
+        # Create a Dynamic_Offset_ODReadings object
+        od_readings_obj = Dynamic_Offset_ODReadings(
+            timestamp=timestamp,
+            ods={
+                reading["channel"]: Dynamic_Offset_ODReading(
+                    od=od_value,
+                    angle="90",  # Assuming a fixed angle; adjust as needed
+                    timestamp=timestamp,
+                    channel=reading["channel"],
+                    dynamic_zero_offset=0.0  # Adjust if needed
+                )
+            },
+        )
+
+        # Update the state using the pre-recorded observation
+        try:
+            growth_rate, od_filtered, kf_outputs = calculator.update_state_from_observation(od_readings_obj)
+            print(f"Processed OD: {od_value} at {timestamp}. Growth Rate: {growth_rate.growth_rate}")
+        except Exception as e:
+            print(f"Error processing OD reading: {e}")
+
+    # Ensure all cached data and logs are finalized
+    calculator.clean_up()
+    print("Completed processing all OD readings from CSV.")
 
 
+# Example usage
 if __name__ == "__main__":
-    main()
+    csv_file_path = "pre_recorded_od_readings.csv"  # Path to the CSV file
+    unit_name = whoami.get_unit_name()  # Dynamically detect the current unit
+    num_samples = 35  # Number of samples for statistics calculation
+
+    run_growth_rate_calculation_from_csv(csv_file_path, unit_name, num_samples)
