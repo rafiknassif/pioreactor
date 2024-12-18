@@ -1,10 +1,9 @@
 import csv
 import json
-import time
-from datetime import datetime, timezone
-from pioreactor.pubsub import publish, subscribe, QOS
-from pioreactor.utils import local_persistant_storage
 from statistics import mean, variance
+from pioreactor.utils import local_persistant_storage
+from pioreactor.pubsub import publish
+
 
 # Load pre-recorded OD readings from a CSV file
 def load_od_readings(file_path):
@@ -47,35 +46,6 @@ def store_statistics_in_cache(mean_per_channel, variance_per_channel, experiment
     print("OD statistics stored in cache successfully.")
 
 
-def check_growth_rate_calculating_ready(experiment, timeout=60):
-    """
-    Checks if the `growth_rate_calculating` job is active by subscribing to its status topic.
-    """
-    status_topic = f"pioreactor/{experiment}/growth_rate_calculating/state"
-    print(f"Subscribing to topic: {status_topic}")
-    start_time = time.time()
-
-    while time.time() - start_time < timeout:
-        try:
-            message = subscribe(status_topic, qos=QOS.AT_LEAST_ONCE, timeout=5)
-            if message:
-                payload = message.payload.decode()
-                print(f"Received payload: {payload}")
-                if payload.strip().upper() == "READY":
-                    print("growth_rate_calculating is READY.")
-                    return True
-                else:
-                    print("Job not ready yet, payload does not match 'READY'.")
-            else:
-                print("No message received yet...")
-        except Exception as e:
-            print(f"Error while checking status: {e}")
-
-        time.sleep(5)
-
-    raise TimeoutError("growth_rate_calculating did not initialize within the timeout period.")
-
-
 # Publish data to MQTT
 def publish_to_mqtt(reading, experiment, unit):
     """
@@ -114,6 +84,9 @@ def main():
     unit_name = "pio"  # Unit name
     num_samples = 35  # Number of samples to use for OD statistics calculation
 
+    print("Ensure that the `growth_rate_calculating` job is active and READY.")
+    input("Press Enter once you've confirmed that `growth_rate_calculating` is running and READY...")
+
     # Load OD readings
     od_readings = load_od_readings(csv_file_path)
 
@@ -122,9 +95,6 @@ def main():
 
     # Store OD statistics in the cache
     store_statistics_in_cache(mean_per_channel, variance_per_channel, experiment_name)
-
-    # Check if growth_rate_calculating is ready
-    check_growth_rate_calculating_ready(experiment_name)
 
     # Send OD readings to MQTT
     process_od_readings_with_mqtt_no_delay(od_readings, experiment_name, unit_name)
