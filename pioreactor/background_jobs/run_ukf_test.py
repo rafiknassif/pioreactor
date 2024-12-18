@@ -1,10 +1,10 @@
 import csv
 import json
+import time
 from datetime import datetime, timezone
-from statistics import mean, variance
+from pioreactor.pubsub import publish, subscribe, QOS
 from pioreactor.utils import local_persistant_storage
-from pioreactor.background_jobs.growth_rate_calculating import GrowthRateCalculator
-from pioreactor.structs import Dynamic_Offset_ODReadings, Dynamic_Offset_ODReading
+from statistics import mean, variance
 
 # Load pre-recorded OD readings from a CSV file
 def load_od_readings(file_path):
@@ -19,6 +19,7 @@ def load_od_readings(file_path):
             })
     return od_readings
 
+
 # Calculate OD statistics
 def calculate_od_statistics(od_readings, num_samples):
     channels = set([reading["channel"] for reading in od_readings])
@@ -30,11 +31,12 @@ def calculate_od_statistics(od_readings, num_samples):
         if len(channel_readings) < num_samples:
             raise ValueError(f"Not enough samples for channel {channel}. Required: {num_samples}, Found: {len(channel_readings)}")
         
-        recent_readings = channel_readings[-num_samples:]
+        recent_readings = channel_readings[:num_samples]  # Use the first `num_samples` readings
         mean_per_channel[channel] = mean(recent_readings)
         variance_per_channel[channel] = variance(recent_readings)
     
     return mean_per_channel, variance_per_channel
+
 
 # Store statistics in the appropriate cache
 def store_statistics_in_cache(mean_per_channel, variance_per_channel, experiment):
@@ -44,47 +46,56 @@ def store_statistics_in_cache(mean_per_channel, variance_per_channel, experiment
         cache[experiment] = json.dumps(variance_per_channel)
     print("OD statistics stored in cache successfully.")
 
-# Initialize the GrowthRateCalculator
-def initialize_growth_rate_calculator(unit, experiment):
-    calculator = GrowthRateCalculator(
-        unit=unit,
-        experiment=experiment,
-        ignore_cache=False,  # Use cached values calculated earlier
-        source_obs_from_mqtt=False  # We'll supply the data manually
-    )
-    return calculator
 
-# Sequentially pass OD readings to the growth rate calculator
-def process_od_readings(od_readings, calculator):
+# Check if `growth_rate_calculating` is initialized
+def check_growth_rate_calculating_ready(experiment, timeout=60):
+    """
+    Checks if the `growth_rate_calculating` job is active by subscribing to its status topic.
+    """
+    status_topic = f"pioreactor/{experiment}/growth_rate_calculating/state"
+    print("Checking if growth_rate_calculating is ready...")
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        message = subscribe(status_topic, qos=QOS.AT_LEAST_ONCE, timeout=5)
+        if message and message.payload.decode() == "READY":
+            print("growth_rate_calculating is READY.")
+            return True
+        print("Waiting for growth_rate_calculating to initialize...")
+        time.sleep(5)
+
+    raise TimeoutError("growth_rate_calculating did not initialize within the timeout period.")
+
+
+# Publish data to MQTT
+def publish_to_mqtt(reading, experiment, unit):
+    """
+    Publish the OD reading to the appropriate MQTT topic.
+    """
+    topic = f"pioreactor/{unit}/{experiment}/od_reading/ods"
+    payload = {
+        "ods": {
+            reading["channel"]: {
+                "od": reading["od"],
+                "angle": "90",  # Adjust if needed
+                "dynamic_zero_offset": 0.0  # Adjust if needed
+            }
+        },
+        "timestamp": reading["timestamp"]
+    }
+    publish(topic, json.dumps(payload), retain=False)
+    print(f"Published to MQTT: {payload}")
+
+
+# Send OD readings to MQTT without delays
+def process_od_readings_with_mqtt_no_delay(od_readings, experiment, unit):
+    """
+    Send OD readings to MQTT without delays, preserving timestamps.
+    """
     for reading in od_readings:
-        # Convert timestamp to datetime object and ensure it has a timezone
-        timestamp = datetime.strptime(reading["timestamp"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
-        od_value = reading["od"]
+        publish_to_mqtt(reading, experiment, unit)
+    print("All OD readings have been sent to MQTT.")
 
-        # Create a Dynamic_Offset_ODReadings object
-        od_readings_obj = Dynamic_Offset_ODReadings(
-            timestamp=timestamp,
-            ods={
-                reading["channel"]: Dynamic_Offset_ODReading(
-                    od=od_value,
-                    angle="90",  # Assuming a fixed angle; adjust as needed
-                    timestamp=timestamp,
-                    channel=reading["channel"],
-                    dynamic_zero_offset=0.0  # Adjust if needed
-                )
-            },
-        )
-
-        # Pass the observation object to the calculator
-        try:
-            growth_rate, od_filtered, kf_outputs = calculator.update_state_from_observation(od_readings_obj)
-            print(f"Processed OD: {od_value} at {timestamp}. Growth Rate: {growth_rate.growth_rate}")
-        except Exception as e:
-            print(f"Error processing OD reading: {e}")
-
-    # Ensure all cached data and logs are finalized
-    calculator.clean_up()
-    print("Completed processing all OD readings.")
 
 # Main function
 def main():
@@ -103,11 +114,12 @@ def main():
     # Store OD statistics in the cache
     store_statistics_in_cache(mean_per_channel, variance_per_channel, experiment_name)
 
-    # Initialize the growth rate calculator
-    calculator = initialize_growth_rate_calculator(unit_name, experiment_name)
+    # Check if growth_rate_calculating is ready
+    check_growth_rate_calculating_ready(experiment_name)
 
-    # Sequentially process OD readings through the growth rate calculator
-    process_od_readings(od_readings, calculator)
+    # Send OD readings to MQTT
+    process_od_readings_with_mqtt_no_delay(od_readings, experiment_name, unit_name)
+
 
 if __name__ == "__main__":
     main()
