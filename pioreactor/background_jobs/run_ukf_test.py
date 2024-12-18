@@ -1,6 +1,6 @@
 import csv
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from statistics import mean, variance
 from pioreactor.utils import local_persistant_storage
 from pioreactor.background_jobs.growth_rate_calculating import GrowthRateCalculator
@@ -57,8 +57,8 @@ def initialize_growth_rate_calculator(unit, experiment):
 # Sequentially pass OD readings to the growth rate calculator
 def process_od_readings(od_readings, calculator):
     for reading in od_readings:
-        # Convert timestamp to datetime object
-        timestamp = datetime.strptime(reading["timestamp"], "%Y-%m-%dT%H:%M:%S.%fZ")
+        # Convert timestamp to datetime object and ensure it has a timezone
+        timestamp = datetime.strptime(reading["timestamp"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
         od_value = reading["od"]
 
         # Create a Dynamic_Offset_ODReadings object
