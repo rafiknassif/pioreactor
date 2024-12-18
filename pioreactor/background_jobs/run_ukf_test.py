@@ -47,21 +47,30 @@ def store_statistics_in_cache(mean_per_channel, variance_per_channel, experiment
     print("OD statistics stored in cache successfully.")
 
 
-# Check if `growth_rate_calculating` is initialized
 def check_growth_rate_calculating_ready(experiment, timeout=60):
     """
     Checks if the `growth_rate_calculating` job is active by subscribing to its status topic.
     """
     status_topic = f"pioreactor/{experiment}/growth_rate_calculating/state"
-    print("Checking if growth_rate_calculating is ready...")
+    print(f"Subscribing to topic: {status_topic}")
     start_time = time.time()
 
     while time.time() - start_time < timeout:
-        message = subscribe(status_topic, qos=QOS.AT_LEAST_ONCE, timeout=5)
-        if message and message.payload.decode() == "READY":
-            print("growth_rate_calculating is READY.")
-            return True
-        print("Waiting for growth_rate_calculating to initialize...")
+        try:
+            message = subscribe(status_topic, qos=QOS.AT_LEAST_ONCE, timeout=5)
+            if message:
+                payload = message.payload.decode()
+                print(f"Received payload: {payload}")
+                if payload.strip().upper() == "READY":
+                    print("growth_rate_calculating is READY.")
+                    return True
+                else:
+                    print("Job not ready yet, payload does not match 'READY'.")
+            else:
+                print("No message received yet...")
+        except Exception as e:
+            print(f"Error while checking status: {e}")
+
         time.sleep(5)
 
     raise TimeoutError("growth_rate_calculating did not initialize within the timeout period.")
