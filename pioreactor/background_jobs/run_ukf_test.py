@@ -1,6 +1,7 @@
 import csv
-from datetime import datetime
-from growth_rate_calculating import GrowthRateCalculator
+import json
+from statistics import mean, variance
+from pioreactor.utils import local_persistant_storage
 
 # Load pre-recorded OD readings from a CSV file
 def load_od_readings(file_path):
@@ -11,56 +12,76 @@ def load_od_readings(file_path):
             od_readings.append({
                 "timestamp": row["timestamp"],  # ISO 8601 timestamp
                 "od": float(row["od_reading"]),  # Optical density reading
-                "angle": row["angle"],  # Measurement angle
                 "channel": row["channel"]  # Photodiode channel
             })
     return od_readings
 
-# Initialize the GrowthRateCalculator
-def initialize_growth_rate_calculator():
-    unit = "pio"  # Replace with your unit name
-    experiment = "ukf_exp"  # Replace with your experiment name
-    calculator = GrowthRateCalculator(
-        unit=unit,
-        experiment=experiment,
-        ignore_cache=True,
-        source_obs_from_mqtt=False  # We'll supply the data manually
-    )
-    return calculator
+# Calculate OD statistics
+def calculate_od_statistics(od_readings, num_samples):
+    """
+    Calculates the mean and variance of OD readings for each photodiode channel.
 
-# Sequentially process OD readings without delays
-def process_od_readings(od_readings, calculator):
-    for reading in od_readings:
-        # Convert timestamp to datetime object
-        timestamp = datetime.strptime(reading["timestamp"], "%Y-%m-%dT%H:%M:%S.%fZ")
-        od_value = reading["od"]
+    Args:
+        od_readings (list): A list of OD readings dictionaries.
+        num_samples (int): Number of samples to use for the calculation.
 
-        # Create a mock observation structure for the calculator
-        observation = {
-            "timestamp": timestamp,
-            "ods": {
-                reading["channel"]: {  # Dynamic channel key
-                    "od": od_value,
-                    "angle": reading["angle"],
-                    "dynamic_zero_offset": 0.0  # Adjust if needed
-                }
-            }
-        }
+    Returns:
+        tuple: (mean_per_channel, variance_per_channel)
+    """
+    channels = set([reading["channel"] for reading in od_readings])
+    mean_per_channel = {}
+    variance_per_channel = {}
 
-        # Update the calculator with the new observation
-        try:
-            growth_rate, od_filtered, kf_outputs = calculator.update_state_from_observation(observation)
-            print(f"Processed OD: {od_value} at {timestamp}. Growth Rate: {growth_rate.growth_rate}")
-        except Exception as e:
-            print(f"Error processing OD reading: {e}")
+    for channel in channels:
+        channel_readings = [reading["od"] for reading in od_readings if reading["channel"] == channel]
+        if len(channel_readings) < num_samples:
+            raise ValueError(f"Not enough samples for channel {channel}. Required: {num_samples}, Found: {len(channel_readings)}")
+        
+        # Use the most recent `num_samples` readings
+        recent_readings = channel_readings[-num_samples:]
+        mean_per_channel[channel] = mean(recent_readings)
+        variance_per_channel[channel] = variance(recent_readings)
+    
+    return mean_per_channel, variance_per_channel
+
+# Store statistics in the appropriate cache
+def store_statistics_in_cache(mean_per_channel, variance_per_channel, experiment):
+    """
+    Stores the computed statistics in the appropriate local persistent storage caches.
+
+    Args:
+        mean_per_channel (dict): Mean OD values per channel.
+        variance_per_channel (dict): Variance OD values per channel.
+        experiment (str): Experiment name for the cache.
+    """
+    # Store mean values
+    with local_persistant_storage("od_normalization_mean") as cache:
+        cache[experiment] = json.dumps(mean_per_channel)
+    
+    # Store variance values
+    with local_persistant_storage("od_normalization_variance") as cache:
+        cache[experiment] = json.dumps(variance_per_channel)
+    
+    print("OD statistics stored in cache successfully.")
 
 # Main function
 def main():
-    od_file = "pre_recorded_od_readings.csv"  # Replace with your OD readings file
-    od_readings = load_od_readings(od_file)
+    # Define parameters
+    csv_file_path = "pre_recorded_od_readings.csv"  # Path to the CSV file
+    experiment_name = "experiment1"  # Name of the experiment
+    num_samples = 35  # Number of samples to use for OD statistics calculation
 
-    calculator = initialize_growth_rate_calculator()
-    process_od_readings(od_readings, calculator)
+    # Load OD readings from the CSV
+    od_readings = load_od_readings(csv_file_path)
+
+    # Calculate OD statistics
+    mean_per_channel, variance_per_channel = calculate_od_statistics(od_readings, num_samples)
+
+    # Store statistics in the cache
+    store_statistics_in_cache(mean_per_channel, variance_per_channel, experiment_name)
+
+    print("Mean per channel:", mean_per_channel)
+    print("Variance per channel:", variance_per_channel)
 
 if __name__ == "__main__":
     main()
