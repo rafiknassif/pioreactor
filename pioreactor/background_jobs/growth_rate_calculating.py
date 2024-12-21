@@ -521,7 +521,7 @@ class GrowthRateCalculator(BackgroundJob):
             self.time_of_previous_observation = timestamp
         updated_state_, covariance_ = self.ukf.update(list(scaled_observations.values()), dt, updating_noise_covariance)
         latest_od_filtered, latest_specific_growth_rate = float(updated_state_[0]), float(updated_state_[1])
-
+        density_converted = self.od_to_density_converion*latest_od_filtered*self.od_normalization_factors['1'],#unideal hardcoding the channel for now
         od_filtered = structs.ODFiltered(
             od_filtered=latest_od_filtered,
             timestamp=timestamp,
@@ -536,11 +536,11 @@ class GrowthRateCalculator(BackgroundJob):
             timestamp=timestamp,
         )
         density = structs.Density(
-            density=self.od_to_density_converion*latest_od_filtered*self.od_normalization_factors['1'],#unideal hardcoding the channel for now
+            density=density_converted
             timestamp=timestamp,
         )
         absolute_growth_rate = structs.AbsoluteGrowthRate(
-            growth_rate=latest_specific_growth_rate*density,
+            absolute_growth_rate=latest_specific_growth_rate*density_converted,
             timestamp=timestamp,
         )
 
