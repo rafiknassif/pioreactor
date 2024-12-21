@@ -84,6 +84,13 @@ class GrowthRateCalculator(BackgroundJob):
             "settable": False,
             "persist": False,
         },
+        "absolute_growth_rate": {
+            "datatype": "AbsoluteGrowthRate",
+            "settable": False,
+            "unit": "g/h",
+            "persist": True,
+        },
+        "density": {"datatype": "Density", "settable": False},
     }
 
     def __init__(
@@ -142,13 +149,14 @@ class GrowthRateCalculator(BackgroundJob):
             beta=config.getfloat("growth_rate_kalman", "beta"),
             kappa=config.getfloat("growth_rate_kalman", "kappa"),
             mahalanobis_threshold=config.getfloat("growth_rate_kalman", "mahalanobis_threshold"),
+            od_to_density_converion=config.getfloat("growth_rate_kalman", "od_to_density_converion")
         )
 
         if self.source_obs_from_mqtt:
             self.start_passive_listeners()
 
     def initialize_unscented_kalman_filter(
-        self, acc_std: float, od_std: float, rate_std: float, obs_std: float, alpha:float, beta: float, kappa: float, mahalanobis_threshold: float
+        self, acc_std: float, od_std: float, rate_std: float, obs_std: float, alpha:float, beta: float, kappa: float, mahalanobis_threshold: float, od_to_density_converion:float
     ) -> CultureGrowthUKF:
         import numpy as np
 
@@ -195,6 +203,7 @@ class GrowthRateCalculator(BackgroundJob):
             )
 
         self.logger.debug(f"{ukf_outlier_std_threshold=}")
+        self.od_to_density_converion = od_to_density_converion
 
 
         return CultureGrowthUKF(
@@ -207,48 +216,48 @@ class GrowthRateCalculator(BackgroundJob):
             alpha,
             beta,
             kappa,
-            mahalanobis_threshold
+            mahalanobis_threshold,
         )
 
-    def create_obs_noise_covariance(self, obs_std):  # type: ignore
-        """
-        Our sensor measurements have initial variance V, but in our KF, we scale them their
-        initial mean, M. Hence the observed variance of the _normalized_ measurements is
+    # def create_obs_noise_covariance(self, obs_std):  # type: ignore
+    #     """
+    #     Our sensor measurements have initial variance V, but in our KF, we scale them their
+    #     initial mean, M. Hence the observed variance of the _normalized_ measurements is
 
-        var(measurement / M) = V / M^2
+    #     var(measurement / M) = V / M^2
 
-        (there's also a blank to consider)
+    #     (there's also a blank to consider)
 
 
-        However, we offer the variable ods_std to tweak this a bit.
+    #     However, we offer the variable ods_std to tweak this a bit.
 
-        """
-        import numpy as np
+    #     """
+    #     import numpy as np
 
-        try:
-            scaling_obs_variances = np.array( #in original code this was .diag not .array
-                [
-                    self.od_variances[channel]
-                    / (self.od_normalization_factors[channel] - self.od_blank[channel]) ** 2
-                    for channel in self.od_normalization_factors
-                ]
-            )
+    #     try:
+    #         scaling_obs_variances = np.array( #in original code this was .diag not .array
+    #             [
+    #                 self.od_variances[channel]
+    #                 / (self.od_normalization_factors[channel] - self.od_blank[channel]) ** 2
+    #                 for channel in self.od_normalization_factors
+    #             ]
+    #         )
 
-            obs_variances = obs_std**2 * np.diag(scaling_obs_variances)
-            return obs_variances
-        except ZeroDivisionError:
-            self.logger.debug(exc_info=True)
-            # we should clear the cache here...
+    #         obs_variances = obs_std**2 * np.diag(scaling_obs_variances)
+    #         return obs_variances
+    #     except ZeroDivisionError:
+    #         self.logger.debug(exc_info=True)
+    #         # we should clear the cache here...
 
-            with local_persistant_storage("od_normalization_mean") as cache:
-                del cache[self.experiment]
+    #         with local_persistant_storage("od_normalization_mean") as cache:
+    #             del cache[self.experiment]
 
-            with local_persistant_storage("od_normalization_variance") as cache:
-                del cache[self.experiment]
+    #         with local_persistant_storage("od_normalization_variance") as cache:
+    #             del cache[self.experiment]
 
-            raise ZeroDivisionError(
-                "Is there an OD Reading that is 0? Maybe there's a loose photodiode connection?"
-            )
+    #         raise ZeroDivisionError(
+    #             "Is there an OD Reading that is 0? Maybe there's a loose photodiode connection?"
+    #         )
 
     def _compute_and_cache_od_statistics(
         self,
@@ -341,7 +350,7 @@ class GrowthRateCalculator(BackgroundJob):
 
     def get_growth_rate_from_cache(self) -> float:
         with local_persistant_storage("growth_rate") as cache:
-            return cache.get(self.experiment, 0.0)
+            return cache.get(self.experiment, 0.0)     
 
     def get_filtered_od_from_cache_or_computed(self) -> float:
         from statistics import mean
@@ -455,7 +464,7 @@ class GrowthRateCalculator(BackgroundJob):
 
     def update_state_from_observation(
         self, od_readings: structs.Dynamic_Offset_ODReadings
-    ) -> tuple[structs.GrowthRate, structs.ODFiltered, structs.KalmanFilterOutput]:
+    ) -> tuple[structs.GrowthRate, structs.ODFiltered, structs.KalmanFilterOutput, structs.Density, structs.AbsoluteGrowthRate]:
         """
         this is like _update_state_from_observation, but also updates attributes, caches, mqtt
         """
@@ -464,11 +473,13 @@ class GrowthRateCalculator(BackgroundJob):
                 self.growth_rate,
                 self.od_filtered,
                 self.kalman_filter_outputs,
+                self.absolute_growth_rate,
+                self.density
             ) = self._update_state_from_observation(od_readings)
         except Exception as e:
             self.logger.debug(f"Updating Kalman Filter failed with {e}", exc_info=True)
             # just return the previous data
-            return self.growth_rate, self.od_filtered, self.kalman_filter_outputs
+            return self.growth_rate, self.od_filtered, self.kalman_filter_outputs, self.absolute_growth_rate, self.density
 
         # save to cache
         with local_persistant_storage("growth_rate") as cache:
@@ -477,11 +488,11 @@ class GrowthRateCalculator(BackgroundJob):
         with local_persistant_storage("od_filtered") as cache:
             cache[self.experiment] = self.od_filtered.od_filtered
 
-        return self.growth_rate, self.od_filtered, self.kalman_filter_outputs
+        return self.growth_rate, self.od_filtered, self.kalman_filter_outputs, self.absolute_growth_rate, self.density
 
     def _update_state_from_observation(
         self, od_readings: structs.Dynamic_Offset_ODReadings
-    ) -> tuple[structs.GrowthRate, structs.ODFiltered, structs.KalmanFilterOutput]:
+    ) -> tuple[structs.GrowthRate, structs.ODFiltered, structs.KalmanFilterOutput, structs.Density, structs.AbsoluteGrowthRate]:
         timestamp = od_readings.timestamp
 
         scaled_observations, updating_noise_covariance = self.scale_raw_observations(
@@ -509,24 +520,31 @@ class GrowthRateCalculator(BackgroundJob):
 
             self.time_of_previous_observation = timestamp
         updated_state_, covariance_ = self.ukf.update(list(scaled_observations.values()), dt, updating_noise_covariance)
-        latest_od_filtered, latest_growth_rate = float(updated_state_[0]), float(updated_state_[1])
+        latest_od_filtered, latest_specific_growth_rate = float(updated_state_[0]), float(updated_state_[1])
 
-        growth_rate = structs.GrowthRate(
-            growth_rate=latest_growth_rate,
-            timestamp=timestamp,
-        )
         od_filtered = structs.ODFiltered(
             od_filtered=latest_od_filtered,
             timestamp=timestamp,
         )
-
+        growth_rate = structs.GrowthRate(
+            growth_rate=latest_specific_growth_rate,
+            timestamp=timestamp,
+        )
         kf_outputs = structs.KalmanFilterOutput(
             state=updated_state_.tolist(),
             covariance_matrix=covariance_.tolist(),
             timestamp=timestamp,
         )
+        density = structs.Density(
+            density=self.od_to_density_converion*latest_od_filtered*self.od_normalization_factor[1],#unideal hardcoding the channel for now
+            timestamp=timestamp,
+        )
+        absolute_growth_rate =structs.AbsoluteGrowthRateGrowthRate(
+            growth_rate=latest_specific_growth_rate*density,
+            timestamp=timestamp,
+        )
 
-        return growth_rate, od_filtered, kf_outputs
+        return growth_rate, od_filtered, kf_outputs, density, absolute_growth_rate
 
     def respond_to_dosing_event_from_mqtt(self, message: pt.MQTTMessage) -> None:
         dosing_event = decode(message.payload, type=structs.DosingEvent)

@@ -194,6 +194,22 @@ def parse_od_filtered(topic: str, payload: pt.MQTTMessagePayload) -> dict:
 
     logger.debug(data)
     return data
+def parse_density(topic: str, payload: pt.MQTTMessagePayload) -> dict:
+    metadata = produce_metadata(topic)
+    density = msgspec_loads(payload, type=structs.ODFiltered)
+
+    from pioreactor.logging import create_logger
+    logger = create_logger("density_parse-testing")
+
+    data = {
+        "experiment": metadata.experiment,
+        "pioreactor_unit": metadata.pioreactor_unit,
+        "timestamp": density.timestamp,
+        "density": density.density,
+    }
+
+    logger.debug(data)
+    return data
 
 def parse_od_blank(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
@@ -269,6 +285,16 @@ def parse_growth_rate(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "rate": gr.growth_rate,
     }
 
+def parse_absolute_growth_rate(topic: str, payload: pt.MQTTMessagePayload) -> dict:
+    metadata = produce_metadata(topic)
+    agr = msgspec_loads(payload, type=structs.GrowthRate)
+
+    return {
+        "experiment": metadata.experiment,
+        "pioreactor_unit": metadata.pioreactor_unit,
+        "timestamp": agr.timestamp,
+        "rate": agr.absolute_growth_rate,
+    }
 
 def parse_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
@@ -484,6 +510,11 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 "od_readings_filtered",
             ),
             TopicToParserToTable(
+                "pioreactor/+/+/growth_rate_calculating/density",
+                parse_density,
+                "density",
+            ),
+            TopicToParserToTable(
                 ["pioreactor/+/+/od_reading/od1", "pioreactor/+/+/od_reading/od2"], parse_od, "od_readings"
             ),
             TopicToParserToTable("pioreactor/+/+/dosing_events", parse_dosing_events, "dosing_events"),
@@ -496,6 +527,11 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 "pioreactor/+/+/growth_rate_calculating/growth_rate",
                 parse_growth_rate,
                 "growth_rates",
+            ),
+            TopicToParserToTable(
+                "pioreactor/+/+/growth_rate_calculating/growth_rate",
+                parse_absolute_growth_rate,
+                "absolute_growth_rates",
             ),
             TopicToParserToTable(
                 "pioreactor/+/+/temperature_automation/temperature",

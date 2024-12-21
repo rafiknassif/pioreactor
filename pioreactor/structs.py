@@ -255,3 +255,11 @@ class KalmanFilterOutput(JSONPrintedStruct):
     state: t.Annotated[list[float], Meta(max_length=3)]
     covariance_matrix: list[list[float]]
     timestamp: t.Annotated[datetime, Meta(tz=True)]
+
+class AbsoluteGrowthRate(JSONPrintedStruct):
+    absolute_growth_rate: float
+    timestamp: t.Annotated[datetime, Meta(tz=True)]
+
+class Density(JSONPrintedStruct):
+    density: float
+    timestamp: t.Annotated[datetime, Meta(tz=True)]
