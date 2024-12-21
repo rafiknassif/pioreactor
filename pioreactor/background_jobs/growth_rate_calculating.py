@@ -536,7 +536,7 @@ class GrowthRateCalculator(BackgroundJob):
             timestamp=timestamp,
         )
         density = structs.Density(
-            density=self.od_to_density_converion*latest_od_filtered*self.od_normalization_factor[1],#unideal hardcoding the channel for now
+            density=self.od_to_density_converion*latest_od_filtered*self.od_normalization_factors['1'],#unideal hardcoding the channel for now
             timestamp=timestamp,
         )
         absolute_growth_rate =structs.AbsoluteGrowthRateGrowthRate(
