@@ -56,6 +56,8 @@ from pioreactor.config import config
 from pioreactor.pubsub import QOS, subscribe, publish
 from pioreactor.utils import local_persistant_storage
 from pioreactor.utils.streaming_calculations import CultureGrowthUKF
+import numpy as np
+
 
 
 class GrowthRateCalculator(BackgroundJob):
@@ -360,7 +362,7 @@ class GrowthRateCalculator(BackgroundJob):
             return 1.0  # default?
 
         od_readings = decode(msg.payload, type=structs.Dynamic_Offset_ODReadings)
-        scaled_ods = self.scale_raw_observations(self._batched_raw_od_readings_to_dict(od_readings.ods))
+        scaled_ods, updating_noise_covariance = self.scale_raw_observations(self._batched_raw_od_readings_to_dict(od_readings.ods))
         assert scaled_ods is not None
         return mean(scaled_ods.values())
 
@@ -434,7 +436,10 @@ class GrowthRateCalculator(BackgroundJob):
         if any(v <= 0.0 for v in scaled_signals.values()):
             raise ValueError(f"Negative normalized value(s) observed: {scaled_signals}.")
 
-        return scaled_signals
+        updating_noise_covariance = (1e-5*np.exp(7.0895 * scaled_signals[channel]*self.od_normalization_factors[channel]))/(self.od_normalization_factors[channel]**2)
+
+        return scaled_signals, updating_noise_covariance
+
 
     def respond_to_od_readings_from_mqtt(self, message: pt.MQTTMessage) -> None:
         if self.state != self.READY:
@@ -479,7 +484,7 @@ class GrowthRateCalculator(BackgroundJob):
     ) -> tuple[structs.GrowthRate, structs.ODFiltered, structs.KalmanFilterOutput]:
         timestamp = od_readings.timestamp
 
-        scaled_observations = self.scale_raw_observations(
+        scaled_observations, updating_noise_covariance = self.scale_raw_observations(
             self._batched_raw_od_readings_to_dict(od_readings.ods)
         )
 
@@ -503,8 +508,7 @@ class GrowthRateCalculator(BackgroundJob):
                 dt = 0.0
 
             self.time_of_previous_observation = timestamp
-
-        updated_state_, covariance_ = self.ukf.update(list(scaled_observations.values()), dt, self.od_normalization_factors)
+        updated_state_, covariance_ = self.ukf.update(list(scaled_observations.values()), dt, list(updating_noise_covariance.values()))
         latest_od_filtered, latest_growth_rate = float(updated_state_[0]), float(updated_state_[1])
 
         growth_rate = structs.GrowthRate(
