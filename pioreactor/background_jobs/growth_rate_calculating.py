@@ -508,7 +508,7 @@ class GrowthRateCalculator(BackgroundJob):
                 dt = 0.0
 
             self.time_of_previous_observation = timestamp
-        updated_state_, covariance_ = self.ukf.update(list(scaled_observations.values()), dt, list(updating_noise_covariance.values()))
+        updated_state_, covariance_ = self.ukf.update(list(scaled_observations.values()), dt, updating_noise_covariance)
         latest_od_filtered, latest_growth_rate = float(updated_state_[0]), float(updated_state_[1])
 
         growth_rate = structs.GrowthRate(

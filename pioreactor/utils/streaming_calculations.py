@@ -259,7 +259,7 @@ class CultureGrowthUKF:
         
 
     
-    def update(self, observation_: list[float], dt: float, updating_noise_covariance: list[float]):
+    def update(self, observation_: list[float], dt: float, updating_noise_covariance: float):
 
         observation = np.asarray(observation_)
         # assert observation.shape[0] == self.n_sensors, (observation, self.n_sensors)
