@@ -199,32 +199,33 @@ class CultureGrowthUKF:
     def __init__(
         self,
         initial_state,
-        initial_covariance,
+        # initial_covariance,
         process_noise_covariance,
-        observation_noise_covariance,
+        # observation_noise_covariance,
         angles: list[str],
         outlier_std_threshold: float,
         alpha,
         beta,
-        kappa
+        kappa,
+        mahalanobis_threshold
     ) -> None:
 
         #initial_state = np.asarray(initial_state)
 
         assert initial_state.shape[0] == 3
-        assert (
-            initial_state.shape[0] == initial_covariance.shape[0] == initial_covariance.shape[1]
-        ), f"Shapes are not correct,{initial_state.shape[0]=}, {initial_covariance.shape[0]=}, {initial_covariance.shape[1]=}"
-        assert process_noise_covariance.shape == initial_covariance.shape
+        # assert (
+        #     initial_state.shape[0] == initial_covariance.shape[0] == initial_covariance.shape[1]
+        # ), f"Shapes are not correct,{initial_state.shape[0]=}, {initial_covariance.shape[0]=}, {initial_covariance.shape[1]=}"
+        # assert process_noise_covariance.shape == initial_covariance.shape
         assert self._is_positive_definite(process_noise_covariance)
-        assert self._is_positive_definite(initial_covariance)
-        assert self._is_positive_definite(observation_noise_covariance)
+        # assert self._is_positive_definite(initial_covariance)
+        # assert self._is_positive_definite(observation_noise_covariance)
                 
         #self.process_noise_covariance = process_noise_covariance
         #self.observation_noise_covariance = observation_noise_covariance
         #self.state_ = initial_state
         #self.covariance_ = initial_covariance
-        self.n_sensors = observation_noise_covariance.shape[0]
+        # self.n_sensors = observation_noise_covariance.shape[0]
         self.n_states = initial_state.shape[0]
         self.angles = angles
         self.outlier_std_threshold = outlier_std_threshold
@@ -235,8 +236,9 @@ class CultureGrowthUKF:
         
         def f(x, dt):
             """State transition function"""
+            dilution = 0 #to be incoroporated later
             od_ratio, specific_growth_rate, acc = x
-            od_pred_ratio=od_ratio*np.exp((specific_growth_rate*dt)+(0.5*acc*dt**2))
+            od_pred_ratio=od_ratio*np.exp(((specific_growth_rate-dilution)*dt)+(0.5*acc*dt**2))
             specific_growth_rate_pred= specific_growth_rate + (acc*dt)
             x_pred = np.array([od_pred_ratio, specific_growth_rate_pred, acc])
             return x_pred
@@ -248,17 +250,22 @@ class CultureGrowthUKF:
         sigmas = MerweScaledSigmaPoints(n=3, alpha=alpha, beta=beta, kappa=kappa)
         self.ukf = UKF(dim_x=3, dim_z=1, fx=f, hx=h, dt=dt, points=sigmas)
         self.ukf.x = np.asarray(initial_state)
-        self.ukf.P = initial_covariance
-        self.ukf.R = observation_noise_covariance
+        # self.ukf.P = initial_covariance -> same as line below
+        # self.ukf.R = observation_noise_covariance -> no longer using the dynamic model where this would have to be set. ill keed statistics running as normal as we need value for normalization still
         self.ukf.Q = process_noise_covariance
+        self.ukf.P = 1e9*self.ukf.Q
+        self.mahalanobis_threshold = mahalanobis_threshold
+
         
 
     
-    def update(self, observation_: list[float], dt: float):
+    def update(self, observation_: list[float], dt: float, normalization_factor: float):
 
         observation = np.asarray(observation_)
-        assert observation.shape[0] == self.n_sensors, (observation, self.n_sensors)
+        # assert observation.shape[0] == self.n_sensors, (observation, self.n_sensors)
         
+        self.ukf.R = (1e-5*np.exp(7.0895 * observation*normalization_factor))/(normalization_factor**2)
+
         # Predict
         self.ukf.predict(dt=dt)
         '''
@@ -297,6 +304,10 @@ class CultureGrowthUKF:
         # self.covariance_ = (np.eye(self.n_states) - kalman_gain_ @ H) @ covariance_prediction
         '''
         self.ukf.update(observation)
+
+        if self.ukf.mahalanobis > self.mahalanobis_threshold:
+            self.ukf.x = self.ukf.x_prior
+            self.ukf.p = self.ukf.P_prior
 
         return self.ukf.x, self.ukf.P
 

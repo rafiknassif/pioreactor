@@ -158,14 +158,14 @@ class GrowthRateCalculator(BackgroundJob):
         )
         self.logger.debug(f"Initial state: {repr(initial_state)}")
 
-        initial_covariance = 1e-4 * np.eye(
-            3
-        )  # empirically selected - TODO: this should probably scale with `expected_dt`
-        self.logger.debug(f"Initial covariance matrix:\n{repr(initial_covariance)}")
+        # initial_covariance = 1e-4 * np.eye(
+        #     3
+        # )  # empirically selected - TODO: this should probably scale with `expected_dt`
+        # self.logger.debug(f"Initial covariance matrix:\n{repr(initial_covariance)}")
 
-        acc_process_variance = (acc_std * self.expected_dt) ** 2
-        od_process_variance = (od_std * self.expected_dt) ** 2
+        od_process_variance = (od_std** 2)* self.expected_dt
         rate_process_variance = (rate_std * self.expected_dt) ** 2
+        acc_process_variance = (acc_std** 2)* (self.expected_dt**3)
 
         process_noise_covariance = np.zeros((3, 3))
         process_noise_covariance[0, 0] = od_process_variance
@@ -173,8 +173,8 @@ class GrowthRateCalculator(BackgroundJob):
         process_noise_covariance[2, 2] = acc_process_variance
         self.logger.debug(f"Process noise covariance matrix:\n{repr(process_noise_covariance)}")
 
-        observation_noise_covariance = self.create_obs_noise_covariance(obs_std)
-        self.logger.debug(f"Observation noise covariance matrix:\n{repr(observation_noise_covariance)}")
+        # observation_noise_covariance = self.create_obs_noise_covariance(obs_std)
+        # self.logger.debug(f"Observation noise covariance matrix:\n{repr(observation_noise_covariance)}")
 
         angles = [
             angle for (_, angle) in config["od_config.photodiode_channel"].items() if angle in VALID_PD_ANGLES
@@ -196,9 +196,9 @@ class GrowthRateCalculator(BackgroundJob):
 
         return CultureGrowthUKF(
             initial_state,
-            initial_covariance,
+            # initial_covariance,
             process_noise_covariance,
-            observation_noise_covariance,
+            # observation_noise_covariance,
             angles,
             ukf_outlier_std_threshold,
             alpha,
@@ -502,7 +502,7 @@ class GrowthRateCalculator(BackgroundJob):
 
             self.time_of_previous_observation = timestamp
 
-        updated_state_, covariance_ = self.ukf.update(list(scaled_observations.values()), dt)
+        updated_state_, covariance_ = self.ukf.update(list(scaled_observations.values()), dt, self.od_normalization_factors)
         latest_od_filtered, latest_growth_rate = float(updated_state_[0]), float(updated_state_[1])
 
         growth_rate = structs.GrowthRate(
