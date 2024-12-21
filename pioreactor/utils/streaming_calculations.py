@@ -264,7 +264,7 @@ class CultureGrowthUKF:
         observation = np.asarray(observation_)
         # assert observation.shape[0] == self.n_sensors, (observation, self.n_sensors)
         
-        self.ukf.R = (1e-5*np.exp(7.0895 * observation*normalization_factor))/(normalization_factor**2)
+        self.ukf.R = (1e-5*np.exp(7.0895 * observation_*normalization_factor))/(normalization_factor**2)
 
         # Predict
         self.ukf.predict(dt=dt)
