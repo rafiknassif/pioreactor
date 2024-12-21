@@ -139,13 +139,14 @@ class GrowthRateCalculator(BackgroundJob):
             alpha=config.getfloat("growth_rate_kalman", "alpha"),
             beta=config.getfloat("growth_rate_kalman", "beta"),
             kappa=config.getfloat("growth_rate_kalman", "kappa"),
+            mahalanobis_threshold=config.getfloat("growth_rate_kalman", "mahalanobis_threshold"),
         )
 
         if self.source_obs_from_mqtt:
             self.start_passive_listeners()
 
     def initialize_unscented_kalman_filter(
-        self, acc_std: float, od_std: float, rate_std: float, obs_std: float, alpha:float, beta: float, kappa: float
+        self, acc_std: float, od_std: float, rate_std: float, obs_std: float, alpha:float, beta: float, kappa: float, mahalanobis_threshold: float
     ) -> CultureGrowthUKF:
         import numpy as np
 
@@ -203,7 +204,8 @@ class GrowthRateCalculator(BackgroundJob):
             ukf_outlier_std_threshold,
             alpha,
             beta,
-            kappa
+            kappa,
+            mahalanobis_threshold
         )
 
     def create_obs_noise_covariance(self, obs_std):  # type: ignore
