@@ -536,7 +536,7 @@ class GrowthRateCalculator(BackgroundJob):
             timestamp=timestamp,
         )
         density = structs.Density(
-            density=density_converted
+            density=density_converted,
             timestamp=timestamp,
         )
         absolute_growth_rate = structs.AbsoluteGrowthRate(
