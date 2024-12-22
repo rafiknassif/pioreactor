@@ -287,7 +287,7 @@ def parse_growth_rate(topic: str, payload: pt.MQTTMessagePayload) -> dict:
 
 def parse_absolute_growth_rate(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
-    agr = msgspec_loads(payload, type=structs.AbsoluteGrowthRateGrowthRate)
+    agr = msgspec_loads(payload, type=structs.AbsoluteGrowthRate)
 
     return {
         "experiment": metadata.experiment,
