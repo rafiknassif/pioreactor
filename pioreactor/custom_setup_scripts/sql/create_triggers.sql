@@ -89,3 +89,43 @@ BEGIN
     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
         max_temperature=excluded.max_temperature;
 END;
+
+
+DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_density;
+
+CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_density AFTER INSERT ON density
+BEGIN
+    INSERT INTO pioreactor_unit_activity_data(
+        pioreactor_unit,
+        experiment,
+        timestamp,
+        density
+    ) VALUES (
+        new.pioreactor_unit,
+        new.experiment,
+        new.timestamp,
+        new.density
+    )
+    ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+        density=excluded.density;
+END;
+
+
+DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_absolute_growth_rate;
+
+CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_absolute_growth_rate AFTER INSERT ON absolute_growth_rate
+BEGIN
+    INSERT INTO pioreactor_unit_activity_data(
+        pioreactor_unit,
+        experiment,
+        timestamp,
+        absolute_growth_rate
+    ) VALUES (
+        new.pioreactor_unit,
+        new.experiment,
+        new.timestamp,
+        new.absolute_growth_rate
+    )
+    ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+        absolute_growth_rate=excluded.absolute_growth_rate;
+END;
