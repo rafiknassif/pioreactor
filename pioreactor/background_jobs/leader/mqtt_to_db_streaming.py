@@ -529,7 +529,7 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 "growth_rates",
             ),
             TopicToParserToTable(
-                "pioreactor/+/+/growth_rate_calculating/growth_rate",
+                "pioreactor/+/+/growth_rate_calculating/absolute_growth_rate",
                 parse_absolute_growth_rate,
                 "absolute_growth_rates",
             ),
