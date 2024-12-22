@@ -63,18 +63,18 @@ CREATE INDEX IF NOT EXISTS density_ix
 ON density (experiment, pioreactor_unit, timestamp);
 
 
-DROP TABLE IF EXISTS absoulte_growth_rate;
+DROP TABLE IF EXISTS absolute_growth_rate;
 
-CREATE TABLE IF NOT EXISTS absoulte_growth_rate (
+CREATE TABLE IF NOT EXISTS absolute_growth_rate (
     experiment TEXT NOT NULL,
     pioreactor_unit TEXT NOT NULL,
     timestamp TEXT NOT NULL,
-    absoulte_growth_rate REAL,
+    absolute_growth_rate REAL,
     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS absoulte_growth_rate_ix
-ON absoulte_growth_rate (experiment, pioreactor_unit, timestamp);
+CREATE INDEX IF NOT EXISTS absolute_growth_rate
+ON absolute_growth_rate (experiment, pioreactor_unit, timestamp);
 
 DROP TABLE IF EXISTS pioreactor_unit_activity_data;
 
@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS pioreactor_unit_activity_data (
     pbr_temperature REAL,
     max_temperature REAL,
     density Real,
-    absoulte_growth_rate Real,
+    absolute_growth_rate Real,
 
     FOREIGN KEY (experiment) REFERENCES experiments (
         experiment

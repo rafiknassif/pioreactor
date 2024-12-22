@@ -1,3 +1,13 @@
+'''
+need to run following commands to make changes:
+cd into pioreactor directory
+git stash
+git pull
+git status
+
+chmod +x install-db.sh
+./install-db.sh
+'''
 DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_lightrod_temperatures;
 
 CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_lightrod_temperatures AFTER INSERT ON lightrod_temperatures
