@@ -196,7 +196,7 @@ def parse_od_filtered(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     return data
 def parse_density(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
-    density = msgspec_loads(payload, type=structs.ODFiltered)
+    density = msgspec_loads(payload, type=structs.Density)
 
     from pioreactor.logging import create_logger
     logger = create_logger("density_parse-testing")
@@ -287,7 +287,7 @@ def parse_growth_rate(topic: str, payload: pt.MQTTMessagePayload) -> dict:
 
 def parse_absolute_growth_rate(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
-    agr = msgspec_loads(payload, type=structs.GrowthRate)
+    agr = msgspec_loads(payload, type=structs.AbsoluteGrowthRateGrowthRate)
 
     return {
         "experiment": metadata.experiment,
