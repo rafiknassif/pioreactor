@@ -296,7 +296,7 @@ def parse_absolute_growth_rate(topic: str, payload: pt.MQTTMessagePayload) -> di
         "experiment": metadata.experiment,
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": agr.timestamp,
-        "rate": agr.absolute_growth_rate,
+        "absolute_growth_rate": agr.absolute_growth_rate,
     }
 
     logger.debug(data)
