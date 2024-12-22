@@ -87,7 +87,7 @@ class GrowthRateCalculator(BackgroundJob):
         "absolute_growth_rate": {
             "datatype": "AbsoluteGrowthRate",
             "settable": False,
-            "unit": "g/h",
+            "unit": "g/Lh",
             "persist": True,
         },
         "density": {"datatype": "Density", "settable": False},
