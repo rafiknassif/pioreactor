@@ -544,7 +544,7 @@ class GrowthRateCalculator(BackgroundJob):
             timestamp=timestamp,
         )
 
-        return growth_rate, od_filtered, kf_outputs, density, absolute_growth_rate
+        return growth_rate, od_filtered, kf_outputs, absolute_growth_rate, density
 
     def respond_to_dosing_event_from_mqtt(self, message: pt.MQTTMessage) -> None:
         dosing_event = decode(message.payload, type=structs.DosingEvent)
