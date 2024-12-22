@@ -88,7 +88,7 @@ def run_growth_rate_calculation_from_csv(csv_file_path, unit_name, num_samples):
 
         # Update the state using the pre-recorded observation
         try:
-            growth_rate, od_filtered, kf_outputs = calculator.update_state_from_observation(od_readings_obj)
+            growth_rate, od_filtered, kf_outputs, absolute_growth_rate, density = calculator.update_state_from_observation(od_readings_obj)
             print(f"Processed OD: {od_value} at {timestamp}. Growth Rate: {growth_rate.growth_rate}")
         except Exception as e:
             print(f"Error processing OD reading: {e}")
