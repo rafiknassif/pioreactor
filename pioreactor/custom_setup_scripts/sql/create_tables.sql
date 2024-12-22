@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS absolute_growth_rate (
     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS absolute_growth_rate
+CREATE INDEX IF NOT EXISTS absolute_growth_rate_ix
 ON absolute_growth_rate (experiment, pioreactor_unit, timestamp);
 
 DROP TABLE IF EXISTS pioreactor_unit_activity_data;
