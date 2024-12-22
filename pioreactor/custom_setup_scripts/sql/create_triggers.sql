@@ -121,9 +121,9 @@ BEGIN
 END;
 
 
-DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_absolute_growth_rate;
+DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_absolute_growth_rates;
 
-CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_absolute_growth_rate AFTER INSERT ON absolute_growth_rate
+CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_absolute_growth_rates AFTER INSERT ON absolute_growth_rates
 BEGIN
     INSERT INTO pioreactor_unit_activity_data(
         pioreactor_unit,
