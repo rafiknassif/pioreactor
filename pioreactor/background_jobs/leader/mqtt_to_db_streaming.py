@@ -289,12 +289,18 @@ def parse_absolute_growth_rate(topic: str, payload: pt.MQTTMessagePayload) -> di
     metadata = produce_metadata(topic)
     agr = msgspec_loads(payload, type=structs.AbsoluteGrowthRate)
 
-    return {
+    from pioreactor.logging import create_logger
+    logger = create_logger("absolute_growth_rate_parse-testing")
+
+    data = {
         "experiment": metadata.experiment,
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": agr.timestamp,
         "rate": agr.absolute_growth_rate,
     }
+
+    logger.debug(data)
+    return data
 
 def parse_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
