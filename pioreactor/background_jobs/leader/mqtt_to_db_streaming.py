@@ -379,7 +379,7 @@ def parse_pbr_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "experiment": metadata.experiment,
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": temp.timestamp,
-        "pbr_temperature_c": temp.temperature,
+        "pbr_temperature": temp.temperature,
     }
     from pioreactor.logging import create_logger
     logger = create_logger("max_lightrod_parse-testing")
