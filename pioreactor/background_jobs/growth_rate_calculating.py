@@ -370,7 +370,7 @@ class GrowthRateCalculator(BackgroundJob):
         if msg is None:
             return 1.0  # default?
 
-        od_readings = decode(msg.payload, type=structs.Dynamic_Offset_ODReadings)
+        od_readings = decode(msg.payload, type=structs.ODReadings)
         scaled_ods, updating_noise_covariance = self.scale_raw_observations(self._batched_raw_od_readings_to_dict(od_readings.ods))
         assert scaled_ods is not None
         return mean(scaled_ods.values())
@@ -413,39 +413,26 @@ class GrowthRateCalculator(BackgroundJob):
         else:
             self.ukf.scale_OD_variance_for_next_n_seconds(factor, minutes * 60)
 
-    def scale_raw_observations(self, observations: dict[pt.PdChannel, dict[str, float]]) -> dict[pt.PdChannel, float]:
+    def scale_raw_observations(self, observations: dict[pt.PdChannel, float]) -> dict[pt.PdChannel, float]:
         """
         Scales the raw observations using normalization factors and blanks.
-        Accepts input where observations are nested dictionaries containing 'od' and 'dynamic_zero_offset'.
+        Accepts input where observations are nested dictionaries containing 'od'.
+        this shif is for od_blank functionality specifically it is differenet than ADC offset used in OD_reading
         """
         def _scale_and_shift(obs, shift, scale) -> float:
             return (obs - shift) / (scale - shift)
 
-        scaled_signals = {}
-        for channel, values in observations.items():
-            raw_signal = values.get("od")  # Extract 'od'
-            if raw_signal is None:
-                raise ValueError(f"Missing 'od' value for channel {channel}. Observations: {observations}")
-                
-            dynamic_zero_offset = values.get("dynamic_zero_offset")
-            
-            self.logger.debug(f"raw value:`{raw_signal}` normalization mean: '{self.od_normalization_factors['1']}' dynamic zero offset: '{dynamic_zero_offset}'")
-
-            if dynamic_zero_offset is None:
-                # Scale the 'od' value using normalization factors and blanks
-                scaled_signals[channel] = _scale_and_shift(
-                    raw_signal, self.od_blank[channel], self.od_normalization_factors[channel]
-                )
-            else:
-                # Scale the 'od' value using normalization factors and blanks
-                scaled_signals[channel] = _scale_and_shift(
-                    raw_signal, dynamic_zero_offset, self.od_normalization_factors[channel]
-                )
+        scaled_signals = {
+            channel: _scale_and_shift(
+                raw_signal, self.od_blank[channel], self.od_normalization_factors[channel]
+            )
+            for channel, raw_signal in observations.items()
+        }
 
         if any(v <= 0.0 for v in scaled_signals.values()):
             raise ValueError(f"Negative normalized value(s) observed: {scaled_signals}.")
 
-        updating_noise_covariance = (1e-5*np.exp(7.0895 * scaled_signals[channel]*self.od_normalization_factors[channel]))/(self.od_normalization_factors[channel]**2)
+        updating_noise_covariance = (1e-5*np.exp(7.0895 * scaled_signals['1']*self.od_normalization_factors['1']))/(self.od_normalization_factors['1']**2)
 
         return scaled_signals, updating_noise_covariance
 
@@ -455,7 +442,7 @@ class GrowthRateCalculator(BackgroundJob):
             return
 
         try:
-            od_readings = decode(message.payload, type=structs.Dynamic_Offset_ODReadings)
+            od_readings = decode(message.payload, type=structs.ODReadings)
             self.update_state_from_observation(od_readings)
         except DecodeError:
             self.logger.debug(f"Decode error in `{message.payload.decode()}` to structs.ODReadings")
@@ -463,7 +450,7 @@ class GrowthRateCalculator(BackgroundJob):
         return
 
     def update_state_from_observation(
-        self, od_readings: structs.Dynamic_Offset_ODReadings
+        self, od_readings: structs.ODReadings
     ) -> tuple[structs.GrowthRate, structs.ODFiltered, structs.KalmanFilterOutput, structs.Density, structs.AbsoluteGrowthRate]:
         """
         this is like _update_state_from_observation, but also updates attributes, caches, mqtt
@@ -491,7 +478,7 @@ class GrowthRateCalculator(BackgroundJob):
         return self.growth_rate, self.od_filtered, self.kalman_filter_outputs, self.absolute_growth_rate, self.density
 
     def _update_state_from_observation(
-        self, od_readings: structs.Dynamic_Offset_ODReadings
+        self, od_readings: structs.ODReadings
     ) -> tuple[structs.GrowthRate, structs.ODFiltered, structs.KalmanFilterOutput, structs.Density, structs.AbsoluteGrowthRate]:
         timestamp = od_readings.timestamp
 
@@ -584,19 +571,12 @@ class GrowthRateCalculator(BackgroundJob):
 
     @staticmethod
     def _batched_raw_od_readings_to_dict(
-        raw_od_readings: dict[pt.PdChannel, structs.Dynamic_Offset_ODReading]
-    ) -> dict[pt.PdChannel, dict[str, pt.OD]]:
+        raw_od_readings: dict[pt.PdChannel, structs.ODReading]
+    ) -> dict[pt.PdChannel, pt.OD]:
         """
-        Extract the 'od' and 'dynamic_zero_offset' floats from Dynamic_Offset_ODReading but keep the same keys.
-        Returns a dictionary where each key is a channel, and the value is another dictionary with 'od' and 'dynamic_zero_offset'.
+        Extract the od floats from ODReading but keep the same keys
         """
-        return {
-            channel: {
-                "od": raw_od_readings[channel].od,
-                "dynamic_zero_offset": raw_od_readings[channel].dynamic_zero_offset,
-            }
-            for channel in sorted(raw_od_readings, reverse=True)
-        }
+        return {channel: raw_od_readings[channel].od for channel in sorted(raw_od_readings, reverse=True)}
 
 
     def _yield_od_readings_from_mqtt(self) -> Generator[structs.ODReadings, None, None]:
