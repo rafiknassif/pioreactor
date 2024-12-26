@@ -1046,16 +1046,16 @@ class ODReader(BackgroundJob):
         Stops the air bubbler by setting its duty cycle to 0.
         """
         pre_delay = config.getfloat("custom_air_bubbler.config", "pre_delay_duration", fallback=0)
-        sleep(pre_delay)  # Wait for the pre-delay
         self.pwm.change_duty_cycle(0)  # Stop the air bubbler
+        sleep(pre_delay)  # Wait for the pre-delay
 
     def start_air_bubbler(self):
         """
         Restarts the air bubbler by setting its duty cycle back to the configured value.
         """
         post_delay = config.getfloat("custom_air_bubbler.config", "post_delay_duration", fallback=0)
-        self.pwm.change_duty_cycle(self.duty_cycle)  # Start the air bubbler
         sleep(post_delay)  # Wait for the post-delay
+        self.pwm.change_duty_cycle(self.duty_cycle)  # Start the air bubbler
 
     @staticmethod
     def _determine_best_ir_led_intensity(
@@ -1176,7 +1176,7 @@ class ODReader(BackgroundJob):
 
                 if is_pio_job_running("custom_air_bubbler"):
                     self.start_air_bubbler()
-                    
+
                 od_readings = structs.ODReadings(
                     timestamp=timestamp_of_readings,
                     ods={
