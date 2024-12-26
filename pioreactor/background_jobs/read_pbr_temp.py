@@ -1,8 +1,5 @@
 from contextlib import suppress
 from time import sleep
-import numpy as np
-import json
-
 from pioreactor import exc
 from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.hardware import Thermocouple_ADDR
