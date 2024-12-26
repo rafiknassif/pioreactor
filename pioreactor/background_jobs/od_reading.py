@@ -111,6 +111,9 @@ from pioreactor.utils import timing
 from pioreactor.utils.streaming_calculations import ExponentialMovingAverage
 from pioreactor.utils.streaming_calculations import ExponentialMovingStd
 from pioreactor.utils.timing import catchtime
+from pioreactor.hardware import PWM_TO_PIN
+from pioreactor.utils.pwm import PWM
+from pioreactor.utils import is_pio_job_running
 
 ALL_PD_CHANNELS: list[pt.PdChannel] = ["1", "2"]
 VALID_PD_ANGLES: list[pt.PdAngle] = ["45", "90", "135", "180"]
@@ -971,6 +974,17 @@ class ODReader(BackgroundJob):
 
         self.pre_read_callbacks: list[Callable] = self._prepare_pre_callbacks()
         self.post_read_callbacks: list[Callable] = self._prepare_post_callbacks()
+        
+        # Air Bubbler Initialization
+        try:
+            self.pin = PWM_TO_PIN[config.get("PWM_reverse", "air_bubbler")]
+        except KeyError:
+            raise KeyError("Unable to find `air_bubbler` under PWM section in the config.ini")
+
+        self.hertz = config.getfloat("custom_air_bubbler.config", "hertz")
+        self.duty_cycle = config.getfloat("custom_air_bubbler.config", "duty_cycle")
+        self.pwm = PWM(self.pin, self.hertz, unit=self.unit, experiment=self.experiment)
+        self.pwm.start(0)  # Start with the air bubbler off
 
         # setup the ADC by turning off all LEDs.
         with led_utils.change_leds_intensities_temporarily(
@@ -1026,6 +1040,22 @@ class ODReader(BackgroundJob):
         self.logger.debug(
             f"Starting od_reading with PD channels {channel_angle_map}, with IR LED intensity {self.ir_led_intensity}% from channel {self.ir_channel}, every {self.interval} seconds"
         )
+    
+    def stop_air_bubbler(self):
+        """
+        Stops the air bubbler by setting its duty cycle to 0.
+        """
+        pre_delay = config.getfloat("custom_air_bubbler.config", "pre_delay_duration", fallback=0)
+        sleep(pre_delay)  # Wait for the pre-delay
+        self.pwm.change_duty_cycle(0)  # Stop the air bubbler
+
+    def start_air_bubbler(self):
+        """
+        Restarts the air bubbler by setting its duty cycle back to the configured value.
+        """
+        post_delay = config.getfloat("custom_air_bubbler.config", "post_delay_duration", fallback=0)
+        self.pwm.change_duty_cycle(self.duty_cycle)  # Start the air bubbler
+        sleep(post_delay)  # Wait for the post-delay
 
     @staticmethod
     def _determine_best_ir_led_intensity(
@@ -1118,6 +1148,7 @@ class ODReader(BackgroundJob):
         
         # we put a soft lock on the LED channels - it's up to the
         # other jobs to make sure they check the locks.
+        self.stop_air_bubbler()
         with led_utils.change_leds_intensities_temporarily(#desired_state=self.ir_led_on_and_rest_off_state, #changed in orded not to turn on ir light source for duration it takes to disable light source. may need to bring back when i calculate offset for every measurement
             {ch: 0.0 for ch in led_utils.ALL_LED_CHANNELS},
             unit=self.unit,
@@ -1143,6 +1174,9 @@ class ODReader(BackgroundJob):
                 self.stop_ir_led()
                 sleep(0.1)
 
+                if is_pio_job_running("custom_air_bubbler"):
+                    self.start_air_bubbler()
+                    
                 od_readings = structs.ODReadings(
                     timestamp=timestamp_of_readings,
                     ods={

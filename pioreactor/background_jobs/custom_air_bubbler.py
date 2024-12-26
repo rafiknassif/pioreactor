@@ -46,11 +46,6 @@ class AirBubbler(BackgroundJob):
         self.duty_cycle = clamp(0, round(float(value)), 100)
         self.pwm.change_duty_cycle(self.duty_cycle)
 
-    # def action_to_do_before_od_reading(self):
-    #     self.stop_pumping()
-
-    # def action_to_do_after_od_reading(self):
-    #     self.start_pumping()
 
 
 @click.command(name="custom_air_bubbler")
