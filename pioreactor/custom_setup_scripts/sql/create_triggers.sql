@@ -1,3 +1,13 @@
+-- '''
+-- need to run following commands to make changes:
+-- cd into pioreactor directory
+-- git stash
+-- git pull
+-- git status
+
+-- chmod +x install-db.sh
+-- ./install-db.sh
+-- '''
 DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_lightrod_temperatures;
 
 CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_lightrod_temperatures AFTER INSERT ON lightrod_temperatures
@@ -88,4 +98,44 @@ BEGIN
     )
     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
         max_temperature=excluded.max_temperature;
+END;
+
+
+DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_density;
+
+CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_density AFTER INSERT ON density
+BEGIN
+    INSERT INTO pioreactor_unit_activity_data(
+        pioreactor_unit,
+        experiment,
+        timestamp,
+        density
+    ) VALUES (
+        new.pioreactor_unit,
+        new.experiment,
+        new.timestamp,
+        new.density
+    )
+    ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+        density=excluded.density;
+END;
+
+
+DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_absolute_growth_rates;
+
+CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_absolute_growth_rates AFTER INSERT ON absolute_growth_rates
+BEGIN
+    INSERT INTO pioreactor_unit_activity_data(
+        pioreactor_unit,
+        experiment,
+        timestamp,
+        absolute_growth_rate
+    ) VALUES (
+        new.pioreactor_unit,
+        new.experiment,
+        new.timestamp,
+        new.absolute_growth_rate
+    )
+    ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+        absolute_growth_rate=excluded.absolute_growth_rate;
 END;

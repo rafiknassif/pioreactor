@@ -49,7 +49,32 @@ CREATE TABLE IF NOT EXISTS plot_lightrod_temperatures (
 CREATE INDEX IF NOT EXISTS plot_lightrod_temperatures_ix
 ON plot_lightrod_temperatures (experiment, pioreactor_unit, timestamp);
 
+DROP TABLE IF EXISTS density;
 
+CREATE TABLE IF NOT EXISTS density (
+    experiment TEXT NOT NULL,
+    pioreactor_unit TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    density REAL,
+    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS density_ix
+ON density (experiment, pioreactor_unit, timestamp);
+
+
+DROP TABLE IF EXISTS absolute_growth_rates;
+
+CREATE TABLE IF NOT EXISTS absolute_growth_rates (
+    experiment TEXT NOT NULL,
+    pioreactor_unit TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    absolute_growth_rate REAL,
+    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS absolute_growth_rates_ix
+ON absolute_growth_rates (experiment, pioreactor_unit, timestamp);
 
 DROP TABLE IF EXISTS pioreactor_unit_activity_data;
 
@@ -83,9 +108,11 @@ CREATE TABLE IF NOT EXISTS pioreactor_unit_activity_data (
     LR_C_timestamp TEXT,
     pbr_temperature REAL,
     max_temperature REAL,
+    density Real,
+    absolute_growth_rate Real,
 
     FOREIGN KEY (experiment) REFERENCES experiments (
         experiment
     ) ON DELETE CASCADE,
-    UNIQUE (experiment, pioreactor_unit, timestamp) -- THIS FUCKING LINE IS IMPORTANT
+    UNIQUE (experiment, pioreactor_unit, timestamp)
 );
