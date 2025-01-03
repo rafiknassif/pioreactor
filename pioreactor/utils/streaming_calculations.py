@@ -199,32 +199,33 @@ class CultureGrowthUKF:
     def __init__(
         self,
         initial_state,
-        initial_covariance,
+        # initial_covariance,
         process_noise_covariance,
-        observation_noise_covariance,
+        # observation_noise_covariance,
         angles: list[str],
         outlier_std_threshold: float,
         alpha,
         beta,
-        kappa
+        kappa,
+        mahalanobis_threshold
     ) -> None:
 
         #initial_state = np.asarray(initial_state)
 
         assert initial_state.shape[0] == 3
-        assert (
-            initial_state.shape[0] == initial_covariance.shape[0] == initial_covariance.shape[1]
-        ), f"Shapes are not correct,{initial_state.shape[0]=}, {initial_covariance.shape[0]=}, {initial_covariance.shape[1]=}"
-        assert process_noise_covariance.shape == initial_covariance.shape
+        # assert (
+        #     initial_state.shape[0] == initial_covariance.shape[0] == initial_covariance.shape[1]
+        # ), f"Shapes are not correct,{initial_state.shape[0]=}, {initial_covariance.shape[0]=}, {initial_covariance.shape[1]=}"
+        # assert process_noise_covariance.shape == initial_covariance.shape
         assert self._is_positive_definite(process_noise_covariance)
-        assert self._is_positive_definite(initial_covariance)
-        assert self._is_positive_definite(observation_noise_covariance)
+        # assert self._is_positive_definite(initial_covariance)
+        # assert self._is_positive_definite(observation_noise_covariance)
                 
         #self.process_noise_covariance = process_noise_covariance
         #self.observation_noise_covariance = observation_noise_covariance
         #self.state_ = initial_state
         #self.covariance_ = initial_covariance
-        self.n_sensors = observation_noise_covariance.shape[0]
+        # self.n_sensors = observation_noise_covariance.shape[0]
         self.n_states = initial_state.shape[0]
         self.angles = angles
         self.outlier_std_threshold = outlier_std_threshold
@@ -235,10 +236,11 @@ class CultureGrowthUKF:
         
         def f(x, dt):
             """State transition function"""
-            od, rate, acc = x
-            od_pred=(od+(rate*dt)+(0.5*acc*dt**2))
-            gr_pred= rate + (acc*dt)
-            x_pred = np.array([od_pred, gr_pred, acc])
+            dilution = 0 #to be incoroporated later
+            od_ratio, specific_growth_rate, acc = x
+            od_pred_ratio=od_ratio*np.exp(((specific_growth_rate-dilution)*dt)+(0.5*acc*dt**2))
+            specific_growth_rate_pred= specific_growth_rate + (acc*dt)
+            x_pred = np.array([od_pred_ratio, specific_growth_rate_pred, acc])
             return x_pred
 
         def h(x):
@@ -248,20 +250,25 @@ class CultureGrowthUKF:
         sigmas = MerweScaledSigmaPoints(n=3, alpha=alpha, beta=beta, kappa=kappa)
         self.ukf = UKF(dim_x=3, dim_z=1, fx=f, hx=h, dt=dt, points=sigmas)
         self.ukf.x = np.asarray(initial_state)
-        self.ukf.P = initial_covariance
-        self.ukf.R = observation_noise_covariance
+        # self.ukf.P = initial_covariance -> same as line below
+        # self.ukf.R = observation_noise_covariance -> no longer using the dynamic model where this would have to be set. ill keed statistics running as normal as we need value for normalization still
         self.ukf.Q = process_noise_covariance
+        self.ukf.P = 1e9*self.ukf.Q
+        self.mahalanobis_threshold = mahalanobis_threshold
+
         
 
     
-    def update(self, observation_: list[float], dt: float):
+    def update(self, observation_: list[float], dt: float, updating_noise_covariance: float):
 
         observation = np.asarray(observation_)
-        assert observation.shape[0] == self.n_sensors, (observation, self.n_sensors)
+        # assert observation.shape[0] == self.n_sensors, (observation, self.n_sensors)
         
+        self.ukf.R = np.asarray(updating_noise_covariance)
+
         # Predict
         self.ukf.predict(dt=dt)
-
+        '''
         # state_prediction = self.update_state_from_previous_state(self.state_, dt)
         # covariance_prediction = self.update_covariance_from_old_covariance(self.state_, self.covariance_, dt)
 
@@ -295,8 +302,12 @@ class CultureGrowthUKF:
         ### update estimates
         # self.state_ = state_prediction + kalman_gain_ @ residual_state
         # self.covariance_ = (np.eye(self.n_states) - kalman_gain_ @ H) @ covariance_prediction
-        
+        '''
         self.ukf.update(observation)
+
+        if self.ukf.mahalanobis > self.mahalanobis_threshold:
+            self.ukf.x = self.ukf.x_prior
+            self.ukf.p = self.ukf.P_prior
 
         return self.ukf.x, self.ukf.P
 
@@ -336,9 +347,8 @@ class CultureGrowthUKF:
         self._scale_covariance_timer.start()
 
         forward_scale_covariance()
-
+    '''
     # def update_state_from_previous_state(self, state, dt: float):
-    #     """
     #     Denoted "f" in literature, x_{k} = f(x_{k-1})
 
     #     state = [OD, r, a]
@@ -347,14 +357,12 @@ class CultureGrowthUKF:
     #     r_t  = r_{t-1} + a_{t-1}·Δt
     #     a_t  = a_{t-1}
 
-    #     """
     #     import numpy as np
 
     #     od, rate, acc = state
     #     return np.array([od * np.exp(rate * dt), rate + acc * dt, acc])
 
     # def _J_update_observations_from_state(self, state_prediction):
-    #     """
     #     Jacobian of observations model, encoded as update_observations_from_state
 
     #     measurement model is:
@@ -388,9 +396,7 @@ class CultureGrowthUKF:
     #     return jacobian @ covariance @ jacobian.T + self.process_noise_covariance
 
     # def update_observations_from_state(self, state_predictions):
-    #     """
     #     "h" in the literature, z_k = h(x_k).
-
     #     Return shape is (n_sensors,)
     #     """
     #     import numpy as np
@@ -404,7 +410,6 @@ class CultureGrowthUKF:
     #     return obs
 
     # def _J_update_state_from_previous_state(self, state, dt: float):
-    #     """
     #     The prediction process is (encoded in update_state_from_previous_state)
 
     #         state = [OD, r, a]
@@ -422,7 +427,6 @@ class CultureGrowthUKF:
     #     ]
 
 
-    #     """
     #     import numpy as np
 
     #     J = np.zeros((3, 3))
@@ -436,7 +440,7 @@ class CultureGrowthUKF:
     #     J[1, 2] = dt
 
     #     return J
-
+    '''
     @staticmethod
     def _is_positive_definite(A) -> bool:
         import numpy as np

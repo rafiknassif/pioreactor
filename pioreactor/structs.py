@@ -118,21 +118,9 @@ class ODReading(JSONPrintedStruct):
     od: pt.OD
     channel: pt.PdChannel
 
-
 class ODReadings(JSONPrintedStruct):
     timestamp: t.Annotated[datetime, Meta(tz=True)]
     ods: dict[pt.PdChannel, ODReading]
-
-class Dynamic_Offset_ODReading(JSONPrintedStruct):
-    timestamp: t.Annotated[datetime, Meta(tz=True)]
-    angle: pt.PdAngle
-    od: pt.OD
-    channel: pt.PdChannel
-    dynamic_zero_offset: pt.OD
-
-class Dynamic_Offset_ODReadings(JSONPrintedStruct):
-    timestamp: t.Annotated[datetime, Meta(tz=True)]
-    ods: dict[pt.PdChannel, Dynamic_Offset_ODReading]
 
 class Temperature(JSONPrintedStruct):
     timestamp: t.Annotated[datetime, Meta(tz=True)]
@@ -254,4 +242,12 @@ class Log(JSONPrintedStruct):
 class KalmanFilterOutput(JSONPrintedStruct):
     state: t.Annotated[list[float], Meta(max_length=3)]
     covariance_matrix: list[list[float]]
+    timestamp: t.Annotated[datetime, Meta(tz=True)]
+
+class AbsoluteGrowthRate(JSONPrintedStruct):
+    absolute_growth_rate: float
+    timestamp: t.Annotated[datetime, Meta(tz=True)]
+
+class Density(JSONPrintedStruct):
+    density: float
     timestamp: t.Annotated[datetime, Meta(tz=True)]
