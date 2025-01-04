@@ -107,20 +107,16 @@ class TemperatureAutomationJob(AutomationJob):
             {"datatype": "float", "settable": False, "unit": "%"},
         )
 
-        if not hardware.is_heating_pcb_present():
-            self.logger.error("Heating PCB must be attached to Pioreactor HAT")
-            self.clean_up()
-            raise exc.HardwareNotFoundError("Heating PCB must be attached to Pioreactor HAT")
-
         if whoami.is_testing_env():
             from pioreactor.utils.mock import MockTMP1075 as TMP1075
         else:
-            from pioreactor.utils.temps import TMP1075  # type: ignore
+            from pioreactor.utils.temps import MCP9600  # type: ignore
+            from pioreactor.hardware import Thermocouple_ADDR
 
         self.heater_duty_cycle = 0.0
         self.pwm = self.setup_pwm()
 
-        self.heating_pcb_tmp_driver = TMP1075(address=hardware.TEMP)
+        self.heating_pcb_tmp_driver = MCP9600(Thermocouple_ADDR)
 
         self.read_external_temperature_timer = RepeatedTimer(
             53,
@@ -247,7 +243,7 @@ class TemperatureAutomationJob(AutomationJob):
         try:
             # check temp is fast, let's do it a few times to reduce variance.
             for i in range(6):
-                running_sum += self.heating_pcb_tmp_driver.get_temperature()
+                running_sum += self.heating_pcb_tmp_driver.get_hot_junction_temperature()
                 running_count += 1
                 sleep(0.05)
 
@@ -332,7 +328,7 @@ class TemperatureAutomationJob(AutomationJob):
     def setup_pwm(self) -> PWM:
         hertz = 16  # technically this doesn't need to be high: it could even be 1hz. However, we want to smooth it's
         # impact (mainly: current sink), over the second. Ex: imagine freq=1hz, dc=40%, and the pump needs to run for
-        # 0.3s. The influence of when the heat is one on the pump can be significant in a power-constrained system.
+        # 0.3s. The influence of when the heat is on the pump can be significant in a power-constrained system.
         pin = hardware.PWM_TO_PIN[hardware.HEATER_PWM_TO_PIN]
         pwm = PWM(pin, hertz, unit=self.unit, experiment=self.experiment, pubsub_client=self.pub_client)
         pwm.start(0)
@@ -346,238 +342,41 @@ class TemperatureAutomationJob(AutomationJob):
     def infer_temperature(self) -> None:
         """
         1. lock PWM and turn off heater
-        2. start recording temperatures from the sensor
-        3. After collected M samples, pass to a model to approx temp
-        4. assign temp to publish to ../temperature
-        5. return heater to previous DC value and unlock heater
+        2. read temperature once (or more) and publish directly
         """
+        # CHANGED: removed the logic that took multiple samples to do a regression.
+        # CHANGED: instead, we are simply measuring once (while turning off the heater or not) and publishing.
 
-        # this will pause heating for (N_sample_points * time_between_samples) seconds
-        N_sample_points = self.INFERENCE_N_SAMPLES
-        time_between_samples = self.INFERENCE_SAMPLES_EVERY_T_SECONDS
-
+        # CHANGED: We still lock the PWM so that nothing else changes it while we measure
         assert not self.pwm.is_locked(), "PWM is locked - it shouldn't be though!"
         with self.pwm.lock_temporarily():
+            # CHANGED: We'll store the previous heater DC so we can restore it after measurement
             previous_heater_dc = self.heater_duty_cycle
 
-            features: dict[str, Any] = {}
-
-            # add how much heat/energy we just applied
-            features["previous_heater_dc"] = previous_heater_dc
-
-            # figure out a better way to estimate this... luckily inference is not too sensitive to this parameter.
-            # users can override this function with something more accurate later.
-            features["room_temp"] = self._get_room_temperature()
-
-            # B models have a hotter ambient env. TODO: what about As?
-            features["is_rpi_zero"] = rpi_version_info.startswith("Raspberry Pi Zero")
-
-            # the amount of liquid in the vial is a factor!
-            features["volume"] = 0.5 * (
-                config.getfloat("bioreactor", "initial_volume_ml")
-                + config.getfloat("bioreactor", "max_volume_ml")
-            )
-
-            # turn off active heating, and start recording decay
+            # CHANGED: Turn off active heating if you wish to measure passively
             self._update_heater(0)
-            time_series_of_temp = []
 
-            try:
-                for i in range(N_sample_points):
-                    time_series_of_temp.append(self.read_external_temperature())
-                    sleep(time_between_samples)
+            # CHANGED: Just measure once (you can measure multiple times or average, if you like)
+            measured_temp = self.read_external_temperature()
 
-                    if self.state != self.READY:
-                        # if our state changes in this loop, exit. Note that the finally block is still called.
-                        return
+            # CHANGED: Restore the heater to its prior DC
+            self._update_heater(previous_heater_dc)
 
-            except exc.HardwareNotFoundError as e:
-                self.logger.debug(e, exc_info=True)
-                self.logger.error(e)
-                raise e
-            finally:
-                # we turned off the heater above - we should always turn if back on if there is an error.
-
-                # update heater first before publishing the temperature. Why? A downstream process
-                # might listen for the updating temperature, and update the heater (pid_thermostat),
-                # and if we update here too late, we may overwrite their changes.
-                # We also want to remove the lock first, so close this context early.
-                self._update_heater(previous_heater_dc)
-
-        features["time_series_of_temp"] = time_series_of_temp
-        self.logger.debug(f"{features=}")
-
-        try:
-            if whoami.get_pioreactor_version() == (1, 0):
-                inferred_temperature = self.approximate_temperature_1_0(features)
-            elif whoami.get_pioreactor_version() >= (1, 1):
-                inferred_temperature = self.approximate_temperature_2_0(features)
-
-            self.temperature = Temperature(
-                temperature=round(inferred_temperature, 2),
-                timestamp=current_utc_datetime(),
-            )
-            self._set_latest_temperature(self.temperature)
-
-        except Exception as e:
-            self.logger.debug(e, exc_info=True)
-            self.logger.error(e)
-
-    @staticmethod
-    def approximate_temperature_1_0(features: dict[str, Any]) -> float:
-        """
-        models
-
-            temp = b * exp(p * t) + c * exp(q * t) + room_temp
-
-        Reference
-        -------------
-        https://www.scribd.com/doc/14674814/Regressions-et-equations-integrales
-        page 71 - 72
-
-
-        Extensions
-        --------------
-
-        1. It's possible that we can determine if the vial is in the sleeve by examining the heat loss coefficient.
-        2. We have prior information about what p, q are => we have prior information about A, B. We use this.
-           From the equations, B = p + q, A = -p * q, so weak prior in B ~ Normal(-0.143, ...), A = Normal(-0.00042, ....)
-        3. Room temp has a moderate impact on inference: ~0.30C over a wide range of values
-        """
-
-        if features["previous_heater_dc"] == 0:
-            return features["time_series_of_temp"][-1]
-
-        import numpy as np
-        from numpy import exp
-
-        times_series = features["time_series_of_temp"]
-        room_temp = features["room_temp"]
-        n = len(times_series)
-        y = np.array(times_series) - room_temp
-        x = np.arange(n)  # scaled by factor of 1/10 seconds
-
-        # first regression
-        S = np.zeros(n)
-        SS = np.zeros(n)
-        for i in range(1, n):
-            S[i] = S[i - 1] + 0.5 * (y[i - 1] + y[i]) * (x[i] - x[i - 1])
-            SS[i] = SS[i - 1] + 0.5 * (S[i - 1] + S[i]) * (x[i] - x[i - 1])
-
-        # priors chosen based on historical data, penalty values pretty arbitrary, note: B = p + q, A = -p * q
-        A_penalizer, A_prior = 100.0, -0.0012
-        B_penalizer, B_prior = 50.0, -0.325
-
-        M1 = np.array(
-            [
-                [
-                    (SS**2).sum() + A_penalizer,
-                    (SS * S).sum(),
-                    (SS * x).sum(),
-                    (SS).sum(),
-                ],
-                [(SS * S).sum(), (S**2).sum() + B_penalizer, (S * x).sum(), (S).sum()],
-                [(SS * x).sum(), (S * x).sum(), (x**2).sum(), (x).sum()],
-                [(SS).sum(), (S).sum(), (x).sum(), n],
-            ]
+        # CHANGED: Directly create a Temperature object from the measured value
+        self.temperature = Temperature(
+            temperature=round(measured_temp, 2),
+            timestamp=current_utc_datetime(),
         )
-        Y1 = np.array(
-            [
-                (y * SS).sum() + A_penalizer * A_prior,
-                (y * S).sum() + B_penalizer * B_prior,
-                (y * x).sum(),
-                y.sum(),
-            ]
-        )
+        self._set_latest_temperature(self.temperature)
 
-        try:
-            A, B, _, _ = np.linalg.solve(M1, Y1)
-        except np.linalg.LinAlgError:
-            raise ValueError(f"Error in temperature inference. {x=}, {y=}")
+        # CHANGED: That’s all. We no longer call approximate_temperature_1_0 or approximate_temperature_2_0.
 
-        if (B**2 + 4 * A) < 0:
-            # something when wrong in the data collection - the data doesn't look enough like a sum of two expos
-            raise ValueError(f"Error in temperature inference. {x=}, {y=}")
 
-        p = 0.5 * (
-            B + np.sqrt(B**2 + 4 * A)
-        )  # usually p ~= -0.0000 to -0.0100, but is a function of the temperature (Recall it describes the heat loss to ambient)
-        q = 0.5 * (
-            B - np.sqrt(B**2 + 4 * A)
-        )  # usually q ~= -0.130 to -0.160, but is a not really a function of the temperature. Oddly enough, it looks periodic with freq ~1hr...
+    # CHANGED: Removed the approximate_temperature_1_0 and approximate_temperature_2_0 methods entirely.
+    #           If you still want them in the file for reference, you can keep them, but commented out.
+    #
+    #           If you do remove them, references to them in "infer_temperature" are obviously removed.
 
-        # second regression
-        M2 = np.array(
-            [
-                [exp(2 * p * x).sum(), exp((p + q) * x).sum()],
-                [exp((q + p) * x).sum(), exp(2 * q * x).sum()],
-            ]
-        )
-        Y2 = np.array([(y * exp(p * x)).sum(), (y * exp(q * x)).sum()])
-        try:
-            b, c = np.linalg.solve(M2, Y2)
-        except np.linalg.LinAlgError:
-            raise ValueError(f"Error in temperature inference. {x=}, {y=}")
-
-        alpha, beta = b, p
-
-        # this weighting is from evaluating the "average" temp over the period: 1/n int_0^n R + a*exp(b*s) ds
-        # cast from numpy float to python float
-        return float(room_temp + alpha * exp(beta * n))
-        # return float(room_temp + alpha * (exp(beta * n) - 1)/(beta * n))
-
-    @staticmethod
-    def approximate_temperature_2_0(features: dict[str, Any]) -> float:
-        """
-        This uses linear regression from historical data
-        """
-        if features["previous_heater_dc"] == 0:
-            return features["time_series_of_temp"][-1]
-
-        X = [features["previous_heater_dc"]] + features["time_series_of_temp"]
-
-        # normalize to ~1.0, as we do this in training.
-        X = [x / 35.0 for x in X]
-
-        # add in non-linear features
-        X.append(X[1] ** 2)
-        X.append(X[20] * X[0])
-
-        coefs = [
-            -1.37221255e01,
-            1.50807347e02,
-            1.52808570e01,
-            -7.17124615e01,
-            -8.15352596e01,
-            -5.82053398e01,
-            -8.49915201e01,
-            -3.69729300e01,
-            -8.51994806e-02,
-            1.12635670e01,
-            3.37434235e01,
-            3.36348041e01,
-            4.25731033e01,
-            6.72551219e01,
-            8.37883314e01,
-            6.29508694e01,
-            4.95735854e01,
-            1.86594862e01,
-            3.12848519e-01,
-            -3.82815596e01,
-            -5.62834504e01,
-            -9.27840943e01,
-            -7.62113224e00,
-            8.18877406e00,
-        ]
-
-        intercept = -6.171633633597331
-
-        def dot_product(vec1: list, vec2: list) -> float:
-            if len(vec1) != len(vec2):
-                raise ValueError(f"Vectors must be of the same length. Got {len(vec1)=}, {len(vec2)=}")
-            return sum(x * y for x, y in zip(vec1, vec2))
-
-        return dot_product(coefs, X) + intercept
 
     def _set_growth_rate(self, message: pt.MQTTMessage) -> None:
         if not message.payload:
