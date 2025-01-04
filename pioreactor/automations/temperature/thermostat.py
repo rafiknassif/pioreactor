@@ -43,8 +43,8 @@ class Thermostat(TemperatureAutomationJob):
 
     def on_init_to_ready(self):
         super().on_init_to_ready()
-        if not is_pio_job_running("stirring"):
-            self.logger.warning("It's recommended to have stirring on when using the thermostat.")
+        if not is_pio_job_running("custom_air_bubbler"):
+            self.logger.warning("It's recommended to have airbubbler on when using the thermostat.")
 
     def _clamp_target_temperature(self, target_temperature: float) -> float:
         if target_temperature > self.MAX_TARGET_TEMP:
