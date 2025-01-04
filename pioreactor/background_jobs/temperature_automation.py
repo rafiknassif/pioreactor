@@ -41,36 +41,18 @@ class TemperatureAutomationJob(AutomationJob):
     To change setting over MQTT:
 
     `pioreactor/<unit>/<experiment>/temperature_automation/<setting>/set` value
-
     """
 
-    INFERENCE_SAMPLES_EVERY_T_SECONDS: float = 5.0
+    MAX_TEMP_TO_REDUCE_HEATING = 63.0
+    MAX_TEMP_TO_DISABLE_HEATING = 65.0
+    MAX_TEMP_TO_SHUTDOWN = 66.0
+    INFERENCE_EVERY_N_SECONDS: float = 30
 
-    if whoami.get_pioreactor_version() == (1, 0):
-        # made from PLA
-        MAX_TEMP_TO_REDUCE_HEATING = 63.0
-        MAX_TEMP_TO_DISABLE_HEATING = 65.0  # probably okay, but can't stay here for too long
-        MAX_TEMP_TO_SHUTDOWN = 66.0
-        INFERENCE_N_SAMPLES: int = 29
-        INFERENCE_EVERY_N_SECONDS: float = 225.0
-
-    elif whoami.get_pioreactor_version() >= (1, 1):
-        # made from PC-CF
-        MAX_TEMP_TO_REDUCE_HEATING = 78.0
-        MAX_TEMP_TO_DISABLE_HEATING = 80.0
-        MAX_TEMP_TO_SHUTDOWN = 85.0  # risk damaging PCB components
-        INFERENCE_N_SAMPLES = 21
-        INFERENCE_EVERY_N_SECONDS = 200.0
-
-    inference_total_time = INFERENCE_SAMPLES_EVERY_T_SECONDS * INFERENCE_N_SAMPLES
-    assert INFERENCE_EVERY_N_SECONDS > inference_total_time
-    # PWM is on for (INFERENCE_EVERY_N_SECONDS - inference_total_time) seconds
-    # the ratio of time a PWM is on is equal to (INFERENCE_EVERY_N_SECONDS - inference_total_time) / INFERENCE_EVERY_N_SECONDS
-
-    _latest_growth_rate: Optional[float] = None
-    _latest_normalized_od: Optional[float] = None
-    previous_normalized_od: Optional[float] = None
-    previous_growth_rate: Optional[float] = None
+    # COMMENTED OUT: everything related to OD & growth rate
+    # _latest_growth_rate: Optional[float] = None
+    # _latest_normalized_od: Optional[float] = None
+    # previous_normalized_od: Optional[float] = None
+    # previous_growth_rate: Optional[float] = None
 
     latest_temperature = None
     previous_temperature = None
@@ -82,8 +64,6 @@ class TemperatureAutomationJob(AutomationJob):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-
-        # this registers all subclasses of TemperatureAutomationJob
         if (
             hasattr(cls, "automation_name")
             and getattr(cls, "automation_name") != "temperature_automation_base"
@@ -98,13 +78,12 @@ class TemperatureAutomationJob(AutomationJob):
     ) -> None:
         super(TemperatureAutomationJob, self).__init__(unit, experiment)
 
+        # declare these to be published automatically
         self.add_to_published_settings(
             "temperature", {"datatype": "Temperature", "settable": False, "unit": "℃"}
         )
-
         self.add_to_published_settings(
-            "heater_duty_cycle",
-            {"datatype": "float", "settable": False, "unit": "%"},
+            "heater_duty_cycle", {"datatype": "float", "settable": False, "unit": "%"}
         )
 
         if whoami.is_testing_env():
@@ -118,24 +97,17 @@ class TemperatureAutomationJob(AutomationJob):
 
         self.heating_pcb_tmp_driver = MCP9600(Thermocouple_ADDR)
 
-        self.read_external_temperature_timer = RepeatedTimer(
-            53,
-            self.read_external_temperature,
-            job_name=self.job_name,
-            run_immediately=False,
-        ).start()
-
-        self.publish_temperature_timer = RepeatedTimer(
+        # Single timer triggers infer_temperature() at self.INFERENCE_EVERY_N_SECONDS
+        self.temperature_timer = RepeatedTimer(
             int(self.INFERENCE_EVERY_N_SECONDS),
             self.infer_temperature,
             job_name=self.job_name,
-            run_after=self.INFERENCE_EVERY_N_SECONDS
-            - self.inference_total_time,  # This gives an automation a "full" PWM cycle to be on before an inference starts.
             run_immediately=True,
         ).start()
 
-        self.latest_normalized_od_at: datetime = current_utc_datetime()
-        self.latest_growth_rate_at: datetime = current_utc_datetime()
+        # COMMENTED OUT: timestamps related to OD & growth rate
+        # self.latest_normalized_od_at: datetime = current_utc_datetime()
+        # self.latest_growth_rate_at: datetime = current_utc_datetime()
         self.latest_temperture_at: datetime = current_utc_datetime()
 
     def on_init_to_ready(self):
@@ -145,7 +117,6 @@ class TemperatureAutomationJob(AutomationJob):
                 temperature=self.read_external_temperature(),
                 timestamp=current_utc_datetime(),
             )
-
             self._set_latest_temperature(self.temperature)
 
     @staticmethod
@@ -159,7 +130,6 @@ class TemperatureAutomationJob(AutomationJob):
     def turn_off_heater(self) -> None:
         self._update_heater(0)
         self.pwm.clean_up()
-        # we re-instantiate it as some other process may have messed with the channel.
         self.pwm = self.setup_pwm()
         self._update_heater(0)
         self.pwm.clean_up()
@@ -195,43 +165,36 @@ class TemperatureAutomationJob(AutomationJob):
         """
         return self.pwm.is_locked()
 
-    @property
-    def most_stale_time(self) -> datetime:
-        return min(self.latest_normalized_od_at, self.latest_growth_rate_at)
+    # COMMENTED OUT: remove references to stale data or OD / growth checks
+    # @property
+    # def most_stale_time(self) -> datetime:
+    #     return min(self.latest_normalized_od_at, self.latest_growth_rate_at)
 
-    @property
-    def latest_growth_rate(self) -> float:
-        # check if None
-        if self._latest_growth_rate is None:
-            # this should really only happen on the initialization.
-            self.logger.debug("Waiting for OD and growth rate data to arrive")
-            if not all(is_pio_job_running(["od_reading", "growth_rate_calculating"])):
-                raise exc.JobRequiredError("`od_reading` and `growth_rate_calculating` should be Ready.")
+    # @property
+    # def latest_growth_rate(self) -> float:
+    #     if self._latest_growth_rate is None:
+    #         self.logger.debug("Waiting for OD and growth rate data to arrive")
+    #         if not all(is_pio_job_running(["od_reading", "growth_rate_calculating"])):
+    #             raise exc.JobRequiredError("`od_reading` and `growth_rate_calculating` should be Ready.")
 
-        # check most stale time
-        if (current_utc_datetime() - self.most_stale_time).seconds > 5 * 60:
-            raise exc.JobRequiredError(
-                "readings are too stale (over 5 minutes old) - are `od_reading` and `growth_rate_calculating` running?"
-            )
+    #     if (current_utc_datetime() - self.most_stale_time).seconds > 5 * 60:
+    #         raise exc.JobRequiredError(
+    #             "readings are too stale (over 5 minutes old) - are `od_reading` and `growth_rate_calculating` running?"
+    #         )
+    #     return cast(float, self._latest_growth_rate)
 
-        return cast(float, self._latest_growth_rate)
+    # @property
+    # def latest_normalized_od(self) -> float:
+    #     if self._latest_normalized_od is None:
+    #         self.logger.debug("Waiting for OD and growth rate data to arrive")
+    #         if not all(is_pio_job_running(["od_reading", "growth_rate_calculating"])):
+    #             raise exc.JobRequiredError("`od_reading` and `growth_rate_calculating` should be running.")
 
-    @property
-    def latest_normalized_od(self) -> float:
-        # check if None
-        if self._latest_normalized_od is None:
-            # this should really only happen on the initialization.
-            self.logger.debug("Waiting for OD and growth rate data to arrive")
-            if not all(is_pio_job_running(["od_reading", "growth_rate_calculating"])):
-                raise exc.JobRequiredError("`od_reading` and `growth_rate_calculating` should be running.")
-
-        # check most stale time
-        if (current_utc_datetime() - self.most_stale_time).seconds > 5 * 60:
-            raise exc.JobRequiredError(
-                "readings are too stale (over 5 minutes old) - are `od_reading` and `growth_rate_calculating` running?"
-            )
-
-        return cast(float, self._latest_normalized_od)
+    #     if (current_utc_datetime() - self.most_stale_time).seconds > 5 * 60:
+    #         raise exc.JobRequiredError(
+    #             "readings are too stale (over 5 minutes old) - are `od_reading` and `growth_rate_calculating` running?"
+    #         )
+    #     return cast(float, self._latest_normalized_od)
 
     ########## Private & internal methods
 
@@ -267,6 +230,7 @@ class TemperatureAutomationJob(AutomationJob):
         return averaged_temp
 
     def _update_heater(self, new_duty_cycle: float) -> bool:
+        # clamp to [0,100], round to two decimals
         self.heater_duty_cycle = clamp(0.0, round(float(new_duty_cycle), 2), 100.0)
         self.pwm.change_duty_cycle(self.heater_duty_cycle)
 
@@ -279,30 +243,27 @@ class TemperatureAutomationJob(AutomationJob):
     def _check_if_exceeds_max_temp(self, temp: float) -> float:
         if temp > self.MAX_TEMP_TO_SHUTDOWN:
             self.logger.error(
-                f"Temperature of heating surface has exceeded {self.MAX_TEMP_TO_SHUTDOWN}℃ - currently {temp}℃. This is beyond our recommendations. Shutting down Raspberry Pi to prevent further problems. Take caution when touching the heating surface and wetware."
+                f"Temperature of heating surface has exceeded {self.MAX_TEMP_TO_SHUTDOWN}℃ - currently {temp}℃. "
+                "This is beyond our recommendations. Shutting down Raspberry Pi to prevent further problems."
             )
             self._update_heater(0)
-
             self.blink_error_code(error_codes.PCB_TEMPERATURE_TOO_HIGH)
-
             from subprocess import call
-
             call("sudo shutdown now --poweroff", shell=True)
 
         elif temp > self.MAX_TEMP_TO_DISABLE_HEATING:
             self.blink_error_code(error_codes.PCB_TEMPERATURE_TOO_HIGH)
-
             self.logger.warning(
-                f"Temperature of heating surface has exceeded {self.MAX_TEMP_TO_DISABLE_HEATING}℃ - currently {temp}℃. This is beyond our recommendations. The heating PWM channel will be forced to 0. Take caution when touching the heating surface and wetware."
+                f"Temperature of heating surface has exceeded {self.MAX_TEMP_TO_DISABLE_HEATING}℃ - currently {temp}℃. "
+                "The heating PWM channel will be forced to 0."
             )
-
             self._update_heater(0)
 
         elif temp > self.MAX_TEMP_TO_REDUCE_HEATING:
             self.logger.debug(
-                f"Temperature of heating surface has exceeded {self.MAX_TEMP_TO_REDUCE_HEATING}℃ - currently {temp}℃. This is close to our maximum recommended value. The heating PWM channel will be reduced to 90% its current value. Take caution when touching the heating surface and wetware."
+                f"Temperature of heating surface has exceeded {self.MAX_TEMP_TO_REDUCE_HEATING}℃ - currently {temp}℃. "
+                "The heating PWM channel will be reduced to 90% its current value."
             )
-
             self._update_heater(self.heater_duty_cycle * 0.9)
 
         return temp
@@ -312,32 +273,27 @@ class TemperatureAutomationJob(AutomationJob):
             self._update_heater(0)
 
         with suppress(AttributeError):
-            self.read_external_temperature_timer.cancel()
-            self.publish_temperature_timer.cancel()
+            self.temperature_timer.cancel()
 
         with suppress(AttributeError):
             self.turn_off_heater()
 
     def on_sleeping(self) -> None:
-        self.publish_temperature_timer.pause()
+        self.temperature_timer.pause()
         self._update_heater(0)
 
     def on_sleeping_to_ready(self) -> None:
-        self.publish_temperature_timer.unpause()
+        self.temperature_timer.unpause()
 
     def setup_pwm(self) -> PWM:
         hertz = 16  # technically this doesn't need to be high: it could even be 1hz. However, we want to smooth it's
         # impact (mainly: current sink), over the second. Ex: imagine freq=1hz, dc=40%, and the pump needs to run for
         # 0.3s. The influence of when the heat is on the pump can be significant in a power-constrained system.
+        hertz = 16
         pin = hardware.PWM_TO_PIN[hardware.HEATER_PWM_TO_PIN]
         pwm = PWM(pin, hertz, unit=self.unit, experiment=self.experiment, pubsub_client=self.pub_client)
         pwm.start(0)
         return pwm
-
-    @staticmethod
-    def _get_room_temperature():
-        # TODO: improve somehow
-        return 22.0
 
     def infer_temperature(self) -> None:
         """
@@ -350,42 +306,25 @@ class TemperatureAutomationJob(AutomationJob):
         # CHANGED: We still lock the PWM so that nothing else changes it while we measure
         assert not self.pwm.is_locked(), "PWM is locked - it shouldn't be though!"
         with self.pwm.lock_temporarily():
-            # CHANGED: We'll store the previous heater DC so we can restore it after measurement
             previous_heater_dc = self.heater_duty_cycle
-
-            # CHANGED: Turn off active heating if you wish to measure passively
-            self._update_heater(0)
-
-            # CHANGED: Just measure once (you can measure multiple times or average, if you like)
+            self._update_heater(0)  # turn off heater if you want a passive measurement
             measured_temp = self.read_external_temperature()
-
-            # CHANGED: Restore the heater to its prior DC
             self._update_heater(previous_heater_dc)
 
-        # CHANGED: Directly create a Temperature object from the measured value
         self.temperature = Temperature(
             temperature=round(measured_temp, 2),
             timestamp=current_utc_datetime(),
         )
         self._set_latest_temperature(self.temperature)
 
-        # CHANGED: That’s all. We no longer call approximate_temperature_1_0 or approximate_temperature_2_0.
-
-
-    # CHANGED: Removed the approximate_temperature_1_0 and approximate_temperature_2_0 methods entirely.
-    #           If you still want them in the file for reference, you can keep them, but commented out.
-    #
-    #           If you do remove them, references to them in "infer_temperature" are obviously removed.
-
-
-    def _set_growth_rate(self, message: pt.MQTTMessage) -> None:
-        if not message.payload:
-            return
-
-        self.previous_growth_rate = self._latest_growth_rate
-        payload = decode(message.payload, type=structs.GrowthRate)
-        self._latest_growth_rate = payload.growth_rate
-        self.latest_growth_rate_at = payload.timestamp
+    # COMMENTED OUT: unsubscribing from OD/growth topics
+    # def _set_growth_rate(self, message: pt.MQTTMessage) -> None:
+    #     if not message.payload:
+    #         return
+    #     self.previous_growth_rate = self._latest_growth_rate
+    #     payload = decode(message.payload, type=structs.GrowthRate)
+    #     self._latest_growth_rate = payload.growth_rate
+    #     self.latest_growth_rate_at = payload.timestamp
 
     def _set_latest_temperature(self, temperature: structs.Temperature) -> None:
         # Note: this doesn't use MQTT data (previously it use to)
@@ -395,29 +334,30 @@ class TemperatureAutomationJob(AutomationJob):
 
         if self.state == self.READY or self.state == self.INIT:
             self.latest_event = self.execute()
-
         return
 
-    def _set_OD(self, message: pt.MQTTMessage) -> None:
-        if not message.payload:
-            return
-        self.previous_normalized_od = self._latest_normalized_od
-        payload = decode(message.payload, type=structs.ODFiltered)
-        self._latest_normalized_od = payload.od_filtered
-        self.latest_normalized_od_at = payload.timestamp
+    # COMMENTED OUT: unsubscribing from OD/growth topics
+    # def _set_OD(self, message: pt.MQTTMessage) -> None:
+    #     if not message.payload:
+    #         return
+    #     self.previous_normalized_od = self._latest_normalized_od
+    #     payload = decode(message.payload, type=structs.ODFiltered)
+    #     self._latest_normalized_od = payload.od_filtered
+    #     self.latest_normalized_od_at = payload.timestamp
 
     def start_passive_listeners(self) -> None:
-        self.subscribe_and_callback(
-            self._set_growth_rate,
-            f"pioreactor/{self.unit}/{self.experiment}/growth_rate_calculating/growth_rate",
-            allow_retained=False,
-        )
-
-        self.subscribe_and_callback(
-            self._set_OD,
-            f"pioreactor/{self.unit}/{self.experiment}/growth_rate_calculating/od_filtered",
-            allow_retained=False,
-        )
+        # COMMENTED OUT: removing the subscription to OD/growth
+        # self.subscribe_and_callback(
+        #     self._set_growth_rate,
+        #     f"pioreactor/{self.unit}/{self.experiment}/growth_rate_calculating/growth_rate",
+        #     allow_retained=False,
+        # )
+        # self.subscribe_and_callback(
+        #     self._set_OD,
+        #     f"pioreactor/{self.unit}/{self.experiment}/growth_rate_calculating/od_filtered",
+        #     allow_retained=False,
+        # )
+        pass
 
 
 class TemperatureAutomationJobContrib(TemperatureAutomationJob):
@@ -438,7 +378,8 @@ def start_temperature_automation(
         klass = available_temperature_automations[automation_name]
     except KeyError:
         raise KeyError(
-            f"Unable to find {automation_name}. Available automations are {list( available_temperature_automations.keys())}"
+            f"Unable to find {automation_name}. "
+            f"Available automations are {list( available_temperature_automations.keys())}"
         )
 
     if "skip_first_run" in kwargs:
@@ -451,7 +392,6 @@ def start_temperature_automation(
             automation_name=automation_name,
             **kwargs,
         )
-
     except Exception as e:
         logger = create_logger("temperature_automation")
         logger.error(e)
@@ -481,5 +421,4 @@ def click_temperature_automation(ctx, automation_name):
         automation_name=automation_name,
         **{ctx.args[i][2:].replace("-", "_"): ctx.args[i + 1] for i in range(0, len(ctx.args), 2)},
     )
-
     la.block_until_disconnected()
