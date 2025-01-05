@@ -230,8 +230,10 @@ class TemperatureAutomationJob(AutomationJob):
         return averaged_temp
 
     def _update_heater(self, new_duty_cycle: float) -> bool:
-        # clamp to [0,100], round to two decimals
-        self.heater_duty_cycle = clamp(0.0, round(float(new_duty_cycle), 2), 100.0)
+        if new_duty_cycle < 10.0:
+            new_duty_cycle = 0.0
+        # clamp to [required range], round to two decimals
+        self.heater_duty_cycle = clamp(0.0, round(float(new_duty_cycle), 2), 50.0)
         self.pwm.change_duty_cycle(self.heater_duty_cycle)
 
         if self.heater_duty_cycle == 0.0:
@@ -289,7 +291,7 @@ class TemperatureAutomationJob(AutomationJob):
         hertz = 16  # technically this doesn't need to be high: it could even be 1hz. However, we want to smooth it's
         # impact (mainly: current sink), over the second. Ex: imagine freq=1hz, dc=40%, and the pump needs to run for
         # 0.3s. The influence of when the heat is on the pump can be significant in a power-constrained system.
-        hertz = 16
+        hertz = 0.1
         pin = hardware.PWM_TO_PIN[hardware.HEATER_PWM_TO_PIN]
         pwm = PWM(pin, hertz, unit=self.unit, experiment=self.experiment, pubsub_client=self.pub_client)
         pwm.start(0)
