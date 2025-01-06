@@ -36,7 +36,7 @@ def od_statistics(
     logger=None,
 ) -> tuple[dict[pt.PdChannel, float], dict[pt.PdChannel, float]]:
     """
-    Compute a sample statistics of the photodiodes attached.
+    Compute sample statistics of the photodiodes attached.
 
     There's a variance w.r.t. the rotation of the vial that we can't control.
     """
@@ -49,8 +49,7 @@ def od_statistics(
         f"Starting to compute statistics from OD readings. Collecting {n_samples} data points. This may take a while."
     )
 
-    # turn on stirring if not already on 
-    #i disabled this no need for stirring
+    # # Turn on stirring if not already on
     # if not is_pio_job_running("stirring"):
     #     from pioreactor.background_jobs.stirring import start_stirring
 
@@ -60,58 +59,70 @@ def od_statistics(
     #             unit=unit,
     #             experiment=experiment,
     #         )
-    #     st.block_until_rpm_is_close_to_target(timeout=40)  # wait for stirring to be reasonable.
+    #     st.block_until_rpm_is_close_to_target(timeout=40)  # Wait for stirring to stabilize
     # else:
-    #     st = nullcontext()  # type: ignore
+    #     st = nullcontext()  # No stirring needed
+
+    # with st:
+    readings = defaultdict(list)
+    angles = {}
+
+    # Collect OD readings
+    for count, batched_reading in enumerate(od_stream, start=1):
+        for channel, reading in batched_reading.ods.items():
+            readings[channel].append(reading.od)
+            angles[channel] = reading.angle
+
+        # Publish progress
+        pubsub.publish(
+            f"pioreactor/{unit}/{experiment}/{action_name}/percent_progress",
+            int(count / n_samples * 100),
+        )
+        logger.debug(f"Progress: {count/n_samples:.0%}")
+
+        if count == n_samples:
+            break
 
     means = {}
     variances = {}
     autocorrelations = {}  # lag 1
 
+    # Compute statistics
     for channel, od_reading_series in readings.items():
-        # measure the mean and publish. The mean will be used to normalize the readings in downstream jobs
-        assert len(od_reading_series) == n_samples
-        means[channel] = math_helpers.trimmed_mean(od_reading_series)
+        # Ensure the correct number of samples
+        assert len(od_reading_series) == n_samples, (
+            f"Channel {channel} has {len(od_reading_series)} samples instead of {n_samples}."
+        )
+
+        # Calculate trimmed mean
+        means[channel] = math_helpers.trimmed_mean(od_reading_series, cut_off_n=2)
+
+        # Calculate trimmed variance
         variances[channel] = math_helpers.trimmed_variance(
             math_helpers.residuals_of_simple_linear_regression(
                 list(range(n_samples)), od_reading_series, trimmed=True
-            )
-        )  # see issue #206
+            ),
+            cut_off_n=2,
+        )  # See issue #206
+
+        # Calculate autocorrelation (lag 1)
         autocorrelations[channel] = math_helpers.correlation(
             od_reading_series[:-1], od_reading_series[1:]
         )
 
-        # warn users that a blank is 0 - maybe this should be an error instead? TODO: link this to a docs page.
+        # Warn if mean is zero
         if means[channel] == 0.0:
-            logger.warning(f"OD reading for PD Channel {channel} is 0.0 - that shouldn't be. Is there a loose connection, or an extra channel in the configuration's [od_config.photodiode_channel] section?")
-            if count == n_samples:
-                break
-
-        means = {}
-        variances = {}
-        autocorrelations = {}  # lag 1
-
-        for channel, od_reading_series in readings.items():
-            # measure the mean and publish. The mean will be used to normalize the readings in downstream jobs
-            assert len(od_reading_series) == n_samples
-            means[channel] = math_helpers.trimmed_mean(od_reading_series, cut_off_n=2)
-            variances[channel] = math_helpers.trimmed_variance(
-                math_helpers.residuals_of_simple_linear_regression(
-                    list(range(n_samples)), od_reading_series, trimmed=True
-                ),
-                cut_off_n=2,
-            )  # see issue #206
-            autocorrelations[channel] = math_helpers.correlation(
-                od_reading_series[:-1], od_reading_series[1:]
+            logger.warning(
+                f"OD reading for PD Channel {channel} is 0.0 - that shouldn't be. "
+                f"Is there a loose connection, or an extra channel in the configuration's [od_config.photodiode_channel] section?"
             )
 
-    logger.debug(f"observed data: {od_reading_series}")
-    logger.debug(f"measured mean: {means}")
-    logger.debug(f"measured variances: {variances}")
-    logger.debug(f"measured autocorrelations: {autocorrelations}")
+    logger.debug(f"Observed data: {readings}")
+    logger.debug(f"Measured mean: {means}")
+    logger.debug(f"Measured variances: {variances}")
+    logger.debug(f"Measured autocorrelations: {autocorrelations}")
 
     return means, variances
-
 
 def delete_od_blank(unit=None, experiment=None):
     action_name = "od_blank"
