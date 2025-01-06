@@ -8,6 +8,7 @@ from queue import Queue
 from threading import Thread
 from typing import Generator
 
+from pioreactor.config import config
 from pioreactor.exc import RsyncError
 
 
@@ -28,6 +29,7 @@ def cp_file_across_cluster(unit: str, localpath: str, remotepath: str, timeout: 
             "--timeout",
             f"{timeout}",
             "--inplace",
+            "--checksum",
             "-e",
             "ssh",
             localpath,
@@ -41,13 +43,13 @@ def is_using_local_access_point() -> bool:
     return Path("/boot/firmware/local_access_point").exists()
 
 
-def is_hostname_on_network(hostname: str, timeout: float = 10.0) -> bool:
+def is_address_on_network(address: str, timeout: float = 10.0) -> bool:
     import socket
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
     try:
-        s.connect((hostname, 22))
+        s.connect((address, 22))
         s.close()
         return True
     except (socket.error, socket.timeout):
@@ -58,8 +60,6 @@ def is_reachable(address: str) -> bool:
     """
     Can we ping the computer at `address`?
     """
-    # TODO: why not use sh.ping? Ex: ping("leader7.local", "-c1", "-W50")
-
     std_out_from_ping = subprocess.Popen(
         ["ping", "-c1", "-W3", address],
         stdout=subprocess.PIPE,
@@ -147,7 +147,11 @@ def discover_workers_on_network(terminate: bool = False) -> Generator[str, None,
 def resolve_to_address(hostname: str) -> str:
     # TODO: make this more fleshed out: resolve to IP, etc.
     # add_local assumes a working mDNS.
-    return add_local(hostname)
+    address_in_config = config.get("cluster.addresses", hostname, fallback=None)
+    if address_in_config is not None:
+        return address_in_config
+    else:
+        return add_local(hostname)
 
 
 def add_local(hostname: str) -> str:

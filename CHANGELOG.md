@@ -1,3 +1,38 @@
+### 24.12.10
+ - Hotfix for UI settings bug
+
+
+### 24.12.5
+
+#### Highlights
+ - New export datasets improvements!
+   - new export dataset API. The datasets on the Export Data UI page are now provided via YAML files on the leader's disk. This makes it easy to add new datasets to that UI to be exported. These YAML files can be added to `~/.pioreactor/exportable_datasets`.
+   - new Export Data page in the UI. Preview datasets before you export them, and new partition options for the exported CSVs.
+   - Plugins can now add datasets to the Export Data page. The plugin's datasets are automatically added to the Export Data page when installed.
+ - Stirring can now pause itself during an OD reading. This is accomplished by "dodging OD readings". You can activate this feature by setting the `enable_dodging_od` to `True` in config.ini, under `[stirring.config]`. The replaces an older, less reliable plugin that was on our forums. Users have wanted this feature to have a very fast RPM between OD measurements (to get more aeration), and avoid noisy OD measurements. There's no reason to believe this will decrease the noise if using a "moderate" RPM though.
+
+#### Enhancements
+ - improvements to Dodging background job code, including the ability to initialize the class based on dodging or not.
+ - better error handling for failed OD blank action.
+ - better button state management in the UI.
+ - a job YAMLs' published_settings can have a new field, `editable` (bool), which controls whether it shows up on the Settings dialog or not. (False means it won't show up since it's not editable!). Default is true. This _should_ align with the `published_setting` in Python's job classes.
+ - you can add IPv4 addresses to the (new) `[cluster.addresses]` section to specify IPs for pioreactors. Example:
+   ```
+   [cluster.addresses]
+   pio01=10.42.0.2
+   pio02=10.42.0.3
+
+   ```
+   Note that the leader's address is automatically added in our software.
+ - new installs only: updated RPiOS to version 2024-11-19
+ - improvements to correlation self-tests
+
+#### Bug fixes
+ - Fixed "circulate X" actions in the Manage All dialog in the UI.
+
+#### Breaking changes
+ - moved all the temporary caches, which previously where their own sqlite3 dbs in `/tmp/` to `/tmp/local_intermittent_pioreactor_metadata.sqlite`. This shouldn't break anything unless you update _during_ an experiment - don't do that!
+
 ### 24.10.29
 
 #### Enhancements

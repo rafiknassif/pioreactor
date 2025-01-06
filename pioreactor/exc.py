@@ -66,3 +66,9 @@ class RsyncError(OSError):
     """
     Syncing files failed
     """
+
+
+class JobNotRunningError(Exception):
+    """
+    Required job is not running
+    """

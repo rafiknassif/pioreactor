@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from contextlib import redirect_stdout
 from io import StringIO
-from time import sleep
 
 import pytest
 from msgspec.json import encode as dumps
 
 from pioreactor.background_jobs.stirring import start_stirring
-from pioreactor.pubsub import subscribe_and_callback
 from pioreactor.tests.conftest import capture_requests
 from pioreactor.utils import callable_stack
 from pioreactor.utils import ClusterJobManager
@@ -251,38 +249,6 @@ def test_is_job_running(job_manager: JobManager) -> None:
     assert job_manager.is_job_running("test_name") is False
 
 
-def test_kill_pumping(job_manager: JobManager) -> None:
-    job_key1 = job_manager.register_and_set_running(
-        "testing_unit", "test_experiment", "add_media", "user", 12345, "test_leader", False
-    )
-
-    job_key2 = job_manager.register_and_set_running(
-        "testing_unit", "test_experiment", "not_pumping", "user", 12345, "test_leader", False
-    )
-
-    collection = []
-
-    def collect(msg):
-        collection.append(msg.payload.decode())
-
-    subscribe_and_callback(collect, "pioreactor/testing_unit/+/add_media/$state/set")
-
-    assert job_manager.kill_jobs(job_name="add_media") == 1
-
-    sleep(0.5)
-
-    assert len(collection) == 1
-    assert collection[0] == "disconnected"
-
-    assert job_manager.kill_jobs(job_name="not_pumping") == 1
-
-    sleep(0.5)
-    assert len(collection) == 1
-
-    job_manager.set_not_running(job_key1)
-    job_manager.set_not_running(job_key2)
-
-
 def test_ClusterJobManager_sends_requests() -> None:
     workers = ("pio01", "pio02", "pio03")
     with capture_requests() as bucket:
@@ -356,3 +322,24 @@ def test_upsert_setting_update(job_manager, job_id):
     result = job_manager.cursor.fetchone()
     assert result is not None
     assert result[0] == updated_value
+
+
+def test_retrieve_setting(job_manager, job_id):
+    job_key = job_manager.register_and_set_running(
+        "test_unit", "test_experiment", "test_name", "test_source", 12345, "test_leader", False
+    )
+
+    setting = "my_setting"
+    initial_value = "initial_value"
+    job_manager.upsert_setting(job_key, setting, initial_value)
+    assert job_manager.get_setting_from_running_job("test_name", "my_setting") == "initial_value"
+
+    setting = "my_setting_int"
+    initial_value = 1
+    job_manager.upsert_setting(job_key, setting, initial_value)
+    assert job_manager.get_setting_from_running_job("test_name", "my_setting_int") == 1
+
+    # turn off
+    job_manager.set_not_running(job_key)
+    with pytest.raises(NameError):
+        job_manager.get_setting_from_running_job("test_name", "my_setting_int")

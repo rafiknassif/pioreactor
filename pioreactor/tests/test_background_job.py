@@ -369,11 +369,11 @@ def test_cleans_up_mqtt() -> None:
     assert msg is not None
 
 
-def test_dodging() -> None:
-    config["just_pause"] = {}
-    config["just_pause"]["post_delay_duration"] = "0.75"
-    config["just_pause"]["pre_delay_duration"] = "0.25"
-    config["just_pause"]["enable_dodging_od"] = "1"
+def test_dodging_order() -> None:
+    config["just_pause.config"] = {}
+    config["just_pause.config"]["post_delay_duration"] = "0.75"
+    config["just_pause.config"]["pre_delay_duration"] = "0.25"
+    config["just_pause.config"]["enable_dodging_od"] = "1"
 
     def post_cb(od_job, batched_readings, *args):
         od_job.logger.notice(f"Done OD Reading at {time.time()}")
@@ -396,31 +396,41 @@ def test_dodging() -> None:
         def action_to_do_after_od_reading(self) -> None:
             self.logger.notice(f"   Unpausing at {time.time()} 🟢")
 
-    st = start_od_reading(
-        "90",
-        None,
-        unit=get_unit_name(),
-        experiment="test_dodging",
-        fake_data=True,
-        use_calibration=False,
-    )
-    time.sleep(5)
-
     with collect_all_logs_of_level("NOTICE", unit=get_unit_name(), experiment="test_dodging") as bucket:
-        with JustPause():
-            time.sleep(26)
-            assert len(bucket) > 4, bucket
+        with start_od_reading(
+            "90",
+            None,
+            unit=get_unit_name(),
+            experiment="test_dodging",
+            fake_data=True,
+            use_calibration=False,
+        ):
+            time.sleep(5)
+            with JustPause():
+                time.sleep(26)
+                assert len(bucket) > 4, bucket
 
-    st.clean_up()
+        with JustPause():
+            time.sleep(6)
+            with start_od_reading(
+                "90",
+                None,
+                unit=get_unit_name(),
+                experiment="test_dodging",
+                fake_data=True,
+                use_calibration=False,
+            ):
+                time.sleep(26)
+
     ODReader._post_read = []
     ODReader._pre_read = []
 
 
 def test_dodging_when_od_reading_stops_first() -> None:
-    config["just_pause"] = {}
-    config["just_pause"]["post_delay_duration"] = "0.75"
-    config["just_pause"]["pre_delay_duration"] = "0.25"
-    config["just_pause"]["enable_dodging_od"] = "1"
+    config["just_pause.config"] = {}
+    config["just_pause.config"]["post_delay_duration"] = "0.75"
+    config["just_pause.config"]["pre_delay_duration"] = "0.25"
+    config["just_pause.config"]["enable_dodging_od"] = "1"
 
     class JustPause(BackgroundJobWithDodging):
         job_name = "just_pause"
@@ -455,12 +465,13 @@ def test_dodging_when_od_reading_stops_first() -> None:
         assert len(bucket) == 0
 
 
-def test_disabled_dodging() -> None:
-    exp = "test_disabled_dodging"
-    config["just_pause"] = {}
-    config["just_pause"]["post_delay_duration"] = "0.2"
-    config["just_pause"]["pre_delay_duration"] = "0.1"
-    config["just_pause"]["enable_dodging_od"] = "1"
+def test_disabling_dodging() -> None:
+    exp = "test_disabling_dodging"
+
+    config["just_pause.config"] = {}
+    config["just_pause.config"]["post_delay_duration"] = "0.2"
+    config["just_pause.config"]["pre_delay_duration"] = "0.1"
+    config["just_pause.config"]["enable_dodging_od"] = "1"
 
     class JustPause(BackgroundJobWithDodging):
         job_name = "just_pause"
@@ -470,35 +481,71 @@ def test_disabled_dodging() -> None:
             super().__init__(unit=get_unit_name(), experiment=exp)
 
         def action_to_do_before_od_reading(self) -> None:
+            self.test = False
             self.logger.notice("Pausing")
 
         def action_to_do_after_od_reading(self) -> None:
+            self.test = True
             self.logger.notice("Unpausing")
 
+        def initialize_dodging_operation(self):
+            self.test = False
+
+        def initialize_continuous_operation(self):
+            self.test = True
+
     with collect_all_logs_of_level("NOTICE", unit=get_unit_name(), experiment=exp) as bucket:
-        jp = JustPause()
-        assert set(jp.published_settings.keys()) == set(["test", "state", "enable_dodging_od"])
+        with JustPause() as jp:
+            time.sleep(2)
+            with start_od_reading(
+                "90",
+                None,
+                interval=5,  # needed
+                unit=get_unit_name(),
+                experiment=exp,
+                fake_data=True,
+                use_calibration=False,
+            ):
+                assert set(jp.published_settings.keys()) == set(
+                    ["test", "state", "enable_dodging_od", "currently_dodging_od"]
+                )
+                time.sleep(20)
 
-        od = start_od_reading(
-            "90",
-            None,
-            interval=5,  # needed
-            unit=get_unit_name(),
-            experiment=exp,
-            fake_data=True,
-            use_calibration=False,
-        )
-        time.sleep(5)
-        jp.set_enable_dodging_od(False)
-        time.sleep(20)
-        assert len(bucket) == 2
+                assert len(bucket) == 6
 
-        jp.set_enable_dodging_od(True)
-        time.sleep(12)
-        assert len(bucket) == 4
+                jp.set_enable_dodging_od(False)
+                assert jp.test
+                time.sleep(20)
 
-    od.clean_up()
-    jp.clean_up()
+                jp.set_enable_dodging_od(True)
+                time.sleep(12)
+
+
+def test_disabled_dodging_will_start_continuous_operation() -> None:
+    exp = "test_disabled_dodging_will_start_action_to_do_after_od_reading"
+
+    config["just_pause.config"] = {}
+    config["just_pause.config"]["post_delay_duration"] = "0.2"
+    config["just_pause.config"]["pre_delay_duration"] = "0.1"
+    config["just_pause.config"]["enable_dodging_od"] = "0"
+
+    class JustPause(BackgroundJobWithDodging):
+        job_name = "just_pause"
+
+        def __init__(self) -> None:
+            super().__init__(unit=get_unit_name(), experiment=exp)
+
+        def initialize_dodging_operation(self) -> None:
+            self.logger.notice("NOPE")
+
+        def initialize_continuous_operation(self) -> None:
+            self.logger.notice("OK")
+
+    with collect_all_logs_of_level("NOTICE", unit=get_unit_name(), experiment=exp) as bucket:
+        with JustPause():
+            time.sleep(5)
+        assert any("OK" in b["message"] for b in bucket)
+        assert all("NOPE" not in b["message"] for b in bucket)
 
 
 def test_subclasses_provide_a_unique_job_name_for_contrib():

@@ -45,11 +45,13 @@ def change_leds_intensities_temporarily(
         with local_intermittent_storage("leds") as cache:
             old_state = {c: cache.get(c, 0.0) for c in desired_state.keys()}
 
-        led_intensity(desired_state, **kwargs)
+        if not led_intensity(desired_state, **kwargs):
+            raise ValueError("Unable to update LED.")
 
         yield
     finally:
-        led_intensity(old_state, **kwargs)
+        if not led_intensity(old_state, **kwargs):
+            raise ValueError("Unable to update LED.")
 
 
 @contextmanager
@@ -84,9 +86,8 @@ def _update_current_state(
         }
 
         # update cache
-        with led_cache.transact():
-            for channel, intensity in state.items():
-                led_cache[channel] = intensity
+        for channel, intensity in state.items():
+            led_cache[channel] = intensity
 
         new_state: LEDsToIntensityMapping = {
             channel: led_cache.get(str(channel), 0.0) for channel in ALL_LED_CHANNELS
@@ -218,7 +219,6 @@ def led_intensity(
                 logger.info(
                     f"Updated LED {channel} from {old_state[channel]:0.3g}% to {new_state[channel]:0.3g}%."
                 )
-
         return updated_successfully
 
 

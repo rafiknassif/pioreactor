@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import configparser
 import os
+from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
 
@@ -136,7 +137,6 @@ def get_config() -> ConfigParserMod:
         raise FileNotFoundError(
             f"Configuration file at {global_config_path} is missing. Has it completed initializing? Does it need to connect to a leader? Alternatively, use the env variable GLOBAL_CONFIG to specify its location."
         )
-
     config_files = [global_config_path, local_config_path]
 
     try:
@@ -162,6 +162,14 @@ def get_config() -> ConfigParserMod:
     if "od_config.photodiode_channel" in config:
         config["od_config.photodiode_channel_reverse"] = config.invert_section("od_config.photodiode_channel")
 
+    # add this for hostname resolution using config.ini, see pioreactor.utils.networking.resolve_to_address
+    if "cluster.addresses" not in config:
+        config.add_section("cluster.addresses")
+
+    leader_hostname = config.get("cluster.topology", "leader_hostname")
+    leader_address = config.get("cluster.topology", "leader_address")
+    config.set("cluster.addresses", leader_hostname, leader_address)
+
     return config
 
 
@@ -181,3 +189,27 @@ def get_leader_address() -> str:
 @cache
 def get_mqtt_address() -> str:
     return get_config().get("mqtt", "broker_address", fallback=get_leader_address())
+
+
+@contextmanager
+def temporary_config_change(config: ConfigParserMod, section: str, parameter: str, new_value: str):
+    """
+    A context manager to temporarily change a value in a ConfigParser object.
+    """
+    if not config.has_section(section):
+        yield
+        return
+    if not config.has_option(section, parameter):
+        yield
+        return
+
+    # Save the original value
+    original_value = config.get(section, parameter)
+
+    try:
+        # Apply the temporary change
+        config.set(section, parameter, new_value)
+        yield
+    finally:
+        # Restore the original value
+        config.set(section, parameter, original_value)

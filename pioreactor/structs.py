@@ -251,3 +251,16 @@ class AbsoluteGrowthRate(JSONPrintedStruct):
 class Density(JSONPrintedStruct):
     density: float
     timestamp: t.Annotated[datetime, Meta(tz=True)]
+
+class Dataset(JSONPrintedStruct):
+    dataset_name: str  # the unique key
+    description: t.Optional[str]
+    display_name: str
+    has_experiment: bool
+    has_unit: bool
+    default_order_by: t.Optional[str]
+    table: t.Optional[str] = None
+    query: t.Optional[str] = None
+    source: str = "app"
+    timestamp_columns: list[str] = []
+    always_partition_by_unit: bool = False

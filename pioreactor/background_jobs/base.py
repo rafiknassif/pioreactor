@@ -23,10 +23,10 @@ from pioreactor.logging import create_logger
 from pioreactor.pubsub import Client
 from pioreactor.pubsub import create_client
 from pioreactor.pubsub import QOS
-from pioreactor.pubsub import subscribe
 from pioreactor.utils import append_signal_handlers
 from pioreactor.utils import is_pio_job_running
 from pioreactor.utils import JobManager
+from pioreactor.utils.timing import catchtime
 from pioreactor.utils.timing import RepeatedTimer
 from pioreactor.whoami import is_active
 from pioreactor.whoami import is_testing_env
@@ -280,6 +280,7 @@ class _BackgroundJob(metaclass=PostInitCaller):
         )
 
         self._check_for_duplicate_activity()
+
         self._job_id = self._add_to_job_manager()
 
         # if we no-op in the _check_for_duplicate_activity, we don't want to fire the LWT, so we delay subclient until after.
@@ -337,12 +338,6 @@ class _BackgroundJob(metaclass=PostInitCaller):
         # setting READY should happen after we write to the job manager, since a job might do a long-running
         # task in on_ready, which delays writing to the db, which means `pio kill` might not see it.
         self.set_state(self.READY)
-
-        # now start listening to confirm our state is correct in mqtt
-        self.subscribe_and_callback(
-            self._confirm_state_in_broker,
-            f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/$state",
-        )
 
     def start_passive_listeners(self) -> None:
         # overwrite this to in subclasses to subscribe to topics in MQTT
@@ -659,7 +654,6 @@ class _BackgroundJob(metaclass=PostInitCaller):
             retain=True,
             qos=QOS.EXACTLY_ONCE,
         )
-
         with JobManager() as jm:
             jm.upsert_setting(self._job_id, setting_name, value)
 
@@ -780,7 +774,6 @@ class _BackgroundJob(metaclass=PostInitCaller):
             self.logger.debug("Error in on_disconnected:")
             self.logger.debug(e, exc_info=True)
 
-        self._clear_caches()
         self.state = self.DISCONNECTED
         self._log_state(self.state)
 
@@ -822,8 +815,8 @@ class _BackgroundJob(metaclass=PostInitCaller):
         self.pub_client.disconnect()
 
     def _clean_up_resources(self) -> None:
+        self._clear_caches()
         self._remove_from_job_manager()
-        # Explicitly cleanup MQTT resources...
         self._disconnect_from_mqtt_clients()
         self._disconnect_from_loggers()
 
@@ -888,6 +881,13 @@ class _BackgroundJob(metaclass=PostInitCaller):
             allow_retained=False,
         )
 
+        # TODO: previously this was in __post_init__ - why?
+        # now start listening to confirm our state is correct in mqtt
+        self.subscribe_and_callback(
+            self._confirm_state_in_broker,
+            f"pioreactor/{self.unit}/{self.experiment}/{self.job_name}/$state",
+        )
+
     def _confirm_state_in_broker(self, message: pt.MQTTMessage) -> None:
         if message.payload is None:
             return
@@ -917,8 +917,8 @@ class _BackgroundJob(metaclass=PostInitCaller):
 
     def _check_for_duplicate_activity(self) -> None:
         if is_pio_job_running(self.job_name) and not is_testing_env():
-            self.logger.warning(f"{self.job_name} is already running. Skipping")
-            raise RuntimeError(f"{self.job_name} is already running. Skipping")
+            self.logger.warning(f"{self.job_name} is already running. Skipping.")
+            raise RuntimeError(f"{self.job_name} is already running. Skipping.")
 
     def __setattr__(self, name: str, value: t.Any) -> None:
         super(_BackgroundJob, self).__setattr__(name, value)
@@ -981,13 +981,26 @@ class BackgroundJobContrib(_BackgroundJob):
         super().__init__(unit, experiment, source=plugin_name)
 
 
+def _noop():
+    pass
+
+
 class BackgroundJobWithDodging(_BackgroundJob):
     """
     This utility class allows for a change in behaviour when an OD reading is about to taken. Example: shutting
-    off a air-bubbler, or shutting off a pump or valve, with appropriate delay between.
+    off a air-bubbler, or shutting off an LED, with appropriate delay between.
 
     The methods `action_to_do_before_od_reading` and `action_to_do_after_od_reading` need to be overwritten, and
-    config needs to be added:
+    optional initialize_dodging_operation and initialize_continuous_operation can be overwritten.
+
+    If dodging is enabled, and OD reading is present then:
+      1. initialize_dodging_operation runs immediately. Use this to set up important state for dodging
+      2. before an OD reading is taken, action_to_do_before_od_reading is run
+      3. after an OD reading is taken, action_to_do_after_od_reading is run
+    If dodging is enabled, but OD reading is not present OR dodging is NOT enabled:
+      1. initialize_continuous_operation runs immediately. Use this to set up important state for continuous operation.
+
+    Config parameters needs to be added:
 
         [<job_name>.config]
         post_delay_duration=
@@ -1022,114 +1035,131 @@ class BackgroundJobWithDodging(_BackgroundJob):
         3.0  # WARNING: this may change slightly in the future, don't depend on this too much.
     )
     sneak_in_timer: RepeatedTimer
-    is_after_period: bool = False
+    currently_dodging_od = False
 
     def __init__(self, *args, source="app", **kwargs) -> None:
         super().__init__(*args, source=source, **kwargs)  # type: ignore
 
+        if not config.has_section(f"{self.job_name}.config"):
+            raise ValueError(
+                f"Required section '{self.job_name}.config' does not exist in the configuration."
+            )
+
+        self.sneak_in_timer = RepeatedTimer(
+            5, _noop, job_name=self.job_name, logger=self.logger
+        )  # placeholder?
         self.add_to_published_settings("enable_dodging_od", {"datatype": "boolean", "settable": True})
-        self.set_enable_dodging_od(self.get_from_config("enable_dodging_od", cast=bool, fallback="True"))
+        self.add_to_published_settings("currently_dodging_od", {"datatype": "boolean", "settable": False})
+        self._event_is_dodging_od = threading.Event()
 
-    def get_from_config(self, key: str, cast=None, **get_kwargs):
-        section = f"{self.job_name}.config"
-        if cast == float:
-            return config.getfloat(section, key, **get_kwargs)
-        elif cast == bool:
-            return config.getboolean(section, key, **get_kwargs)
-        elif cast == int:
-            return config.getint(section, key, **get_kwargs)
-        else:
-            return config.get(section, key, **get_kwargs)
-
-    def action_to_do_before_od_reading(self) -> None:
-        raise NotImplementedError()
-
-    def action_to_do_after_od_reading(self) -> None:
-        raise NotImplementedError()
-
-    def _listen_for_od_reading(self) -> None:
+    def __post__init__(self):
+        self.set_enable_dodging_od(
+            config.getboolean(f"{self.job_name}.config", "enable_dodging_od", fallback="False")
+        )
+        # now that `enable_dodging_od` is set, we can check for OD
         self.subscribe_and_callback(
-            self._setup_actions,
+            self._od_reading_changed_status,
             f"pioreactor/{self.unit}/{self.experiment}/od_reading/interval",
         )
+        super().__post__init__()  # set ready
 
-    def set_enable_dodging_od(self, value: bool) -> None:
+    def set_currently_dodging_od(self, value: bool):
+        self.currently_dodging_od = value
+        if self.currently_dodging_od:
+            self._event_is_dodging_od.clear()
+            self.initialize_dodging_operation()  # user defined
+            self._action_to_do_before_od_reading = self.action_to_do_before_od_reading
+            self._action_to_do_after_od_reading = self.action_to_do_after_od_reading
+            self._setup_timer()
+        else:
+            self._event_is_dodging_od.set()
+            self.initialize_continuous_operation()  # user defined
+            self._action_to_do_before_od_reading = _noop
+            self._action_to_do_after_od_reading = _noop
+            self.sneak_in_timer.cancel()
+
+    def set_enable_dodging_od(self, value: bool):
         self.enable_dodging_od = value
         if self.enable_dodging_od:
-            self.logger.info("Will attempt to stop during OD readings.")
-            self._listen_for_od_reading()
+            if is_pio_job_running("od_reading"):
+                self.logger.debug("Will attempt to dodge OD readings.")
+                self.set_currently_dodging_od(True)
+            else:
+                self.logger.debug("Will attempt to dodge later OD readings.")
+                self.set_currently_dodging_od(False)
         else:
-            self.logger.info("Running continuously through OD readings.")
-            if hasattr(self, "sneak_in_timer"):
-                self.sneak_in_timer.cancel()
-            try:
-                self.action_to_do_after_od_reading()
-            except Exception:
-                pass
-            self.sub_client.unsubscribe(f"pioreactor/{self.unit}/{self.experiment}/od_reading/interval")
+            self.logger.debug("Running continuously through OD readings.")
+            self.set_currently_dodging_od(False)
 
-    def _setup_actions(self, msg: pt.MQTTMessage) -> None:
-        if not msg.payload:
-            # OD reading stopped: reset and exit
-            if hasattr(self, "sneak_in_timer"):
-                self.sneak_in_timer.cancel()
-            self.action_to_do_after_od_reading()
-            self.sub_client.unsubscribe(f"pioreactor/{self.unit}/{self.experiment}/od_reading/interval")
-            return
+    def action_to_do_after_od_reading(self) -> None:
+        pass
 
-        # OD found - revert to paused state
-        # we put this in a try for the following reason:
-        # if od reading is running, and we start Dodging job, the _setup_actions callback is fired
-        # _after_ this classes __init__ is done, but before the subclasses __init__. If
-        # action_to_do_before_od_reading references things in the subclasses __init__, it will
-        # fail.
-        self.logger.debug("OD reading data is found in MQTT. Dodging!")
+    def action_to_do_before_od_reading(self) -> None:
+        pass
 
-        try:
-            self.action_to_do_before_od_reading()
-        except Exception:
-            pass
+    def initialize_dodging_operation(self) -> None:
+        pass
 
-        try:
-            self.sneak_in_timer.cancel()
-        except AttributeError:
-            pass
+    def initialize_continuous_operation(self) -> None:
+        pass
 
-        post_delay = self.get_from_config("post_delay_duration", cast=float, fallback=1.0)
-        pre_delay = self.get_from_config("pre_delay_duration", cast=float, fallback=1.5)
+    def _od_reading_changed_status(self, msg):
+        if self.enable_dodging_od:
+            # only act if our internal state is discordant with the external state
+            if msg.payload and not self.currently_dodging_od:
+                # turned off
+                self.logger.debug("OD reading present. Dodging!")
+                self.set_currently_dodging_od(True)
+            elif not msg.payload and self.currently_dodging_od:
+                self.logger.debug("OD reading turned off. Stop dodging.")
+                self.set_currently_dodging_od(False)
 
-        if post_delay <= 0.25:
+    def _setup_timer(self) -> None:
+        self.sneak_in_timer.cancel()
+
+        post_delay = config.getfloat(f"{self.job_name}.config", "post_delay_duration", fallback=0.5)
+        pre_delay = config.getfloat(f"{self.job_name}.config", "pre_delay_duration", fallback=1.5)
+
+        if post_delay < 0.25:
             self.logger.warning("For optimal OD readings, keep `post_delay_duration` more than 0.25 seconds.")
 
-        if pre_delay <= 0.25:
+        if pre_delay < 0.25:
             self.logger.warning("For optimal OD readings, keep `pre_delay_duration` more than 0.25 seconds.")
 
-        def sneak_in(ads_interval, post_delay, pre_delay) -> None:
+        def sneak_in(ads_interval: float, post_delay: float, pre_delay: float) -> None:
             if self.state != self.READY:
                 return
 
-            self.is_after_period = True
-            self.action_to_do_after_od_reading()
-            sleep(ads_interval - self.OD_READING_DURATION - (post_delay + pre_delay))
-            self.is_after_period = False
-            self.action_to_do_before_od_reading()
+            with catchtime() as timer:
+                self._action_to_do_after_od_reading()
+
+            action_after_duration = timer()
+
+            if ads_interval - self.OD_READING_DURATION - (post_delay + pre_delay) - action_after_duration < 0:
+                raise ValueError(
+                    "samples_per_second is too high, or post_delay is too high, or pre_delay is too high, or action_to_do_after_od_reading takes too long."
+                )
+
+            if self.state != self.READY:
+                return
+
+            self._event_is_dodging_od.wait(
+                ads_interval - self.OD_READING_DURATION - (post_delay + pre_delay) - action_after_duration
+            )  # we use an Event here to allow for quick stopping of the timer.
+
+            if self.state != self.READY:
+                return
+
+            self._action_to_do_before_od_reading()
 
         # this could fail in the following way:
-        # in the same experiment, the od_reading fails catastrophically so that the ADC attributes are never
-        # cleared. Later, this job starts, and it will pick up the _old_ ADC attributes.
-        ads_start_time_msg = subscribe(
-            f"pioreactor/{self.unit}/{self.experiment}/od_reading/first_od_obs_time"
-        )
-        if ads_start_time_msg and ads_start_time_msg.payload:
-            ads_start_time = float(ads_start_time_msg.payload)
-        else:
-            return
-
-        ads_interval_msg = subscribe(f"pioreactor/{self.unit}/{self.experiment}/od_reading/interval")
-        if ads_interval_msg and ads_interval_msg.payload:
-            ads_interval = float(ads_interval_msg.payload)
-        else:
-            return
+        # in the same experiment, the od_reading fails catastrophically so that the settings are never
+        # cleared. Later, this job starts, and it will pick up the _old_ settings.
+        with JobManager() as jm:
+            ads_interval = float(jm.get_setting_from_running_job("od_reading", "interval", timeout=5))
+            ads_start_time = float(
+                jm.get_setting_from_running_job("od_reading", "first_od_obs_time", timeout=5)
+            )  # this is populated later in the OD job...
 
         # get interval, and confirm that the requirements are possible: post_delay + pre_delay <= ADS interval - (od reading duration)
         if not (ads_interval - self.OD_READING_DURATION > (post_delay + pre_delay)):
@@ -1138,34 +1168,36 @@ class BackgroundJobWithDodging(_BackgroundJob):
             )
             self.clean_up()
 
+        time_to_next_ads_reading = ads_interval - ((time() - ads_start_time) % ads_interval)
+
         self.sneak_in_timer = RepeatedTimer(
             ads_interval,
             sneak_in,
             job_name=self.job_name,
             args=(ads_interval, post_delay, pre_delay),
-            run_immediately=False,
+            run_immediately=True,
+            run_after=time_to_next_ads_reading + (post_delay + self.OD_READING_DURATION),
+            logger=self.logger,
         )
-
-        # TODO: shouldn't I just use run_after in `RepeatedTimer` instead of this?
-        time_to_next_ads_reading = ads_interval - ((time() - ads_start_time) % ads_interval)
-
-        sleep(time_to_next_ads_reading + (post_delay + self.OD_READING_DURATION))
         self.sneak_in_timer.start()
 
     def on_sleeping(self) -> None:
         try:
+            self._event_is_dodging_od.set()
             self.sneak_in_timer.pause()
         except AttributeError:
             pass
 
     def on_disconnected(self) -> None:
         try:
+            self._event_is_dodging_od.set()
             self.sneak_in_timer.cancel()
         except AttributeError:
             pass
 
     def on_sleeping_to_ready(self) -> None:
         try:
+            self._event_is_dodging_od.clear()
             self.sneak_in_timer.unpause()
         except AttributeError:
             pass

@@ -36,19 +36,12 @@ class LEDAutomationJob(AutomationJob):
     This is the super class that LED automations inherit from. The `run` function will
     execute every `duration` minutes (selected at the start of the program), and call the `execute` function
     which is what subclasses define.
-
-    To change setting over MQTT:
-
-    `pioreactor/<unit>/<experiment>/led_automation/<setting>/set` value
-
     """
 
     automation_name = "led_automation_base"  # is overwritten in subclasses
     job_name = "led_automation"
 
-    published_settings: dict[str, pt.PublishableSetting] = {
-        "duration": {"datatype": "float", "settable": True},
-    }
+    published_settings: dict[str, pt.PublishableSetting] = {}
 
     _latest_growth_rate: Optional[float] = None
     _latest_normalized_od: Optional[float] = None
@@ -76,6 +69,15 @@ class LEDAutomationJob(AutomationJob):
     ) -> None:
         super(LEDAutomationJob, self).__init__(unit, experiment)
 
+        self.add_to_published_settings(
+            "duration",
+            {
+                "datatype": "float",
+                "settable": True,
+                "unit": "min",
+            },
+        )
+
         self.skip_first_run = skip_first_run
         self.latest_normalized_od_at: datetime = current_utc_datetime()
         self.latest_growth_rate_at: datetime = current_utc_datetime()
@@ -100,13 +102,13 @@ class LEDAutomationJob(AutomationJob):
             run_after = min(
                 1.0 / config.getfloat("od_reading.config", "samples_per_second"), 10
             )  # max so users aren't waiting forever to see lights come on...
-
         self.run_thread = RepeatedTimer(
             self.duration * 60,  # RepeatedTimer uses seconds
             self.run,
             job_name=self.job_name,
             run_immediately=(not self.skip_first_run) or (self._latest_run_at is not None),
             run_after=run_after,
+            logger=self.logger,
         ).start()
 
     def run(self, timeout: float = 60.0) -> Optional[events.AutomationEvent]:

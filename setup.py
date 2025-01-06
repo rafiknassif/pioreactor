@@ -16,17 +16,15 @@ CORE_REQUIREMENTS = [
     "diskcache==5.6.3",
     "crudini==0.9.5",
     "iniparse==0.5",
-    "six==1.16.0",
-    "blinker==1.8.2",
-    "flask==3.0.2",
+    "blinker==1.9.0",
+    "Flask==3.1.0",
     "flup6==1.1.1",
-    "huey==2.5.0",
-    "ifaddr==0.2.0",
+    "huey==2.5.2",
     "itsdangerous==2.2.0",
     "Jinja2==3.1.4",
     "MarkupSafe==2.1.5",
     "python-dotenv==1.0.1",
-    "Werkzeug==3.0.3",
+    "Werkzeug==3.1.0",
     "packaging==24.1",
     # "lgpio; platform_machine!='armv7l' and platform_machine!='armv6l'", # primarily available with base image, or via apt-get install python3-lgpio
 ]
@@ -56,7 +54,6 @@ WORKER_REQUIREMENTS = [
     "pyserial==3.5",
     "pyusb==1.2.1",
     "rpi_hardware_pwm==0.2.1",
-    "typing_extensions==4.12.2",
 ]
 
 

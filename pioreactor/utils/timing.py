@@ -98,6 +98,7 @@ class RepeatedTimer:
         job_name: t.Optional[str] = None,
         run_immediately: bool = False,
         run_after: t.Optional[float] = None,
+        logger=None,
         args=(),
         kwargs={},
     ) -> None:
@@ -107,9 +108,12 @@ class RepeatedTimer:
         self.function = function
         self.args = args
         self.kwargs = kwargs
-        self.logger = create_logger(
-            job_name or "RepeatedTimer"
-        )  # TODO: I don't think this works as expected.
+        if logger is None:
+            self.logger = create_logger(
+                job_name or "RepeatedTimer"
+            )  # TODO: I don't think this works as expected.
+        else:
+            self.logger = logger
         self.is_paused = False
         if run_after is not None:
             assert run_after >= 0, "run_after should be non-negative."
@@ -175,7 +179,8 @@ class RepeatedTimer:
         self.is_paused = False
 
     def cancel(self, timeout: t.Optional[float] = None) -> None:
-        self.event.set()
+        self.pause()  # this will exit from the _target early.
+        self.event.set()  # stop waiting in _target.
 
         with suppress(RuntimeError):
             # possible to happen if self.thread hasn't started yet,
@@ -194,3 +199,15 @@ class RepeatedTimer:
 
     def is_alive(self) -> bool:
         return self.thread.is_alive()
+
+
+@contextmanager
+def paused_timer(timer):
+    """
+    Context manager to pause and unpause a timer object automatically.
+    """
+    timer.pause()
+    try:
+        yield
+    finally:
+        timer.unpause()

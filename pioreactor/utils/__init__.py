@@ -20,17 +20,20 @@ from typing import Sequence
 from typing import TYPE_CHECKING
 
 from diskcache import Cache  # type: ignore
+from msgspec import Struct
 from msgspec.json import encode as dumps
 
 from pioreactor import structs
 from pioreactor import types as pt
 from pioreactor import whoami
+from pioreactor.exc import JobNotRunningError
 from pioreactor.exc import NotActiveWorkerError
 from pioreactor.exc import RoleError
 from pioreactor.pubsub import create_client
 from pioreactor.pubsub import patch_into
 from pioreactor.pubsub import subscribe_and_callback
 from pioreactor.utils.networking import resolve_to_address
+from pioreactor.utils.timing import catchtime
 from pioreactor.utils.timing import current_utc_timestamp
 
 if TYPE_CHECKING:
@@ -196,8 +199,10 @@ class managed_lifecycle:
     def __enter__(self) -> managed_lifecycle:
         try:
             # this only works on the main thread.
-            append_signal_handler(signal.SIGTERM, self._exit)
-            append_signal_handler(signal.SIGINT, self._exit)
+            append_signal_handlers(signal.SIGTERM, [self._exit])
+            append_signal_handlers(
+                signal.SIGINT, [self._exit, lambda *args: signal.signal(signal.SIGINT, signal.SIG_IGN)]
+            )  # ignore future sigints so we clean up properly.
         except ValueError:
             pass
 
@@ -257,6 +262,80 @@ class managed_lifecycle:
             jm.upsert_setting(self._job_id, setting, value)
 
 
+class cache:
+    def __init__(self, table_name):
+        self.table_name = f"cache_{table_name}"
+        self.db_path = f"{tempfile.gettempdir()}/local_intermittent_pioreactor_metadata.sqlite"
+
+    def __enter__(self):
+        self.conn = sqlite3.connect(self.db_path)
+        self.cursor = self.conn.cursor()
+        self._initialize_table()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.conn.commit()
+        self.conn.close()
+
+    def _initialize_table(self):
+        self.cursor.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {self.table_name} (
+                key BLOB PRIMARY KEY,
+                value BLOB
+            )
+        """
+        )
+        self.conn.commit()
+
+    def __setitem__(self, key, value):
+        self.cursor.execute(
+            f"""
+            INSERT INTO {self.table_name} (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,
+            (key, value),
+        )
+        self.conn.commit()
+
+    def get(self, key, default=None):
+        self.cursor.execute(f"SELECT value FROM {self.table_name} WHERE key = ?", (key,))
+        result = self.cursor.fetchone()
+        return result[0] if result else default
+
+    def iterkeys(self):
+        self.cursor.execute(f"SELECT key FROM {self.table_name}")
+        return (row[0] for row in self.cursor.fetchall())
+
+    def pop(self, key, default=None):
+        self.cursor.execute(f"SELECT value FROM {self.table_name} WHERE key = ?", (key,))
+        result = self.cursor.fetchone()
+        if result is None:
+            return default
+        self.cursor.execute(f"DELETE FROM {self.table_name} WHERE key = ?", (key,))
+        self.conn.commit()
+        return result[0]
+
+    def __contains__(self, key):
+        self.cursor.execute(f"SELECT 1 FROM {self.table_name} WHERE key = ?", (key,))
+        return self.cursor.fetchone() is not None
+
+    def __iter__(self):
+        return self.iterkeys()
+
+    def __delitem__(self, key):
+        self.cursor.execute(f"DELETE FROM {self.table_name} WHERE key = ?", (key,))
+        self.conn.commit()
+
+    def __getitem__(self, key):
+        self.cursor.execute(f"SELECT value FROM {self.table_name} WHERE key = ?", (key,))
+        result = self.cursor.fetchone()
+        if result is None:
+            raise KeyError(f"Key '{key}' not found in cache.")
+        return result[0]
+
+
 @contextmanager
 def local_intermittent_storage(
     cache_name: str,
@@ -277,11 +356,8 @@ def local_intermittent_storage(
     Opening the same cache in a context manager is tricky, and should be avoided.
 
     """
-    # gettempdir find the directory named by the TMPDIR environment variable.
-    # TMPDIR is set in the Pioreactor img.
-    tmp_dir = tempfile.gettempdir()
-    with Cache(f"{tmp_dir}/{cache_name}", sqlite_journal_mode="wal") as cache:
-        yield cache  # type: ignore
+    with cache(f"{cache_name}") as c:
+        yield c  # type: ignore
 
 
 @contextmanager
@@ -504,43 +580,7 @@ class ShellKill:
         return len(self.list_of_pids)
 
 
-class MQTTKill:
-    def __init__(self) -> None:
-        self.job_names_to_kill: list[str] = []
-
-    def append(self, name: str) -> None:
-        self.job_names_to_kill.append(name)
-
-    def kill_jobs(self) -> int:
-        count = 0
-        if len(self.job_names_to_kill) == 0:
-            return count
-
-        with create_client() as client:
-            for i, name in enumerate(self.job_names_to_kill):
-                count += 1
-                msg = client.publish(
-                    f"pioreactor/{whoami.get_unit_name()}/{whoami.UNIVERSAL_EXPERIMENT}/{name}/$state/set",
-                    "disconnected",
-                    qos=1,
-                )
-
-                if (i + 1) == len(self.job_names_to_kill):
-                    # last one
-                    msg.wait_for_publish(2)
-
-        return count
-
-
 class JobManager:
-    PUMPING_JOBS = (
-        "add_media",
-        "remove_waste",
-        "add_alt_media",
-        "circulate_media",
-        "circulate_alt_media",
-    )
-
     def __init__(self) -> None:
         db_path = f"{tempfile.gettempdir()}/local_intermittent_pioreactor_metadata.sqlite"
         self.conn = sqlite3.connect(db_path)
@@ -548,6 +588,7 @@ class JobManager:
         self._create_tables()
 
     def _create_tables(self) -> None:
+        # TODO: add a created_at, updated_at to pio_job_published_settings
         create_table_query = """
         CREATE TABLE IF NOT EXISTS pio_job_metadata (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -564,10 +605,10 @@ class JobManager:
         );
 
         CREATE TABLE IF NOT EXISTS pio_job_published_settings (
-            setting     TEXT NOT NULL,
-            value       TEXT,
-            proposed_value TEXT,
-            job_id      INTEGER NOT NULL,
+            setting        TEXT NOT NULL,
+            value          BLOB,
+            proposed_value BLOB,
+            job_id         INTEGER NOT NULL,
             FOREIGN KEY(job_id) REFERENCES pio_job_metadata(id),
             UNIQUE(setting, job_id)
         );
@@ -657,13 +698,33 @@ class JobManager:
             """
             if isinstance(value, dict):
                 value = dumps(value).decode()  # back to string, not bytes
-            else:
-                value = str(value)
+            elif isinstance(value, Struct):
+                value = str(value)  # complex type
 
             self.cursor.execute(update_query, {"setting": setting, "value": value, "job_id": job_id})
 
         self.conn.commit()
         return
+
+    def get_setting_from_running_job(self, job_name: str, setting: str, timeout=None) -> Any:
+        if timeout is not None and not self.is_job_running(job_name):
+            raise JobNotRunningError(f"Job {job_name} is not running.")
+
+        with catchtime() as timer:
+            while True:
+                select_query = """
+                    SELECT value
+                        FROM pio_job_published_settings s
+                        JOIN pio_job_metadata m ON s.job_id = m.id
+                    WHERE job_name=(?) and setting=(?) and is_running=1"""
+                self.cursor.execute(select_query, (job_name, setting))
+                result = self.cursor.fetchone()  # returns None if not found
+
+                if result:
+                    return result[0]
+
+                if (timeout and timer() > timeout) or (timeout is None):
+                    raise NameError(f"Setting {setting} was not found.")
 
     def set_not_running(self, job_id: JobMetadataKey) -> None:
         update_query = "UPDATE pio_job_metadata SET is_running=0, ended_at=STRFTIME('%Y-%m-%dT%H:%M:%f000Z', 'NOW') WHERE id=(?)"
@@ -707,28 +768,28 @@ class JobManager:
     def kill_jobs(self, all_jobs: bool = False, **query) -> int:
         # ex: kill_jobs(experiment="testing_exp") should end all jobs with experiment='testing_exp'
 
-        mqtt_kill = MQTTKill()
         shell_kill = ShellKill()
         count = 0
 
         for job, pid in self._get_jobs(all_jobs, **query):
-            if job in self.PUMPING_JOBS:
-                mqtt_kill.append(job)
-            elif job == "led_intensity":
+            if job == "led_intensity":
                 # led_intensity doesn't register with the JobManager, probably should somehow. #502
-                pass
+                continue
             else:
                 shell_kill.append(pid)
-        count += mqtt_kill.kill_jobs()
+
         count += shell_kill.kill_jobs()
 
         return count
+
+    def close(self):
+        self.conn.close()
 
     def __enter__(self) -> JobManager:
         return self
 
     def __exit__(self, *args) -> None:
-        self.conn.close()
+        self.close()
         return
 
 

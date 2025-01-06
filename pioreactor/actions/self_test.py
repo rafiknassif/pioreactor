@@ -32,6 +32,7 @@ from pioreactor.background_jobs.od_reading import IR_keyword
 from pioreactor.background_jobs.od_reading import REF_keyword
 from pioreactor.background_jobs.od_reading import start_od_reading
 from pioreactor.config import config
+from pioreactor.config import temporary_config_change
 from pioreactor.hardware import is_HAT_present
 from pioreactor.hardware import is_heating_pcb_present
 from pioreactor.hardware import voltage_in_aux
@@ -127,12 +128,12 @@ def test_all_positive_correlations_between_pds_and_leds(
     # we randomize to reduce effects of temperature
     # upper bound shouldn't be too high, as it could saturate the ADC, and lower bound shouldn't be too low, else we don't detect anything.
 
-    # what's up with this order? We originally did a shuffle() of list(range(20, 55, 3))
+    # what's up with this order? We originally did a shuffle() of list(range(x, y, z))
     # so as to reduce the effects of temperature.
     # the problem is that if an LED is directly across from a PD, a high intensity will quickly
     # saturate it and fail the test. So we try low intensities first, and if we exceed some threshold
     # we exit before moving to the high intensities.
-    INTENSITIES = (35, 53, 44, 38, 47, 50, 41, 56, 59, 62, 65)
+    INTENSITIES = [10, 70, 60, 40, 30, 20, 50, 80]
 
     results: dict[tuple[LedChannel, PdChannel], float] = {}
 
@@ -410,25 +411,23 @@ def test_positive_correlation_between_rpm_and_stirring(
     dcs = []
     measured_rpms = []
     n_samples = 8
-    start = initial_dc * 1.2
-    end = initial_dc * 0.8
+    start = min(initial_dc * 1.2, 100)
+    end = max(initial_dc * 0.8, 5)
 
-    with stirring.Stirrer(
-        target_rpm=0, unit=unit, experiment=experiment, rpm_calculator=None
-    ) as st, stirring.RpmFromFrequency() as rpm_calc:
+    with stirring.RpmFromFrequency() as rpm_calc:
         rpm_calc.setup()
-        st.duty_cycle = initial_dc
-        st.start_stirring()
-        sleep(0.75)
-
-        for i in range(n_samples):
-            p = i / n_samples
-            dc = start * (1 - p) + p * end
-
-            st.set_duty_cycle(dc)
+        with stirring.Stirrer(target_rpm=None, unit=unit, experiment=experiment, rpm_calculator=None) as st:
+            st.set_duty_cycle(initial_dc)
             sleep(0.75)
-            measured_rpms.append(rpm_calc.estimate(3.0))
-            dcs.append(dc)
+
+            for i in range(n_samples):
+                p = i / n_samples
+                dc = start * (1 - p) + p * end
+
+                st.set_duty_cycle(dc)
+                sleep(0.75)
+                measured_rpms.append(rpm_calc.estimate(3.0))
+                dcs.append(dc)
 
         measured_correlation = round(correlation(dcs, measured_rpms), 2)
         logger.debug(f"Correlation between stirring RPM and duty cycle: {measured_correlation}")
@@ -514,7 +513,9 @@ def click_self_test(k: Optional[str], retry_failed: bool) -> int:
         test_positive_correlation_between_rpm_and_stirring,
     )
 
-    with managed_lifecycle(unit, experiment, "self_test") as managed_state:
+    with managed_lifecycle(unit, experiment, "self_test") as managed_state, temporary_config_change(
+        config, "stirring.config", "enable_dodging_od", "false"
+    ):
         if any(
             is_pio_job_running(
                 ["od_reading", "temperature_automation", "stirring", "dosing_automation", "led_automation"]

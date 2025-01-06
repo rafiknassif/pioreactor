@@ -185,7 +185,7 @@ def version(verbose: bool) -> None:
         click.echo(tuple_to_text(software_version_info))
 
 
-@pio.group()
+@pio.group(short_help="manage the local caches")
 def cache():
     pass
 
@@ -531,7 +531,7 @@ def update_app(
             logger.error("Update failed. See logs.")
             # end early
             raise click.Abort()
-        else:
+        elif p.stdout:
             logger.debug(p.stdout)
 
     logger.notice(f"Updated Pioreactor app to version {version_installed}.")  # type: ignore
