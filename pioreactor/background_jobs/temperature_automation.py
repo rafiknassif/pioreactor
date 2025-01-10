@@ -235,7 +235,7 @@ class TemperatureAutomationJob(AutomationJob):
         if new_duty_cycle > 95:#lower duty cycle
             new_duty_cycle = 100.0
         # clamp to [required range], round to two decimals
-        self.heater_duty_cycle = clamp(0.0, round(float(new_duty_cycle), 3), 20)#last number upper duty cycle
+        self.heater_duty_cycle = clamp(0.0, round(float(new_duty_cycle), 3), 30)#last number upper duty cycle
         self.pwm.change_duty_cycle(self.heater_duty_cycle)
 
         if self.heater_duty_cycle == 0.0:
