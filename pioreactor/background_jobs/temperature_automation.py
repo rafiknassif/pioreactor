@@ -312,6 +312,7 @@ class TemperatureAutomationJob(AutomationJob):
         with self.pwm.lock_temporarily():
             previous_heater_dc = self.heater_duty_cycle
             self._update_heater(0)  # turn off heater if you want a passive measurement
+            sleep(1)
             measured_temp = self.read_external_temperature()
             self._update_heater(previous_heater_dc)
 
