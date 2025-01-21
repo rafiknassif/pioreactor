@@ -148,15 +148,17 @@ class GrowthRateCalculator(BackgroundJob):
             alpha=config.getfloat("growth_rate_kalman", "alpha"),
             beta=config.getfloat("growth_rate_kalman", "beta"),
             kappa=config.getfloat("growth_rate_kalman", "kappa"),
-            mahalanobis_threshold=config.getfloat("growth_rate_kalman", "mahalanobis_threshold"),
-            od_to_density_converion=config.getfloat("growth_rate_kalman", "od_to_density_converion")
+            od_to_density_converion=config.getfloat("growth_rate_kalman", "od_to_density_converion"),
+            Q_od=config.getfloat("growth_rate_kalman", "Q_od"),
+            Q_rate=config.getfloat("growth_rate_kalman", "Q_rate"),
+            Q_acc=config.getfloat("growth_rate_kalman", "Q_acc"),
         )
 
         if self.source_obs_from_mqtt:
             self.start_passive_listeners()
 
     def initialize_unscented_kalman_filter(
-        self, acc_std: float, od_std: float, rate_std: float, obs_std: float, alpha:float, beta: float, kappa: float, mahalanobis_threshold: float, od_to_density_converion:float
+        self, acc_std: float, od_std: float, rate_std: float, obs_std: float, alpha:float, beta: float, kappa: float, od_to_density_converion:float, Q_od:float, Q_rate:float, Q_acc:float
     ) -> CultureGrowthUKF:
         import numpy as np
 
@@ -174,15 +176,27 @@ class GrowthRateCalculator(BackgroundJob):
         # )  # empirically selected - TODO: this should probably scale with `expected_dt`
         # self.logger.debug(f"Initial covariance matrix:\n{repr(initial_covariance)}")
 
-        od_process_variance = (od_std** 2)* self.expected_dt
-        rate_process_variance = (rate_std * self.expected_dt) ** 2
-        acc_process_variance = (acc_std** 2)* (self.expected_dt**3)
+        od_process_variance = (Q_od** 2)* self.expected_dt
+        rate_process_variance = (Q_rate * self.expected_dt) ** 2
+        acc_process_variance = (Q_acc** 2)* (self.expected_dt**3)
 
         process_noise_covariance = np.zeros((3, 3))
         process_noise_covariance[0, 0] = od_process_variance
         process_noise_covariance[1, 1] = rate_process_variance
         process_noise_covariance[2, 2] = acc_process_variance
         self.logger.debug(f"Process noise covariance matrix:\n{repr(process_noise_covariance)}")
+
+        od_covariance_estimate = (od_std** 2)* self.expected_dt
+        rate_covariance_estimate = (rate_std * self.expected_dt) ** 2
+        acc_covariance_estimate = (acc_std** 2)* (self.expected_dt**3)
+
+        covariance_estimate = np.zeros((3, 3))
+        covariance_estimate[0, 0] = od_covariance_estimate
+        covariance_estimate[1, 1] = rate_covariance_estimate
+        covariance_estimate[2, 2] = acc_covariance_estimate
+        covariance_estimate = 1e9*covariance_estimate
+
+        self.logger.debug(f"covariance estimate ukf.P matrix:\n{repr(covariance_estimate)}")
 
         # observation_noise_covariance = self.create_obs_noise_covariance(obs_std)
         # self.logger.debug(f"Observation noise covariance matrix:\n{repr(observation_noise_covariance)}")
@@ -216,7 +230,7 @@ class GrowthRateCalculator(BackgroundJob):
             alpha,
             beta,
             kappa,
-            mahalanobis_threshold,
+            covariance_estimate
         )
 
     # def create_obs_noise_covariance(self, obs_std):  # type: ignore

@@ -207,7 +207,7 @@ class CultureGrowthUKF:
         alpha,
         beta,
         kappa,
-        mahalanobis_threshold
+        covariance_estimate
     ) -> None:
 
         #initial_state = np.asarray(initial_state)
@@ -253,10 +253,8 @@ class CultureGrowthUKF:
         # self.ukf.P = initial_covariance -> same as line below
         # self.ukf.R = observation_noise_covariance -> no longer using the dynamic model where this would have to be set. ill keed statistics running as normal as we need value for normalization still
         self.ukf.Q = process_noise_covariance
-        self.ukf.P = 1e9*self.ukf.Q
-        self.mahalanobis_threshold = mahalanobis_threshold
+        self.ukf.P = covariance_estimate
 
-        
 
     
     def update(self, observation_: list[float], dt: float, updating_noise_covariance: float):
@@ -304,10 +302,6 @@ class CultureGrowthUKF:
         # self.covariance_ = (np.eye(self.n_states) - kalman_gain_ @ H) @ covariance_prediction
         '''
         self.ukf.update(observation)
-
-        if self.ukf.mahalanobis > self.mahalanobis_threshold:
-            self.ukf.x = self.ukf.x_prior
-            self.ukf.p = self.ukf.P_prior
 
         return self.ukf.x, self.ukf.P
 
