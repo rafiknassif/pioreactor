@@ -144,7 +144,6 @@ class GrowthRateCalculator(BackgroundJob):
             acc_std=config.getfloat("growth_rate_kalman", "acc_std"),
             od_std=config.getfloat("growth_rate_kalman", "od_std"),
             rate_std=config.getfloat("growth_rate_kalman", "rate_std"),
-            obs_std=config.getfloat("growth_rate_kalman", "obs_std"),
             alpha=config.getfloat("growth_rate_kalman", "alpha"),
             beta=config.getfloat("growth_rate_kalman", "beta"),
             kappa=config.getfloat("growth_rate_kalman", "kappa"),
@@ -158,7 +157,7 @@ class GrowthRateCalculator(BackgroundJob):
             self.start_passive_listeners()
 
     def initialize_unscented_kalman_filter(
-        self, acc_std: float, od_std: float, rate_std: float, obs_std: float, alpha:float, beta: float, kappa: float, od_to_density_converion:float, Q_od:float, Q_rate:float, Q_acc:float
+        self, acc_std: float, od_std: float, rate_std: float, alpha:float, beta: float, kappa: float, od_to_density_converion:float, Q_od:float, Q_rate:float, Q_acc:float
     ) -> CultureGrowthUKF:
         import numpy as np
 
@@ -197,6 +196,7 @@ class GrowthRateCalculator(BackgroundJob):
         covariance_estimate = 1e9*covariance_estimate
 
         self.logger.debug(f"covariance estimate ukf.P matrix:\n{repr(covariance_estimate)}")
+
 
         # observation_noise_covariance = self.create_obs_noise_covariance(obs_std)
         # self.logger.debug(f"Observation noise covariance matrix:\n{repr(observation_noise_covariance)}")
