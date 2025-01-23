@@ -54,7 +54,7 @@ from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.background_jobs.od_reading import VALID_PD_ANGLES
 from pioreactor.config import config
 from pioreactor.pubsub import QOS, subscribe, publish
-from pioreactor.utils import local_persistant_storage
+from pioreactor.utils import local_persistent_storage
 from pioreactor.utils.streaming_calculations import CultureGrowthUKF
 import numpy as np
 
