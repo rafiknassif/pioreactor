@@ -11,7 +11,9 @@ from datetime import datetime
 from msgspec import Meta
 from msgspec import Struct
 from msgspec.json import encode
+from msgspec.yaml import encode as yaml_encode
 
+from pioreactor import exc
 from pioreactor import types as pt
 
 
@@ -19,7 +21,11 @@ T = t.TypeVar("T")
 
 
 def subclass_union(cls: t.Type[T]) -> t.Type[T]:
-    """Returns a Union of all subclasses of `cls` (excluding `cls` itself)"""
+    """
+    Returns a Union of all subclasses of `cls` (excluding `cls` itself)
+    Note: this can't be used in type inference...
+    """
+
     classes = set()
 
     def _add(cls):
@@ -150,85 +156,150 @@ class Voltage(JSONPrintedStruct):
     voltage: pt.Voltage
 
 
-class Calibration(JSONPrintedStruct, tag=True, tag_field="type"):
+X = float
+Y = float
+
+
+class CalibrationBase(Struct, tag_field="calibration_type", kw_only=True):
+    calibration_name: str
+    calibrated_on_pioreactor_unit: str
     created_at: t.Annotated[datetime, Meta(tz=True)]
-    pioreactor_unit: str
-    name: str
+    curve_data_: list[float]
+    curve_type: str  # ex: "poly"
+    x: str
+    y: str
+    recorded_data: dict[t.Literal["x", "y"], list[X | Y]]
+
+    def __post_init__(self):
+        if len(self.recorded_data["x"]) != len(self.recorded_data["y"]):
+            raise ValueError("Lists in `recorded_data` should have the same lengths")
 
     @property
-    def type(self) -> str:
-        return self.__struct_config__.tag  # type: ignore
+    def calibration_type(self):
+        return self.__struct_config__.tag
+
+    def save_to_disk_for_device(self, device: str) -> str:
+        from pioreactor.calibrations import CALIBRATION_PATH
+
+        calibration_dir = CALIBRATION_PATH / device
+        calibration_dir.mkdir(parents=True, exist_ok=True)
+        out_file = calibration_dir / f"{self.calibration_name}.yaml"
+
+        # Serialize to YAML
+        with out_file.open("wb") as f:
+            f.write(yaml_encode(self))
+
+        return str(out_file)
+
+    def set_as_active_calibration_for_device(self, device: str) -> None:
+        from pioreactor.utils import local_persistent_storage
+
+        if not self.exists_on_disk_for_device(device):
+            self.save_to_disk_for_device(device)
+
+        with local_persistent_storage("active_calibrations") as c:
+            c[device] = self.calibration_name
+
+    def exists_on_disk_for_device(self, device: str) -> bool:
+        from pioreactor.calibrations import CALIBRATION_PATH
+
+        target_file = CALIBRATION_PATH / device / f"{self.calibration_name}.yaml"
+
+        return target_file.exists()
+
+    def predict(self, x: X) -> Y:
+        """
+        Predict y given x
+        """
+        assert self.curve_type == "poly"
+        return sum([c * x**i for i, c in enumerate(reversed(self.curve_data_))])
+
+    def ipredict(self, y: Y, enforce_bounds=False) -> X:
+        """
+        predict x given y
+        """
+        assert self.curve_type == "poly"
+
+        # we have to solve the polynomial roots numerically, possibly with complex roots
+        from numpy import roots, zeros_like, real, imag
+        from pioreactor.utils.math_helpers import closest_point_to_domain
+
+        poly = self.curve_data_
+
+        coef_shift = zeros_like(poly, dtype=float)
+        coef_shift[-1] = y
+        solve_for_poly = poly - coef_shift
+        roots_ = roots(solve_for_poly).tolist()
+        plausible_sols_: list[X] = sorted([real(r) for r in roots_ if (abs(imag(r)) < 1e-10)])
+
+        if len(self.recorded_data["x"]) == 0:
+            from math import inf
+
+            min_X, max_X = -inf, inf
+        else:
+            min_X, max_X = min(self.recorded_data["x"]), max(self.recorded_data["x"])
+
+        if len(plausible_sols_) == 0:
+            raise exc.NoSolutionsFoundError("No solutions found")
+        elif len(plausible_sols_) == 1:
+            sol = plausible_sols_[0]
+
+            if not enforce_bounds:
+                return sol
+
+            # if we are here, we let the downstream user decide how to proceed
+            if min_X <= sol <= max_X:
+                return sol
+            elif sol < min_X:
+                raise exc.SolutionBelowDomainError(f"Solution below domain [{min_X}, {max_X}]")
+            else:
+                raise exc.SolutionAboveDomainError(f"Solution above domain [{min_X}, {max_X}]")
+
+        # what do we do with multiple solutions?
+        closest_sol = closest_point_to_domain(plausible_sols_, (min_X, max_X))
+        # closet sol can be inside or outside domain. If inside, happy path:
+        if (min_X <= closest_sol <= max_X) or not enforce_bounds:
+            return closest_sol
+
+        # if we are here, we let the downstream user decide how to proceed
+        elif closest_sol < min_X:
+            raise exc.SolutionBelowDomainError("Solution below domain")
+        else:
+            raise exc.SolutionAboveDomainError("Solution below domain")
 
 
-class PumpCalibration(Calibration):
-    pump: str
+class ODCalibration(CalibrationBase, kw_only=True, tag="od"):
+    ir_led_intensity: float
+    angle: t.Literal["45", "90", "135", "180"]
+    pd_channel: t.Literal["1", "2"]
+    x: str = "OD600"
+    y: str = "Voltage"
+
+
+class SimplePeristalticPumpCalibration(CalibrationBase, kw_only=True, tag="simple_peristaltic_pump"):
     hz: t.Annotated[float, Meta(ge=0)]
     dc: t.Annotated[float, Meta(ge=0)]
-    duration_: t.Annotated[float, Meta(ge=0)]
-    bias_: float
     voltage: float
-    volumes: t.Optional[list[float]] = None
-    durations: t.Optional[list[float]] = None
+    x: str = "Duration"
+    y: str = "Volume"
 
     def ml_to_duration(self, ml: pt.mL) -> pt.Seconds:
-        duration_ = self.duration_
-        bias_ = self.bias_
-        return t.cast(pt.Seconds, (ml - bias_) / duration_)
+        return t.cast(pt.Seconds, self.ipredict(ml))
 
     def duration_to_ml(self, duration: pt.Seconds) -> pt.mL:
-        duration_ = self.duration_
-        bias_ = self.bias_
-        return t.cast(pt.mL, duration * duration_ + bias_)
+        return t.cast(pt.mL, self.predict(duration))
 
 
-class MediaPumpCalibration(PumpCalibration, tag="media_pump"):
-    pass
+class SimpleStirringCalibration(CalibrationBase, kw_only=True, tag="simple_stirring"):
+    pwm_hz: t.Annotated[float, Meta(ge=0)]
+    voltage: float
+    x: str = "DC %"
+    y: str = "RPM"
 
 
-class AltMediaPumpCalibration(PumpCalibration, tag="alt_media_pump"):
-    pass
-
-
-class WastePumpCalibration(PumpCalibration, tag="waste_pump"):
-    pass
-
-
-AnyPumpCalibration = t.Union[
-    PumpCalibration, MediaPumpCalibration, AltMediaPumpCalibration, WastePumpCalibration
+AnyCalibration = t.Union[
+    SimpleStirringCalibration, SimplePeristalticPumpCalibration, ODCalibration, CalibrationBase
 ]
-
-
-class ODCalibration(Calibration):
-    angle: pt.PdAngle
-    maximum_od600: pt.OD
-    minimum_od600: pt.OD
-    minimum_voltage: pt.Voltage
-    maximum_voltage: pt.Voltage
-    curve_type: str
-    curve_data_: list[float]
-    voltages: list[pt.Voltage]
-    od600s: list[pt.OD]
-    ir_led_intensity: float
-    pd_channel: pt.PdChannel
-
-
-class OD45Calibration(ODCalibration, tag="od_45"):
-    pass
-
-
-class OD90Calibration(ODCalibration, tag="od_90"):
-    pass
-
-
-class OD135Calibration(ODCalibration, tag="od_135"):
-    pass
-
-
-class OD180Calibration(ODCalibration, tag="od_180"):
-    pass
-
-
-AnyODCalibration = t.Union[OD90Calibration, OD45Calibration, OD180Calibration, OD135Calibration]
 
 
 class Log(JSONPrintedStruct):

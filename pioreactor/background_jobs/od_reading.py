@@ -52,7 +52,6 @@ from typing import cast
 from typing import Optional
 
 import click
-from msgspec.json import decode
 
 import pioreactor.actions.led_intensity as led_utils
 from pioreactor import error_codes
@@ -63,13 +62,13 @@ from pioreactor import types as pt
 from pioreactor import whoami
 from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.background_jobs.base import LoggerMixin
+from pioreactor.calibrations import load_active_calibration
 from pioreactor.config import config
 from pioreactor.hardware import ADC_CHANNEL_FUNCS
 from pioreactor.pubsub import publish
 from pioreactor.pubsub import QOS
 from pioreactor.utils import argextrema
 from pioreactor.utils import local_intermittent_storage
-from pioreactor.utils import local_persistant_storage
 from pioreactor.utils import timing
 from pioreactor.utils.streaming_calculations import ExponentialMovingAverage
 from pioreactor.utils.streaming_calculations import ExponentialMovingStd
@@ -645,6 +644,7 @@ class CalibrationTransformer(LoggerMixin):
 
     def __init__(self) -> None:
         super().__init__()
+        self.models: dict[pt.PdChannel, Callable] = {}
 
     def __call__(self, batched_readings: PdChannelToVoltage) -> PdChannelToVoltage:
         return batched_readings
@@ -653,75 +653,40 @@ class CalibrationTransformer(LoggerMixin):
 class NullCalibrationTransformer(CalibrationTransformer):
     def __init__(self) -> None:
         super().__init__()
-
-    def hydate_models_from_disk(self, channel_angle_map: dict[pt.PdChannel, pt.PdAngle]) -> None:
         self.models: dict[pt.PdChannel, Callable] = {}
+
+    def hydate_models(self, calibration_data: structs.ODCalibration | None) -> None:
         return
-
-
-def closest_point_to_domain(P: list[float], D: tuple[float, float]) -> float:
-    # Unpack the domain D into its lower and upper bounds
-    a, b = D
-
-    # Initialize the closest point and minimum distance
-    closest_point = None
-    min_distance = float("inf")
-
-    for p in P:
-        if a <= p <= b:  # Check if p is within the domain D
-            return p  # If p is within D, it's the closest point with distance 0
-
-        # Calculate the distance to the closest boundary of D
-        distance = min(abs(p - a), abs(p - b))
-
-        # Update the closest point if this distance is smaller than the current min_distance
-        if distance < min_distance:
-            min_distance = distance
-            closest_point = p
-
-    assert closest_point is not None
-    return closest_point
 
 
 class CachedCalibrationTransformer(CalibrationTransformer):
     def __init__(self) -> None:
         super().__init__()
+        self.models: dict[pt.PdChannel, Callable] = {}
         self.has_logged_warning = False
 
-    def hydate_models_from_disk(self, channel_angle_map: dict[pt.PdChannel, pt.PdAngle]) -> None:
-        self.models: dict[pt.PdChannel, Callable] = {}
+    def hydate_models(self, calibration_data: structs.ODCalibration | None) -> None:
+        if calibration_data is None:
+            self.logger.debug("No calibration available for OD, skipping.")
+            return
 
-        with local_persistant_storage("current_od_calibration") as c:
-            for channel, angle in channel_angle_map.items():
-                if angle in c:
-                    calibration_data = decode(c[angle], type=structs.AnyODCalibration)  # type: ignore
-                    name = calibration_data.name
+        name = calibration_data.calibration_name
+        channel = calibration_data.pd_channel
 
-                    if config.get("od_reading.config", "ir_led_intensity") != "auto" and (
-                        calibration_data.ir_led_intensity
-                        != config.getfloat("od_reading.config", "ir_led_intensity")
-                    ):
-                        msg = f"The calibration `{name}` was calibrated with a different IR LED intensity ({calibration_data.ir_led_intensity} vs current: {config.getfloat('od_reading.config', 'ir_led_intensity')}). Either re-calibrate, turn off calibration, or change the ir_led_intensity in the config.ini."
-                        self.logger.error(msg)
-                        raise exc.CalibrationError(msg)
-                    # confirm that PD channel is the same as when calibration was performed
-                    elif calibration_data.pd_channel != channel:
-                        msg = f"The calibration `{name}` was calibrated with a different PD channel ({calibration_data.pd_channel} vs current: {channel})."
-                        self.logger.error(msg)
-                        raise exc.CalibrationError(msg)
+        if config.get("od_reading.config", "ir_led_intensity") != "auto" and (
+            calibration_data.ir_led_intensity != config.getfloat("od_reading.config", "ir_led_intensity")
+        ):
+            msg = f"The calibration `{name}` was calibrated with a different IR LED intensity ({calibration_data.ir_led_intensity} vs current: {config.getfloat('od_reading.config', 'ir_led_intensity')}). Either re-calibrate, turn off calibration, or change the ir_led_intensity in the config.ini."
+            self.logger.error(msg)
+            raise exc.CalibrationError(msg)
 
-                    self.models[channel] = self._hydrate_model(calibration_data)
-                    self.logger.info(f"Using OD calibration `{name}` for channel {channel}.")
-                    self.logger.debug(
-                        f"Using OD calibration `{name}` for channel {channel}, {calibration_data.curve_type=}, {calibration_data.curve_data_=}"
-                    )
+        self.models[channel] = self._hydrate_model(calibration_data)
+        self.logger.info(f"Using OD calibration `{name}` for channel {channel}.")
+        self.logger.debug(
+            f"Using OD calibration `{name}` for channel {channel}, {calibration_data.curve_type=}, {calibration_data.curve_data_=}"
+        )
 
-                else:
-                    self.logger.debug(
-                        f"No calibration available for channel {channel}, angle {angle}, skipping."
-                    )
-
-    def _hydrate_model(self, calibration_data: structs.ODCalibration) -> Callable[[float], float]:
+    def _hydrate_model(self, calibration_data: structs.ODCalibration) -> Callable[[pt.Voltage], pt.OD]:
         if calibration_data.curve_type == "poly":
             """
             Finds the smallest root in the range [minOD, maxOD] calibrated against.
@@ -730,53 +695,36 @@ class CachedCalibrationTransformer(CalibrationTransformer):
             this procedure effectively ignores it.
 
             """
-            from numpy import roots, zeros_like, real, imag
 
             def calibration(observed_voltage: pt.Voltage) -> pt.OD:
-                poly = calibration_data.curve_data_
-                min_OD, max_OD = calibration_data.minimum_od600, calibration_data.maximum_od600
-                min_voltage, max_voltage = (
-                    calibration_data.minimum_voltage,
-                    calibration_data.maximum_voltage,
+                min_OD, max_OD = min(calibration_data.recorded_data["y"]), max(
+                    calibration_data.recorded_data["y"]
+                )
+                min_voltage, max_voltage = min(calibration_data.recorded_data["x"]), max(
+                    calibration_data.recorded_data["x"]
                 )
 
-                coef_shift = zeros_like(poly)
-                coef_shift[-1] = observed_voltage
-                solve_for_poly = poly - coef_shift
-                roots_ = roots(solve_for_poly)
-                plausible_ODs_ = sorted([real(r) for r in roots_ if (imag(r) == 0)])
-
-                if len(plausible_ODs_) == 0:
+                try:
+                    return calibration_data.ipredict(observed_voltage, enforce_bounds=True)
+                except exc.NoSolutionsFoundError:
                     if observed_voltage <= min_voltage:
                         return min_OD
                     elif observed_voltage > max_voltage:
                         return max_OD
-
-                # more than 0 possibilities...
-                # find the closest root to our OD domain (or in the OD domain)
-                ideal_OD = float(closest_point_to_domain(plausible_ODs_, (min_OD, max_OD)))
-
-                if ideal_OD < min_OD:
-                    # voltage less than the blank recorded during the calibration and the calibration curve doesn't have solutions (ex even-deg poly)
-                    # this isn't great, as there is nil noise in the signal.
-
-                    if not self.has_logged_warning:
-                        self.logger.warning(
-                            f"Signal outside suggested calibration range. Trimming signal. Calibrated for OD=[{min_OD:0.3g}, {max_OD:0.3g}], V=[{min_voltage:0.3g}, {max_voltage:0.3g}]. Observed {observed_voltage:0.3f}V."
-                        )
-                        self.has_logged_warning = True
+                    else:
+                        raise exc.NoSolutionsFoundError
+                except exc.SolutionBelowDomainError:
+                    self.logger.warning(
+                        f"Signal outside suggested calibration range. Trimming signal. Calibrated for OD=[{min_OD:0.3g}, {max_OD:0.3g}], V=[{min_voltage:0.3g}, {max_voltage:0.3g}]. Observed {observed_voltage:0.3f}V."
+                    )
+                    self.has_logged_warning = True
                     return min_OD
-
-                elif ideal_OD > max_OD:
-                    if not self.has_logged_warning:
-                        self.logger.warning(
-                            f"Signal outside suggested calibration range. Trimming signal. Calibrated for OD=[{min_OD:0.3g}, {max_OD:0.3g}], V=[{min_voltage:0.3g}, {max_voltage:0.3g}]. Observed {observed_voltage:0.3f}V."
-                        )
-                        self.has_logged_warning = True
+                except exc.SolutionAboveDomainError:
+                    self.logger.warning(
+                        f"Signal outside suggested calibration range. Trimming signal. Calibrated for OD=[{min_OD:0.3g}, {max_OD:0.3g}], V=[{min_voltage:0.3g}, {max_voltage:0.3g}]. Observed {observed_voltage:0.3f}V."
+                    )
+                    self.has_logged_warning = True
                     return max_OD
-                else:
-                    # happy path
-                    return ideal_OD
 
         else:
 
@@ -802,8 +750,6 @@ class ODReader(BackgroundJob):
     adc_reader: ADCReader
     ir_led_reference_tracker: IrLedReferenceTracker
     calibration_transformer:
-    unit:
-    experie
 
 
     Examples
@@ -899,8 +845,6 @@ class ODReader(BackgroundJob):
         self.adc_reader.add_external_logger(self.logger)
         self.calibration_transformer.add_external_logger(self.logger)
         self.ir_led_reference_tracker.add_external_logger(self.logger)
-
-        self.calibration_transformer.hydate_models_from_disk(channel_angle_map)
 
         self.channel_angle_map = channel_angle_map
         self.interval = interval
@@ -1152,7 +1096,7 @@ class ODReader(BackgroundJob):
 
         self.ods = od_readings
         for channel, _ in self.channel_angle_map.items():
-            setattr(self, f"od{channel}", od_readings.ods[channel])
+            setattr(self, f"od{channel}", od_readings.ods[channel])  # od1 or od2
 
         # Post-read callbacks
         for post_function in self.post_read_callbacks:
@@ -1343,11 +1287,11 @@ def create_channel_angle_map(
 def start_od_reading(
     od_angle_channel1: Optional[pt.PdAngleOrREF] = None,
     od_angle_channel2: Optional[pt.PdAngleOrREF] = None,
-    interval: Optional[float] = 1 / config.getfloat("od_reading.config", "samples_per_second"),
+    interval: Optional[float] = 1 / config.getfloat("od_reading.config", "samples_per_second", fallback=0.2),
     fake_data: bool = False,
     unit: Optional[str] = None,
     experiment: Optional[str] = None,
-    use_calibration: bool = config.getboolean("od_reading.config", "use_calibration"),
+    calibration: bool | structs.ODCalibration | None = None,
 ) -> ODReader:
     """
     This function prepares ODReader and other necessary transformation objects. It's a higher level API than using ODReader.
@@ -1387,8 +1331,13 @@ def start_od_reading(
         ir_led_reference_tracker = NullIrLedReferenceTracker()  # type: ignore
 
     # use an OD calibration?
-    if use_calibration:
+    if calibration is True:
+        calibration = load_active_calibration("od")
         calibration_transformer = CachedCalibrationTransformer()
+        calibration_transformer.hydate_models(calibration)
+    elif isinstance(calibration, structs.ODCalibration):
+        calibration_transformer = CachedCalibrationTransformer()
+        calibration_transformer.hydate_models(calibration)
     else:
         calibration_transformer = NullCalibrationTransformer()  # type: ignore
 
@@ -1434,9 +1383,13 @@ def click_od_reading(
     """
     Start the optical density reading job
     """
+
+    possible_calibration = load_active_calibration("od")
+
     od = start_od_reading(
         od_angle_channel1,
         od_angle_channel2,
         fake_data=fake_data or whoami.is_testing_env(),
+        calibration=possible_calibration,
     )
     od.block_until_disconnected()

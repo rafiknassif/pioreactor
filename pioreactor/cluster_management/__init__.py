@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from time import sleep
 
@@ -33,11 +34,6 @@ def get_workers_in_inventory() -> tuple[str, ...]:
 def get_active_workers_in_inventory() -> tuple[str, ...]:
     result = get_from_leader("/api/workers")
     return tuple(worker["pioreactor_unit"] for worker in result.json() if bool(worker["is_active"]))
-
-
-def get_workers_in_experiment(experiment: str) -> tuple[str, ...]:
-    result = get_from_leader(f"/api/experiments/{experiment}/workers")
-    return tuple(worker["pioreactor_unit"] for worker in result.json())
 
 
 def get_active_workers_in_experiment(experiment: str) -> tuple[str, ...]:
@@ -80,7 +76,7 @@ def add_worker(hostname: str, password: str, version: str, model: str) -> None:
                     logger.error(
                         f"`{hostname}` not found on network after {round(elapsed())} seconds. Check that you provided the right i) the name is correct, ii) worker is powered on, iii) any WiFi credentials to the network are correct."
                     )
-                    raise click.Abort()
+                    sys.exit(1)
                 sleep(sleep_time)
 
         res = subprocess.run(

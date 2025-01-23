@@ -307,11 +307,11 @@ class GrowthRateCalculator(BackgroundJob):
             )
             self.logger.info("Published request to restore sampling interval to samples_per_second.")
 
-        with local_persistant_storage("od_normalization_mean") as cache:
+        with local_persistent_storage("od_normalization_mean") as cache:
             if self.experiment not in cache:
                 cache[self.experiment] = dumps(means)
 
-        with local_persistant_storage("od_normalization_variance") as cache:
+        with local_persistent_storage("od_normalization_variance") as cache:
             if self.experiment not in cache:
                 cache[self.experiment] = dumps(variances)
 
@@ -353,7 +353,7 @@ class GrowthRateCalculator(BackgroundJob):
         )
 
     def get_od_blank_from_cache(self) -> dict[pt.PdChannel, float]:
-        with local_persistant_storage("od_blank") as cache:
+        with local_persistent_storage("od_blank") as cache:
             result = cache.get(self.experiment)
 
         if result is not None:
@@ -363,13 +363,13 @@ class GrowthRateCalculator(BackgroundJob):
             return defaultdict(lambda: 0.0)
 
     def get_growth_rate_from_cache(self) -> float:
-        with local_persistant_storage("growth_rate") as cache:
-            return cache.get(self.experiment, 0.0)     
+        with local_persistent_storage("growth_rate") as cache:
+            return cache.get(self.experiment, 0.0)
 
     def get_filtered_od_from_cache_or_computed(self) -> float:
         from statistics import mean
 
-        with local_persistant_storage("od_filtered") as cache:
+        with local_persistent_storage("od_filtered") as cache:
             if self.experiment in cache:
                 return cache[self.experiment]
 
@@ -391,7 +391,7 @@ class GrowthRateCalculator(BackgroundJob):
 
     def get_od_normalization_from_cache(self) -> dict[pt.PdChannel, float]:
         # we check if we've computed mean stats
-        with local_persistant_storage("od_normalization_mean") as cache:
+        with local_persistent_storage("od_normalization_mean") as cache:
             result = cache.get(self.experiment, None)
             if result is not None:
                 return loads(result)
@@ -403,7 +403,7 @@ class GrowthRateCalculator(BackgroundJob):
 
     def get_od_variances_from_cache(self) -> dict[pt.PdChannel, float]:
         # we check if we've computed variance stats
-        with local_persistant_storage("od_normalization_variance") as cache:
+        with local_persistent_storage("od_normalization_variance") as cache:
             result = cache.get(self.experiment, None)
             if result:
                 return loads(result)
@@ -483,10 +483,10 @@ class GrowthRateCalculator(BackgroundJob):
             return self.growth_rate, self.od_filtered, self.kalman_filter_outputs, self.absolute_growth_rate, self.density
 
         # save to cache
-        with local_persistant_storage("growth_rate") as cache:
+        with local_persistent_storage("growth_rate") as cache:
             cache[self.experiment] = self.growth_rate.growth_rate
 
-        with local_persistant_storage("od_filtered") as cache:
+        with local_persistent_storage("od_filtered") as cache:
             cache[self.experiment] = self.od_filtered.od_filtered
 
         return self.growth_rate, self.od_filtered, self.kalman_filter_outputs, self.absolute_growth_rate, self.density
@@ -640,11 +640,11 @@ def click_clear_cache() -> None:
     unit = whoami.get_unit_name()
     experiment = whoami.get_assigned_experiment_name(unit)
 
-    with local_persistant_storage("od_filtered") as cache:
+    with local_persistent_storage("od_filtered") as cache:
         cache.pop(experiment)
-    with local_persistant_storage("growth_rate") as cache:
+    with local_persistent_storage("growth_rate") as cache:
         cache.pop(experiment)
-    with local_persistant_storage("od_normalization_mean") as cache:
+    with local_persistent_storage("od_normalization_mean") as cache:
         cache.pop(experiment)
-    with local_persistant_storage("od_normalization_variance") as cache:
+    with local_persistent_storage("od_normalization_variance") as cache:
         cache.pop(experiment)

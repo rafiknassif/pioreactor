@@ -6,21 +6,20 @@ import time
 
 import numpy as np
 import pytest
-from msgspec.json import encode
 
 from pioreactor import exc
 from pioreactor import structs
 from pioreactor.background_jobs.od_reading import ADCReader
 from pioreactor.background_jobs.od_reading import CachedCalibrationTransformer
-from pioreactor.background_jobs.od_reading import closest_point_to_domain
 from pioreactor.background_jobs.od_reading import NullCalibrationTransformer
 from pioreactor.background_jobs.od_reading import ODReader
 from pioreactor.background_jobs.od_reading import PhotodiodeIrLedReferenceTrackerStaticInit
 from pioreactor.background_jobs.od_reading import start_od_reading
+from pioreactor.calibrations import load_active_calibration
 from pioreactor.config import config
 from pioreactor.config import temporary_config_change
 from pioreactor.pubsub import collect_all_logs_of_level
-from pioreactor.utils import local_persistant_storage
+from pioreactor.utils import local_persistent_storage
 from pioreactor.utils.timing import current_utc_datetime
 from pioreactor.whoami import get_unit_name
 
@@ -394,7 +393,7 @@ def test_sin_regression_all_negative() -> None:
 
 
 def test_simple_API() -> None:
-    od_job = start_od_reading("90", "REF", interval=100_000, fake_data=True, use_calibration=False)
+    od_job = start_od_reading("90", "REF", interval=100_000, fake_data=True)
 
     for led_int in range(5, 70, 15):
         time.sleep(2)
@@ -414,7 +413,6 @@ def test_ability_to_be_iterated() -> None:
         interval=1.0,
         fake_data=True,
         experiment="test_ability_to_be_iterated",
-        use_calibration=False,
     )
     results = []
 
@@ -436,7 +434,7 @@ def test_add_pre_read_callback() -> None:
 
     ODReader.add_pre_read_callback(cb)
 
-    od = start_od_reading("45", "REF", interval=1, fake_data=True, use_calibration=False)
+    od = start_od_reading("45", "REF", interval=1, fake_data=True)
     pause()
     pause()
     pause()
@@ -464,7 +462,6 @@ def test_add_post_read_callback() -> None:
             fake_data=True,
             experiment="test_add_post_read_callback",
             unit="test",
-            use_calibration=False,
         )
         pause(25)
         od.clean_up()
@@ -606,44 +603,40 @@ def test_determine_best_ir_led_intensity_values() -> None:
 
 
 def test_calibration_not_requested() -> None:
-    with start_od_reading("90", "REF", interval=None, fake_data=True, use_calibration=False) as od:
+    with start_od_reading("90", "REF", interval=None, fake_data=True) as od:
         assert isinstance(od.calibration_transformer, NullCalibrationTransformer)
         assert od.calibration_transformer({"2": 0.1}) == {"2": 0.1}
         assert od.calibration_transformer({"2": 0.5, "1": 0.0}) == {"2": 0.5, "1": 0.0}
 
 
 def test_calibration_not_present() -> None:
-    with local_persistant_storage("current_od_calibration") as c:
-        if "90" in c:
-            del c["90"]
+    with local_persistent_storage("active_calibrations") as c:
+        c.pop("od")
 
-    with start_od_reading("90", "REF", interval=None, fake_data=True, use_calibration=True) as od:
-        assert isinstance(od.calibration_transformer, CachedCalibrationTransformer)
-        assert len(od.calibration_transformer.models) == 0
+    cal = load_active_calibration("od")
+    assert cal is None
+
+    with start_od_reading("90", "REF", interval=None, fake_data=True, calibration=cal) as od:
+        assert isinstance(od.calibration_transformer, NullCalibrationTransformer)
+        assert len(od.calibration_transformer.models) == 0, od.calibration_transformer.models
 
 
 def test_calibration_simple_linear_calibration_positive_slope() -> None:
     experiment = "test_calibration_simple_linear_calibration_positive_slope"
 
-    with local_persistant_storage("current_od_calibration") as c:
-        c["90"] = encode(
-            structs.OD90Calibration(
-                created_at=current_utc_datetime(),
-                curve_type="poly",
-                curve_data_=[2.0, 0.0],
-                name="linear",
-                maximum_od600=2.0,
-                minimum_od600=0.0,
-                ir_led_intensity=90.0,
-                angle="90",
-                minimum_voltage=0.0,
-                maximum_voltage=1.0,
-                voltages=[],
-                od600s=[],
-                pd_channel="2",
-                pioreactor_unit=get_unit_name(),
-            )
-        )
+    cal = structs.ODCalibration(
+        created_at=current_utc_datetime(),
+        curve_type="poly",
+        curve_data_=[2.0, 0.0],
+        calibration_name="linear",
+        ir_led_intensity=90.0,
+        angle="90",
+        recorded_data={"x": [0, 2], "y": [0, 1]},
+        pd_channel="2",
+        calibrated_on_pioreactor_unit=get_unit_name(),
+    )
+
+    cal.set_as_active_calibration_for_device("od")
 
     with start_od_reading(
         "REF",
@@ -652,7 +645,7 @@ def test_calibration_simple_linear_calibration_positive_slope() -> None:
         fake_data=True,
         experiment=experiment,
         unit=get_unit_name(),
-        use_calibration=True,
+        calibration=cal,
     ) as od:
         assert isinstance(od.calibration_transformer, CachedCalibrationTransformer)
 
@@ -665,45 +658,42 @@ def test_calibration_simple_linear_calibration_positive_slope() -> None:
         pause()
         pause()
         with collect_all_logs_of_level("warning", unit=get_unit_name(), experiment="+") as bucket:
+            pause()
+            pause()
+            pause()
             voltage = 10.0
-            pause()
-            pause()
-            pause()
-            assert od.calibration_transformer.models["2"](voltage) == 2.0
+            assert od.calibration_transformer.models["2"](voltage) == 1.0
             pause()
             pause()
             pause()
             assert "Signal outside" in bucket[0]["message"]
 
-    with local_persistant_storage("current_od_calibration") as c:
-        del c["90"]
-
 
 def test_calibration_simple_linear_calibration_negative_slope() -> None:
     experiment = "test_calibration_simple_linear_calibration_negative_slope"
-    maximum_voltage = 2.0
-    with local_persistant_storage("current_od_calibration") as c:
-        c["90"] = encode(
-            structs.OD90Calibration(
-                created_at=current_utc_datetime(),
-                curve_type="poly",
-                curve_data_=[-0.1, 2],
-                name="linear",
-                maximum_od600=20.0,
-                minimum_od600=0.0,
-                ir_led_intensity=90.0,
-                angle="90",
-                minimum_voltage=0.0,
-                maximum_voltage=maximum_voltage,
-                voltages=[],
-                od600s=[],
-                pd_channel="2",
-                pioreactor_unit=get_unit_name(),
-            )
-        )
+    maximum_voltage = 5.0
+    cal = structs.ODCalibration(
+        created_at=current_utc_datetime(),
+        curve_type="poly",
+        curve_data_=[-0.1, 2],
+        calibration_name="linear",
+        ir_led_intensity=90.0,
+        angle="90",
+        recorded_data={"y": [0, maximum_voltage], "x": [0, 20]},
+        pd_channel="2",
+        calibrated_on_pioreactor_unit=get_unit_name(),
+    )
+
+    cal.set_as_active_calibration_for_device("od")
 
     with start_od_reading(
-        "REF", "90", interval=None, fake_data=True, experiment=experiment, unit=get_unit_name()
+        "REF",
+        "90",
+        interval=None,
+        fake_data=True,
+        experiment=experiment,
+        unit=get_unit_name(),
+        calibration=cal,
     ) as od:
         assert isinstance(od.calibration_transformer, CachedCalibrationTransformer)
 
@@ -723,41 +713,36 @@ def test_calibration_simple_linear_calibration_negative_slope() -> None:
             pause()
             assert "suggested" in bucket[0]["message"]
 
-    with local_persistant_storage("current_od_calibration") as c:
-        del c["90"]
-
 
 def test_calibration_simple_quadratic_calibration() -> None:
     experiment = "test_calibration_simple_quadratic_calibration"
 
-    with local_persistant_storage("current_od_calibration") as c:
-        c["90"] = encode(
-            structs.OD90Calibration(
-                created_at=current_utc_datetime(),
-                curve_type="poly",
-                curve_data_=[1.0, 0, -0.1],
-                name="quad_test",
-                maximum_od600=2.0,
-                minimum_od600=0.0,
-                ir_led_intensity=90.0,
-                angle="90",
-                minimum_voltage=0.0,
-                maximum_voltage=1.0,
-                voltages=[],
-                od600s=[],
-                pd_channel="2",
-                pioreactor_unit=get_unit_name(),
-            )
-        )
+    cal = structs.ODCalibration(
+        created_at=current_utc_datetime(),
+        curve_type="poly",
+        curve_data_=[1.0, 0, -0.1],
+        calibration_name="quad_test",
+        ir_led_intensity=90.0,
+        angle="90",
+        recorded_data={"x": [0, 1], "y": [0, 2]},
+        pd_channel="2",
+        calibrated_on_pioreactor_unit=get_unit_name(),
+    )
+
+    cal.set_as_active_calibration_for_device("od")
 
     with start_od_reading(
-        "REF", "90", interval=None, fake_data=True, experiment=experiment, unit=get_unit_name()
+        "REF",
+        "90",
+        interval=None,
+        fake_data=True,
+        experiment=experiment,
+        unit=get_unit_name(),
+        calibration=cal,
     ) as od:
         assert isinstance(od.calibration_transformer, CachedCalibrationTransformer)
         x = 0.5
         assert abs(od.calibration_transformer.models["2"](x) - np.sqrt(3 / 5)) < 0.001
-    with local_persistant_storage("current_od_calibration") as c:
-        del c["90"]
 
 
 def test_calibration_multi_modal() -> None:
@@ -765,149 +750,95 @@ def test_calibration_multi_modal() -> None:
     # note: not a realistic calibration curve, using only because it's unimodal
     poly = [0.2983, -0.585, 0.146, 0.261, 0.0]  # unimodal, peak near ~(0.74, 0.120)
 
-    with local_persistant_storage("current_od_calibration") as c:
-        c["90"] = encode(
-            structs.OD90Calibration(
-                created_at=current_utc_datetime(),
-                curve_type="poly",
-                curve_data_=poly,
-                name="multi_test",
-                maximum_od600=2.0,
-                minimum_od600=0.0,
-                ir_led_intensity=90.0,
-                angle="90",
-                minimum_voltage=0.0,
-                maximum_voltage=1.0,
-                voltages=[],
-                od600s=[],
-                pd_channel="2",
-                pioreactor_unit=get_unit_name(),
-            )
-        )
+    cal = structs.ODCalibration(
+        created_at=current_utc_datetime(),
+        curve_type="poly",
+        curve_data_=poly,
+        calibration_name="multi_test",
+        ir_led_intensity=90.0,
+        angle="90",
+        recorded_data={"x": [0, 1], "y": [0, 2]},
+        pd_channel="2",
+        calibrated_on_pioreactor_unit=get_unit_name(),
+    )
 
-    with start_od_reading("REF", "90", interval=None, fake_data=True, experiment=experiment) as od:
+    cal.set_as_active_calibration_for_device("od")
+
+    with start_od_reading(
+        "REF", "90", interval=None, fake_data=True, experiment=experiment, calibration=cal
+    ) as od:
         assert isinstance(od.calibration_transformer, CachedCalibrationTransformer)
         for i in range(0, 1000):
             voltage = np.polyval(poly, i / 1000)
             print(voltage, od.calibration_transformer.models["2"](voltage))
 
-    with local_persistant_storage("current_od_calibration") as c:
-        del c["90"]
-
 
 def test_calibration_errors_when_ir_led_differs() -> None:
     experiment = "test_calibration_errors_when_ir_led_differs"
 
-    with temporary_config_change(config, "od_reading.config", "ir_led_intensity", "90"):
-        with local_persistant_storage("current_od_calibration") as c:
-            c["90"] = encode(
-                structs.OD90Calibration(
-                    created_at=current_utc_datetime(),
-                    curve_type="poly",
-                    curve_data_=[1.0, 0, -0.1],
-                    name="quad_test",
-                    maximum_od600=2.0,
-                    minimum_od600=0.0,
-                    ir_led_intensity=50.0,
-                    angle="90",
-                    minimum_voltage=0.0,
-                    maximum_voltage=1.0,
-                    voltages=[],
-                    od600s=[],
-                    pd_channel="2",
-                    pioreactor_unit=get_unit_name(),
-                )
-            )
-
-        with pytest.raises(exc.CalibrationError) as error:
-            with start_od_reading("REF", "90", interval=1, fake_data=True, experiment=experiment):
-                pass
-        assert "LED intensity" in str(error.value)
-
-        with local_persistant_storage("current_od_calibration") as c:
-            del c["90"]
-
-
-def test_calibration_errors_when_pd_channel_differs() -> None:
-    experiment = "test_calibration_errors_when_pd_channel_differs"
-
-    with local_persistant_storage("current_od_calibration") as c:
-        c["90"] = encode(
-            structs.OD90Calibration(
-                created_at=current_utc_datetime(),
-                curve_type="poly",
-                curve_data_=[1.0, 0, -0.1],
-                name="quad_test",
-                maximum_od600=2.0,
-                minimum_od600=0.0,
-                ir_led_intensity=90.0,
-                angle="90",
-                minimum_voltage=0.0,
-                maximum_voltage=1.0,
-                voltages=[],
-                od600s=[],
-                pd_channel="2",
-                pioreactor_unit=get_unit_name(),
-            )
+    with temporary_config_change(config, "od_reading.config", "ir_led_intensity", "100"):
+        cal = structs.ODCalibration(
+            created_at=current_utc_datetime(),
+            curve_type="poly",
+            curve_data_=[1.0, 0, -0.1],
+            calibration_name="quad_test",
+            ir_led_intensity=50.0,
+            angle="90",
+            recorded_data={"x": [0, 1], "y": [0, 2]},
+            pd_channel="2",
+            calibrated_on_pioreactor_unit=get_unit_name(),
         )
 
-    with pytest.raises(exc.CalibrationError) as error:
-        with start_od_reading("90", "REF", interval=1, fake_data=True, experiment=experiment):
-            pass
-
-    assert "channel" in str(error.value)
-
-    with local_persistant_storage("current_od_calibration") as c:
-        del c["90"]
+        cal.set_as_active_calibration_for_device("od")
+        with pytest.raises(exc.CalibrationError) as error:
+            with start_od_reading(
+                "REF", "90", interval=1, fake_data=True, experiment=experiment, calibration=cal
+            ):
+                pass
+        assert "LED intensity" in str(error.value)
 
 
 def test_calibration_with_irl_data1() -> None:
     MAX_OD = 1.131
-    with local_persistant_storage("current_od_calibration") as c:
-        c["90"] = encode(
-            structs.OD90Calibration(
-                created_at=current_utc_datetime(),
-                curve_type="poly",
-                curve_data_=[
-                    0.13015369282405273,
-                    -0.49893265063642067,
-                    0.6953041334198933,
-                    0.45652927538964966,
-                    0.0024870149666305712,
-                ],
-                name="quad_test",
-                maximum_od600=MAX_OD,
-                minimum_od600=0.0,
-                ir_led_intensity=70.0,
-                angle="90",
-                minimum_voltage=0.001996680972202709,
-                maximum_voltage=0.8995772568778957,
-                voltages=[
-                    0.030373011520747333,
-                    0.0678711757682291,
-                    0.12972798681328354,
-                    0.2663836655898364,
-                    0.4248479170421593,
-                    0.5921451667865667,
-                    0.8995772568778957,
-                    0.001996680972202709,
-                ],
-                od600s=[0.042, 0.108, 0.237, 0.392, 0.585, 0.781, 1.131, 0.0],
-                pd_channel="2",
-                pioreactor_unit=get_unit_name(),
-            )
-        )
+    cal = structs.ODCalibration(
+        created_at=current_utc_datetime(),
+        curve_type="poly",
+        curve_data_=[
+            0.13015369282405273,
+            -0.49893265063642067,
+            0.6953041334198933,
+            0.45652927538964966,
+            0.0024870149666305712,
+        ],
+        calibration_name="quad_test",
+        ir_led_intensity=70.0,
+        angle="90",
+        recorded_data={
+            "x": [
+                0.030373011520747333,
+                0.0678711757682291,
+                0.12972798681328354,
+                0.2663836655898364,
+                0.4248479170421593,
+                0.5921451667865667,
+                0.8995772568778957,
+                0.001996680972202709,
+            ],
+            "y": [0.042, 0.108, 0.237, 0.392, 0.585, 0.781, MAX_OD, 0.0],
+        },
+        pd_channel="2",
+        calibrated_on_pioreactor_unit=get_unit_name(),
+    )
+
+    cal.set_as_active_calibration_for_device("od")
 
     cc = CachedCalibrationTransformer()
-    cc.hydate_models_from_disk({"2": "90"})
+    cc.hydate_models(cal)
     assert cc({"2": 0.001})["2"] == 0
     assert cc({"2": 0.002})["2"] == 0
     assert abs(cc({"2": 0.004})["2"] - 0.0032975807375385234) < 1e-5
     assert abs(cc({"2": 0.020})["2"] - 0.03639585015289039) < 1e-5
     assert cc({"2": 1.0})["2"] == MAX_OD
-
-    with local_persistant_storage("current_od_calibration") as c:
-        del c["90"]
 
 
 def test_PhotodiodeIrLedReferenceTrackerStaticInit() -> None:
@@ -964,40 +895,34 @@ def test_calibration_data_from_user1() -> None:
     experiment = "test_calibration_data_from_user1"
     poly = [2.583, -3.447, 1.531, 0.223, 0.017]  # email correspondence
 
-    with local_persistant_storage("current_od_calibration") as c:
-        c["90"] = encode(
-            structs.OD90Calibration(
-                created_at=current_utc_datetime(),
-                curve_type="poly",
-                curve_data_=poly,
-                name="multi_test",
-                maximum_od600=1.0,
-                minimum_od600=0.01,
-                ir_led_intensity=90.0,
-                angle="90",
-                minimum_voltage=0.018,
-                maximum_voltage=1.0,
-                voltages=[],
-                od600s=[],
-                pd_channel="2",
-                pioreactor_unit=get_unit_name(),
-            )
-        )
+    calibration = structs.ODCalibration(
+        created_at=current_utc_datetime(),
+        curve_type="poly",
+        curve_data_=poly,
+        calibration_name="multi_test",
+        ir_led_intensity=90.0,
+        angle="90",
+        recorded_data={"x": [0, 10], "y": [0, 10]},
+        pd_channel="2",
+        calibrated_on_pioreactor_unit=get_unit_name(),
+    )
 
-    with start_od_reading("REF", "90", interval=None, fake_data=True, experiment=experiment) as od:
+    calibration.set_as_active_calibration_for_device("od")
+
+    with start_od_reading(
+        "REF", "90", interval=None, fake_data=True, experiment=experiment, calibration=calibration
+    ) as od:
         assert isinstance(od.calibration_transformer, CachedCalibrationTransformer)
         infer = od.calibration_transformer.models["2"]
 
         # try varying voltage up over and across the lower bound, and assert we are always non-decreasing.
         od_0 = 0
         for i in range(10):
-            voltage = i / 5 * 0.018
+            voltage = i / 5 + 0.1
+
             od_1 = infer(voltage)
             assert od_0 <= od_1
             od_0 = od_1
-
-    with local_persistant_storage("current_od_calibration") as c:
-        del c["90"]
 
 
 def test_calibration_data_from_user2() -> None:
@@ -1010,27 +935,23 @@ def test_calibration_data_from_user2() -> None:
         -0.01770485,
     ]  # looks like the degree 4 above: https://chat.openai.com/share/2ef30900-22ef-4a7f-8f34-14a88ffc65a8
 
-    with local_persistant_storage("current_od_calibration") as c:
-        c["90"] = encode(
-            structs.OD90Calibration(
-                created_at=current_utc_datetime(),
-                curve_type="poly",
-                curve_data_=poly,
-                name="multi_test",
-                maximum_od600=1.0,
-                minimum_od600=0.01,
-                ir_led_intensity=90.0,
-                angle="90",
-                minimum_voltage=0.018,
-                maximum_voltage=1.0,
-                voltages=[],
-                od600s=[],
-                pd_channel="2",
-                pioreactor_unit=get_unit_name(),
-            )
-        )
+    cal = structs.ODCalibration(
+        created_at=current_utc_datetime(),
+        curve_type="poly",
+        curve_data_=poly,
+        calibration_name="multi_test",
+        ir_led_intensity=90.0,
+        angle="90",
+        recorded_data={"x": [0, 10], "y": [0, 10]},
+        pd_channel="2",
+        calibrated_on_pioreactor_unit=get_unit_name(),
+    )
 
-    with start_od_reading("REF", "90", interval=None, fake_data=True, experiment=experiment) as od:
+    cal.set_as_active_calibration_for_device("od")
+
+    with start_od_reading(
+        "REF", "90", interval=None, fake_data=True, experiment=experiment, calibration=cal
+    ) as od:
         assert isinstance(od.calibration_transformer, CachedCalibrationTransformer)
         infer = od.calibration_transformer.models["2"]
 
@@ -1041,9 +962,6 @@ def test_calibration_data_from_user2() -> None:
             od_1 = infer(voltage)
             assert od_0 <= od_1
             od_0 = od_1
-
-    with local_persistant_storage("current_od_calibration") as c:
-        del c["90"]
 
 
 def test_auto_ir_led_intensit_REF_and_90() -> None:
@@ -1087,12 +1005,8 @@ def test_at_least_one_signal_channel() -> None:
 
 
 def test_CachedCalibrationTransformer_with_real_calibration() -> None:
-    calibration = structs.OD90Calibration(
+    calibration = structs.ODCalibration(
         angle="90",
-        maximum_od600=1.0,
-        minimum_od600=0.0,
-        minimum_voltage=0.044709852782465254,
-        maximum_voltage=1.359234153183015,
         curve_type="poly",
         curve_data_=[
             -0.9876751958847302,
@@ -1101,128 +1015,140 @@ def test_CachedCalibrationTransformer_with_real_calibration() -> None:
             0.8385902257553322,
             0.0445071255201746,
         ],
-        voltages=[
-            1.359234153183015,
-            1.1302469550069834,
-            0.9620188870414657,
-            0.8276740491499182,
-            0.7190293946984384,
-            0.7476589503369395,
-            0.566173065500996,
-            0.46932081671790027,
-            0.40529520650943107,
-            0.35571051870062176,
-            0.3671813602478582,
-            0.30365395611828694,
-            0.2546057746249075,
-            0.22793433386962852,
-            0.20673156637999296,
-            0.21349869357483414,
-            0.182990681059356,
-            0.15688343308939462,
-            0.1576635057554899,
-            0.12760694773293027,
-            0.1334217593444793,
-            0.12112005296098335,
-            0.10527636587260703,
-            0.10005326421654448,
-            0.08968165025432195,
-            0.0934433078631241,
-            0.08568480676160387,
-            0.07354768447704799,
-            0.07012049853534189,
-            0.06976807020449396,
-            0.0692776692431696,
-            0.06519934195388995,
-            0.05689993752281371,
-            0.06139548846791462,
-            0.05434995401134063,
-            0.058377357520436435,
-            0.05744855604656168,
-            0.051622250927144994,
-            0.04809794996045024,
-            0.044709852782465254,
-        ],
-        od600s=[
-            1.0,
-            0.8333333333333334,
-            0.7142857142857143,
-            0.625,
-            0.5555555555555556,
-            0.58,
-            0.48333333333333334,
-            0.41428571428571426,
-            0.3625,
-            0.3222222222222222,
-            0.3,
-            0.25,
-            0.21428571428571427,
-            0.1875,
-            0.16666666666666666,
-            0.18,
-            0.15,
-            0.12857142857142856,
-            0.11249999999999999,
-            0.09999999999999999,
-            0.1,
-            0.08333333333333333,
-            0.07142857142857142,
-            0.0625,
-            0.05555555555555555,
-            0.065,
-            0.05416666666666667,
-            0.04642857142857143,
-            0.040625,
-            0.036111111111111115,
-            0.04,
-            0.03333333333333333,
-            0.028571428571428574,
-            0.025,
-            0.022222222222222223,
-            0.03,
-            0.024999999999999998,
-            0.02142857142857143,
-            0.01875,
-            0.0,
-        ],
         ir_led_intensity=50,
         pd_channel="2",
         created_at=current_utc_datetime(),
-        pioreactor_unit="pio1",
-        name="test",
+        calibrated_on_pioreactor_unit="pio1",
+        recorded_data={
+            "y": [
+                1.359234153183015,
+                1.1302469550069834,
+                0.9620188870414657,
+                0.8276740491499182,
+                0.7190293946984384,
+                0.7476589503369395,
+                0.566173065500996,
+                0.46932081671790027,
+                0.40529520650943107,
+                0.35571051870062176,
+                0.3671813602478582,
+                0.30365395611828694,
+                0.2546057746249075,
+                0.22793433386962852,
+                0.20673156637999296,
+                0.21349869357483414,
+                0.182990681059356,
+                0.15688343308939462,
+                0.1576635057554899,
+                0.12760694773293027,
+                0.1334217593444793,
+                0.12112005296098335,
+                0.10527636587260703,
+                0.10005326421654448,
+                0.08968165025432195,
+                0.0934433078631241,
+                0.08568480676160387,
+                0.07354768447704799,
+                0.07012049853534189,
+                0.06976807020449396,
+                0.0692776692431696,
+                0.06519934195388995,
+                0.05689993752281371,
+                0.06139548846791462,
+                0.05434995401134063,
+                0.058377357520436435,
+                0.05744855604656168,
+                0.051622250927144994,
+                0.04809794996045024,
+                0.044709852782465254,
+            ],
+            "x": [
+                1.0,
+                0.8333333333333334,
+                0.7142857142857143,
+                0.625,
+                0.5555555555555556,
+                0.58,
+                0.48333333333333334,
+                0.41428571428571426,
+                0.3625,
+                0.3222222222222222,
+                0.3,
+                0.25,
+                0.21428571428571427,
+                0.1875,
+                0.16666666666666666,
+                0.18,
+                0.15,
+                0.12857142857142856,
+                0.11249999999999999,
+                0.09999999999999999,
+                0.1,
+                0.08333333333333333,
+                0.07142857142857142,
+                0.0625,
+                0.05555555555555555,
+                0.065,
+                0.05416666666666667,
+                0.04642857142857143,
+                0.040625,
+                0.036111111111111115,
+                0.04,
+                0.03333333333333333,
+                0.028571428571428574,
+                0.025,
+                0.022222222222222223,
+                0.03,
+                0.024999999999999998,
+                0.02142857142857143,
+                0.01875,
+                0.0,
+            ],
+        },
+        calibration_name="test",
     )
-    with local_persistant_storage("current_od_calibration") as cc:
-        cc[calibration.angle] = encode(calibration)
+    calibration.save_to_disk_for_device("od")
+
+    calibration.set_as_active_calibration_for_device("od")
 
     cal_transformer = CachedCalibrationTransformer()
-    cal_transformer.hydate_models_from_disk({"2": "90"})
+    cal_transformer.hydate_models(calibration)
 
     assert abs(cal_transformer({"2": 0.096})["2"] - 0.06) < 0.01
-
-
-def test_closest_point_single_point_in_domain():
-    assert closest_point_to_domain([1.0], (0.5, 1.5)) == 1.0
-
-
-def test_closest_point_multiple_points_in_domain():
-    assert closest_point_to_domain([0.6, 0.8, 1.2], (0.5, 1.5)) == 0.6
-
-
-def test_closest_point_all_outside_domain():
-    assert closest_point_to_domain([2.0, 3.0], (0.5, 1.5)) == 2.0
-    assert closest_point_to_domain([-1.0, -2.0], (0.5, 1.5)) == -1.0
-
-
-def test_closest_point_empty_list():
-    with pytest.raises(AssertionError):
-        closest_point_to_domain([], (0.5, 1.5))
-
-
-def test_closest_point_on_boundaries():
-    assert closest_point_to_domain([0.5, 1.5], (0.5, 1.5)) == 0.5
 
 
 def test_missing_calibration_data():
     cal_transformer = CachedCalibrationTransformer()
     cal_transformer.models = {"1": lambda v: v * 2}
     assert cal_transformer({"1": 1.0, "2": 2.0}) == {"1": 2.0, "2": 2.0}
+
+
+def test_mandys_calibration():
+    mcal = structs.ODCalibration(
+        calibration_name="mandy",
+        calibrated_on_pioreactor_unit="pio1",
+        created_at=current_utc_datetime(),
+        curve_data_=[-0.03112259838616315, 0.14606367297714123, 0.05224678328234911, 0.009665339167023364],
+        curve_type="poly",
+        x="voltage",
+        y="od600s",
+        recorded_data={
+            "x": [0.0, 0.139, 0.155, 0.378, 0.671, 0.993, 1.82, 4.061],
+            "y": [0.0, 0.0158, 0.0322, 0.0589, 0.1002, 0.1648, 0.4045, 0.5463],
+        },
+        ir_led_intensity=70.0,
+        angle="90",
+        pd_channel="2",
+    )
+
+    with pytest.raises(exc.SolutionAboveDomainError):
+        assert 0.0 < mcal.ipredict(0.002, enforce_bounds=True) < 1.0
+
+    # correct the curve
+    mcal.curve_data_ = [
+        -0.028385470467897377,
+        0.12917002770232924,
+        0.07787877483987993,
+        0.0011023858538965646,
+    ]
+    assert 0.0 < mcal.ipredict(0.002, enforce_bounds=True) < 1.0

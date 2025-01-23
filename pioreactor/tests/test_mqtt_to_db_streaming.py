@@ -5,6 +5,8 @@ import json
 import sqlite3
 from time import sleep
 
+import pytest
+
 import pioreactor.background_jobs.leader.mqtt_to_db_streaming as m2db
 from pioreactor import mureq
 from pioreactor import structs
@@ -14,7 +16,7 @@ from pioreactor.background_jobs.od_reading import start_od_reading
 from pioreactor.config import config
 from pioreactor.pubsub import collect_all_logs_of_level
 from pioreactor.pubsub import publish
-from pioreactor.utils import local_persistant_storage
+from pioreactor.utils import local_persistent_storage
 from pioreactor.utils.timing import current_utc_datetime
 from pioreactor.whoami import get_testing_experiment_name
 from pioreactor.whoami import get_unit_name
@@ -125,16 +127,16 @@ def test_dosing_events_land_in_db() -> None:
             unit,
             exp,
             ml=1,
-            calibration=structs.MediaPumpCalibration(
-                name="test",
-                duration_=1.0,
-                bias_=0.0,
+            calibration=structs.SimplePeristalticPumpCalibration(
+                calibration_name="test",
+                curve_data_=[1.0, 0.0],
+                curve_type="poly",
+                recorded_data={"x": [], "y": []},
                 dc=60,
                 hz=100,
                 created_at=current_utc_datetime(),
                 voltage=-1.0,
-                pump="media",
-                pioreactor_unit=unit,
+                calibrated_on_pioreactor_unit=unit,
             ),
         )
 
@@ -143,6 +145,7 @@ def test_dosing_events_land_in_db() -> None:
     assert len(results) == 1
 
 
+@pytest.mark.xfail(reason="we stopped adding to kalman filter table in 25.1.x release")
 def test_kalman_filter_entries() -> None:
     config["storage"]["database"] = "test.sqlite"
     config["od_reading.config"]["samples_per_second"] = "0.2"
@@ -164,10 +167,10 @@ def test_kalman_filter_entries() -> None:
     )
     connection.commit()
 
-    with local_persistant_storage("od_normalization_mean") as cache:
+    with local_persistent_storage("od_normalization_mean") as cache:
         cache[exp] = json.dumps({"1": 0.5, "2": 0.5})
 
-    with local_persistant_storage("od_normalization_variance") as cache:
+    with local_persistent_storage("od_normalization_variance") as cache:
         cache[exp] = json.dumps({"1": 1e-6, "2": 1e-4})
 
     # turn on data collection
@@ -179,7 +182,6 @@ def test_kalman_filter_entries() -> None:
         fake_data=True,
         unit=unit,
         experiment=exp,
-        use_calibration=False,
     )
 
     gr = GrowthRateCalculator(unit=unit, experiment=exp)

@@ -29,7 +29,7 @@ from pioreactor.whoami import get_assigned_experiment_name
 from pioreactor.whoami import get_unit_name
 from pioreactor.whoami import is_testing_env
 
-bool_expression = str | bool
+BoolExpression = str | bool
 Env = dict[str, Any]
 
 STRICT_EXPRESSION_PATTERN = r"^\${{(.*?)}}$"
@@ -90,7 +90,7 @@ def evaluate_log_message(message: str, env: dict) -> str:
     return result_string
 
 
-def evaluate_bool_expression(bool_expression: bool_expression, env: dict) -> bool:
+def evaluate_bool_expression(bool_expression: BoolExpression, env: dict) -> bool:
     from pioreactor.experiment_profiles.parser import parse_profile_expression_to_bool
 
     if isinstance(bool_expression, bool):
@@ -103,7 +103,7 @@ def evaluate_bool_expression(bool_expression: bool_expression, env: dict) -> boo
     return parse_profile_expression_to_bool(bool_expression, env=env)
 
 
-def check_syntax_of_bool_expression(bool_expression: bool_expression) -> bool:
+def check_syntax_of_bool_expression(bool_expression: BoolExpression) -> bool:
     from pioreactor.experiment_profiles.parser import check_syntax
 
     if isinstance(bool_expression, bool):
@@ -320,11 +320,11 @@ def when(
     client: Client,
     job_name: str,
     dry_run: bool,
-    if_: Optional[bool_expression],
+    if_: Optional[BoolExpression],
     env: dict,
     logger: CustomLogger,
     elapsed_seconds_func: Callable[[], float],
-    condition: bool_expression,
+    condition: BoolExpression,
     when_action: struct.When,
     actions: list[struct.Action],
     schedule: scheduler,
@@ -393,12 +393,12 @@ def repeat(
     client: Client,
     job_name: str,
     dry_run: bool,
-    if_: Optional[bool_expression],
+    if_: Optional[BoolExpression],
     env: dict,
     logger: CustomLogger,
     elapsed_seconds_func: Callable[[], float],
     repeat_action: struct.Repeat,
-    while_: Optional[bool_expression],
+    while_: Optional[BoolExpression],
     repeat_every_hours: float,
     max_hours: Optional[float],
     actions: list[struct.BasicAction],
@@ -484,7 +484,7 @@ def log(
     client: Client,
     job_name: str,
     dry_run: bool,
-    if_: Optional[bool_expression],
+    if_: Optional[BoolExpression],
     env: dict,
     logger: CustomLogger,
     elapsed_seconds_func: Callable[[], float],
@@ -517,7 +517,7 @@ def start_job(
     client: Client,
     job_name: str,
     dry_run: bool,
-    if_: Optional[bool_expression],
+    if_: Optional[BoolExpression],
     env: dict,
     logger: CustomLogger,
     elapsed_seconds_func: Callable[[], float],
@@ -539,6 +539,7 @@ def start_job(
             if dry_run:
                 logger.info(f"Dry-run: Starting {job_name} on {unit} with options {options} and args {args}.")
             else:
+                logger.debug(f"Starting {job_name} on {unit} with options {options} and args {args}.")
                 patch_into_leader(
                     f"/api/workers/{unit}/jobs/run/job_name/{job_name}/experiments/{experiment}",
                     json={
@@ -546,7 +547,7 @@ def start_job(
                         "env": {"JOB_SOURCE": "experiment_profile", "EXPERIMENT": experiment},
                         "args": args,
                     },
-                )
+                ).raise_for_status()
         else:
             logger.debug(f"Action's `if` condition, `{if_}`, evaluated False. Skipping action.")
 
@@ -559,7 +560,7 @@ def pause_job(
     client: Client,
     job_name: str,
     dry_run: bool,
-    if_: Optional[bool_expression],
+    if_: Optional[BoolExpression],
     env: dict,
     logger: CustomLogger,
     elapsed_seconds_func: Callable[[], float],
@@ -579,10 +580,11 @@ def pause_job(
             if dry_run:
                 logger.info(f"Dry-run: Pausing {job_name} on {unit}.")
             else:
+                logger.debug(f"Pausing {job_name} on {unit}.")
                 patch_into_leader(
                     f"/api/workers/{unit}/jobs/update/job_name/{job_name}/experiments/{experiment}",
                     json={"settings": {"$state": "sleeping"}},
-                )
+                ).raise_for_status()
         else:
             logger.debug(f"Action's `if` condition, `{if_}`, evaluated False. Skipping action.")
 
@@ -595,7 +597,7 @@ def resume_job(
     client: Client,
     job_name: str,
     dry_run: bool,
-    if_: Optional[bool_expression],
+    if_: Optional[BoolExpression],
     env: dict,
     logger: CustomLogger,
     elapsed_seconds_func: Callable[[], float],
@@ -616,10 +618,11 @@ def resume_job(
             if dry_run:
                 logger.info(f"Dry-run: Resuming {job_name} on {unit}.")
             else:
+                logger.debug(f"Resuming {job_name} on {unit}.")
                 patch_into_leader(
                     f"/api/workers/{unit}/jobs/update/job_name/{job_name}/experiments/{experiment}",
                     json={"settings": {"$state": "ready"}},
-                )
+                ).raise_for_status()
         else:
             logger.debug(f"Action's `if` condition, `{if_}`, evaluated False. Skipping action.")
 
@@ -632,7 +635,7 @@ def stop_job(
     client: Client,
     job_name: str,
     dry_run: bool,
-    if_: Optional[bool_expression],
+    if_: Optional[BoolExpression],
     env: dict,
     logger: CustomLogger,
     elapsed_seconds_func: Callable[[], float],
@@ -653,9 +656,10 @@ def stop_job(
             if dry_run:
                 logger.info(f"Dry-run: Stopping {job_name} on {unit}.")
             else:
+                logger.debug(f"Stopping {job_name} on {unit}.")
                 patch_into_leader(
                     f"/api/workers/{unit}/jobs/stop/job_name/{job_name}/experiments/{experiment}",
-                )
+                ).raise_for_status()
         else:
             logger.debug(f"Action's `if` condition, `{if_}`, evaluated False. Skipping action.")
 
@@ -668,7 +672,7 @@ def update_job(
     client: Client,
     job_name: str,
     dry_run: bool,
-    if_: Optional[bool_expression],
+    if_: Optional[BoolExpression],
     env: dict,
     logger: CustomLogger,
     elapsed_seconds_func: Callable[[], float],
@@ -693,10 +697,11 @@ def update_job(
 
             else:
                 for setting, value in evaluate_options(options, env).items():
+                    logger.debug(f"Updating {setting} to {value} in {job_name} on {unit}.")
                     patch_into_leader(
                         f"/api/workers/{unit}/jobs/update/job_name/{job_name}/experiments/{experiment}",
                         json={"settings": {setting: value}},
-                    )
+                    ).raise_for_status()
         else:
             logger.debug(f"Action's `if` condition, `{if_}`, evaluated False. Skipping action.")
 
@@ -758,7 +763,7 @@ def push_labels_to_ui(experiment, labels_map: dict[str, str]) -> None:
         for unit_name, label in labels_map.items():
             patch_into_leader(
                 f"/api/experiments/{experiment}/unit_labels", json={"unit": unit_name, "label": label}
-            )
+            ).raise_for_status()
     except Exception:
         pass
 
@@ -814,7 +819,9 @@ def execute_experiment_profile(profile_filename: str, experiment: str, dry_run: 
     unit = get_unit_name()
     action_name = "experiment_profile"
     logger = create_logger(action_name, unit=unit, experiment=experiment)
-    with managed_lifecycle(unit, experiment, action_name, ignore_is_active_state=True) as state:
+    with managed_lifecycle(
+        unit, experiment, action_name, ignore_is_active_state=True, is_long_running_job=True
+    ) as state:
         try:
             profile = load_and_verify_profile(profile_filename)
         except Exception as e:

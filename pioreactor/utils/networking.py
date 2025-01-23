@@ -13,12 +13,10 @@ from pioreactor.exc import RsyncError
 
 
 def rsync(*args: str) -> None:
-    from subprocess import check_call
-    from subprocess import CalledProcessError
-
     try:
-        check_call(("rsync",) + args, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-    except CalledProcessError as e:
+        r = subprocess.run(("rsync",) + args, check=True)
+        assert r.returncode == 0
+    except subprocess.CalledProcessError as e:
         raise RsyncError from e
 
 

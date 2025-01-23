@@ -100,3 +100,24 @@ def correlation(x: Sequence, y: Sequence) -> float:
     except StatisticsError as e:
         # Raising the original error with additional data
         raise StatisticsError(f"{e}. x: {x}, y: {y}") from e
+
+
+def closest_point_to_domain(P: list[float], D: tuple[float, float]) -> float:
+    # Note: this function returns the _minimal_ found solution, if there are multiple
+    a, b = D
+
+    closest_point = None
+    min_distance = float("inf")
+
+    for p in sorted(P):
+        if a <= p <= b:  # Check if p is within the domain D
+            return p  # If p is within D, it's the closest point with distance 0
+
+        distance = min(abs(p - a), abs(p - b))
+
+        if distance < min_distance:
+            min_distance = distance
+            closest_point = p
+
+    assert closest_point is not None
+    return closest_point

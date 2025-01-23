@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from shlex import quote
 from typing import Optional
 
@@ -10,6 +11,7 @@ from msgspec.json import decode as loads
 from msgspec.json import encode as dumps
 
 from pioreactor import exc
+from pioreactor import plugin_management
 from pioreactor import whoami
 from pioreactor.cli.lazy_group import LazyGroup
 from pioreactor.config import config
@@ -20,13 +22,14 @@ from pioreactor.pubsub import get_from
 from pioreactor.pubsub import post_into_leader
 from pioreactor.utils import JobManager
 from pioreactor.utils import local_intermittent_storage
-from pioreactor.utils import local_persistant_storage
+from pioreactor.utils import local_persistent_storage
 from pioreactor.utils.networking import is_using_local_access_point
 from pioreactor.utils.timing import current_utc_timestamp
 
 lazy_subcommands = {
     "run": "pioreactor.cli.run.run",
     "plugins": "pioreactor.cli.plugins.plugins",
+    "calibrations": "pioreactor.cli.calibrations.calibration",
 }
 
 if whoami.am_I_leader():
@@ -66,6 +69,9 @@ def pio(ctx) -> None:
 
     if geteuid() == 0:
         raise SystemError("Don't run as root!")
+
+    # load plugins
+    plugin_management.get_plugins()
 
 
 @pio.command(name="logs", short_help="show recent logs")
@@ -122,6 +128,7 @@ def log(message: str, level: str, name: str, local_only: bool):
     except Exception as e:
         # don't let a logging error bring down a script...
         print(e)
+        sys.exit(1)
 
 
 @pio.command(name="blink", short_help="blink LED")
@@ -193,29 +200,10 @@ def cache():
 @cache.command(name="view", short_help="print out the contents of a cache")
 @click.argument("cache")
 def view_cache(cache: str) -> None:
-    from pathlib import Path
-    import tempfile
-
-    tmp_dir = tempfile.gettempdir()
-
-    persistant_dir = (
-        "/home/pioreactor/.pioreactor/storage/" if not whoami.is_testing_env() else ".pioreactor/storage"
-    )
-
-    # is it a temp cache or persistant cache?
-    if Path(f"{tmp_dir}/{cache}").is_dir():
-        cacher = local_intermittent_storage
-
-    elif Path(f"{persistant_dir}/{cache}").is_dir():
-        cacher = local_persistant_storage
-
-    else:
-        click.echo(f"cache {cache} not found.")
-        return
-
-    with cacher(cache) as c:
-        for key in sorted(list(c.iterkeys())):
-            click.echo(f"{click.style(key, bold=True)} = {c[key]}")
+    for cacher in [local_intermittent_storage, local_persistent_storage]:  # TODO: this sucks
+        with cacher(cache) as c:
+            for key in sorted(list(c.iterkeys())):
+                click.echo(f"{click.style(key, bold=True)} = {c[key]}")
 
 
 @cache.command(name="clear", short_help="clear out the contents of a cache")
@@ -223,32 +211,13 @@ def view_cache(cache: str) -> None:
 @click.argument("key")
 @click.option("--as-int", is_flag=True, help="evict after casting key to int, useful for gpio pins.")
 def clear_cache(cache: str, key: str, as_int: bool) -> None:
-    from pathlib import Path
-    import tempfile
+    for cacher in [local_intermittent_storage, local_persistent_storage]:
+        with cacher(cache) as c:
+            if as_int:
+                key = int(key)  # type: ignore
 
-    tmp_dir = tempfile.gettempdir()
-
-    persistant_dir = (
-        "/home/pioreactor/.pioreactor/storage/" if not whoami.is_testing_env() else ".pioreactor/storage"
-    )
-
-    # is it a temp cache or persistant cache?
-    if Path(f"{tmp_dir}/{cache}").is_dir():
-        cacher = local_intermittent_storage
-
-    elif Path(f"{persistant_dir}/{cache}").is_dir():
-        cacher = local_persistant_storage
-
-    else:
-        click.echo(f"cache {cache} not found.")
-        return
-
-    with cacher(cache) as c:
-        if as_int:
-            key = int(key)  # type: ignore
-
-        if key in c:
-            del c[key]
+            if key in c:
+                del c[key]
 
 
 @pio.command(
@@ -427,7 +396,7 @@ def update_app(
             commands_and_priority.append((f"sudo pip3 install --force-reinstall --no-index {source}", 1))
         else:
             click.echo("Not a valid source file. Should be either a whl or release archive.")
-            raise click.Abort()
+            sys.exit(1)
 
     elif branch is not None:
         cleaned_branch = quote(branch)
@@ -447,7 +416,7 @@ def update_app(
         response = get(f"https://api.github.com/repos/{repo}/releases/{tag}")
         if not response.ok:
             logger.error(f"Version {version} not found")
-            raise click.Abort()
+            sys.exit(1)
 
         release_metadata = loads(response.body)
         version_installed = release_metadata["tag_name"]
@@ -530,7 +499,7 @@ def update_app(
             logger.debug(p.stderr)
             logger.error("Update failed. See logs.")
             # end early
-            raise click.Abort()
+            sys.exit(1)
         elif p.stdout:
             logger.debug(p.stdout)
 
@@ -594,7 +563,7 @@ def update_firmware(version: Optional[str]) -> None:
             logger.debug(p.stderr)
             logger.error("Update failed. See logs.")
             # end early
-            raise click.Abort()
+            sys.exit(1)
 
     logger.info(f"Updated Pioreactor firmware to version {version_installed}.")  # type: ignore
 

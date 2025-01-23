@@ -3,6 +3,7 @@
 # See create_tables.sql for all tables
 from __future__ import annotations
 
+import sys
 from base64 import b64decode
 from contextlib import closing
 from contextlib import ExitStack
@@ -99,7 +100,7 @@ def create_sql_query(
     table_or_subquery: str,
     existing_placeholders: dict[str, str],
     where_clauses: list[str] | None = None,
-    order_by: str | None = None,
+    order_by_col: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     """
     Constructs an SQL query with SELECT, FROM, WHERE, and ORDER BY clauses.
@@ -112,9 +113,8 @@ def create_sql_query(
         query += f" WHERE {' AND '.join(where_clauses)}"
 
     # Add ORDER BY clause if provided
-    if order_by:
-        query += " ORDER BY :order_by"
-        existing_placeholders["order_by"] = order_by
+    if order_by_col:
+        query += f' ORDER BY "{order_by_col}"'
 
     return query, existing_placeholders
 
@@ -137,11 +137,11 @@ def export_experiment_data(
 
     if not output.endswith(".zip"):
         click.echo("output should end with .zip")
-        raise click.Abort()
+        sys.exit(1)
 
     if len(dataset_names) == 0:
         click.echo("At least one dataset name must be provided.")
-        raise click.Abort()
+        sys.exit(1)
 
     logger = create_logger("export_experiment_data")
     logger.info(
@@ -162,6 +162,18 @@ def export_experiment_data(
         con.set_trace_callback(logger.debug)
 
         cursor = con.cursor()
+        cursor.executescript(
+            """
+            PRAGMA journal_mode=WAL;
+            PRAGMA synchronous = 1; -- aka NORMAL, recommended when using WAL
+            PRAGMA temp_store = 2;  -- stop writing small files to disk, use mem
+            PRAGMA busy_timeout = 15000;
+            PRAGMA foreign_keys = ON;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA auto_vacuum = INCREMENTAL;
+            PRAGMA cache_size = -20000;
+        """
+        )
 
         for dataset_name in dataset_names:
             try:
@@ -179,7 +191,7 @@ def export_experiment_data(
             filenames: list[str] = []
             placeholders: dict[str, str] = {}
 
-            order_by = dataset.default_order_by
+            order_by_col = dataset.default_order_by
             table_or_subquery = dataset.table or dataset.query
             assert table_or_subquery is not None
 
@@ -201,7 +213,7 @@ def export_experiment_data(
                 where_clauses.append(timespan_clause)
 
             query, placeholders = create_sql_query(
-                selects, table_or_subquery, placeholders, where_clauses, order_by
+                selects, table_or_subquery, placeholders, where_clauses, order_by_col
             )
             cursor.execute(query, placeholders)
 
@@ -224,9 +236,10 @@ def export_experiment_data(
                 iloc_unit = None
 
             parition_to_writer_map: dict[tuple, Any] = {}
-
+            count = 0
             with ExitStack() as stack:
-                for i, row in enumerate(cursor, start=1):
+                for row in cursor:
+                    count += 1
                     rows_partition = (
                         row[iloc_experiment] if iloc_experiment is not None else "all_experiments",
                         row[iloc_unit] if iloc_unit is not None else "all_units",
@@ -244,10 +257,12 @@ def export_experiment_data(
 
                     parition_to_writer_map[rows_partition].writerow(row)
 
-                    if i % 1000 == 0:
-                        logger.debug(f"Exported {i} rows...")
+                    if count % 10_000 == 0:
+                        logger.debug(f"Exported {count} rows...")
 
-            logger.debug(f"Exported {i} rows from {dataset_name}.")
+            logger.debug(f"Exported {count} rows from {dataset_name}.")
+            if count == 0:
+                logger.warning(f"No data present in {dataset_name}. Check database?")
 
             for filename in filenames:
                 path_to_file = Path(Path(output).parent / filename)

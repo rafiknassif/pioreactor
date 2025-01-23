@@ -20,6 +20,12 @@ class JobRequiredError(Exception):
     """
 
 
+class JobPresentError(Exception):
+    """
+    A job shouldn't be running, but is.
+    """
+
+
 class CalibrationError(Exception):
     """
     An issue with calibration (pump, stirring, OD, etc.)
@@ -68,7 +74,19 @@ class RsyncError(OSError):
     """
 
 
-class JobNotRunningError(Exception):
+class NoSolutionsFoundError(ValueError):
     """
-    Required job is not running
+    No solutions found
+    """
+
+
+class SolutionBelowDomainError(ValueError):
+    """
+    Outside minimum range
+    """
+
+
+class SolutionAboveDomainError(ValueError):
+    """
+    Outside maximum range
     """
