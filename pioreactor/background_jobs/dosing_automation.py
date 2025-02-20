@@ -229,7 +229,6 @@ class DosingAutomationJob(AutomationJob):
         unit: str,
         experiment: str,
         duration: Optional[float] = None,
-        specific_dilution_rate: Optional[float] = None,
         skip_first_run: bool = False,
         initial_alt_media_fraction: float = config.getfloat(
             "bioreactor", "initial_alt_media_fraction", fallback=0.0
@@ -270,7 +269,7 @@ class DosingAutomationJob(AutomationJob):
         self._init_alt_media_fraction(float(initial_alt_media_fraction))
         self._init_volume_throughput()
         self._init_liquid_volume(float(initial_liquid_volume))
-        
+
         if not hasattr(self, "volume"):
             raise AttributeError("Subclass must define `self.volume` before calling `DosingAutomationJob`.")
 
