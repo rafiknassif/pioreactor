@@ -25,11 +25,8 @@ class SDR(DosingAutomationJob):
             raise ValueError("specific_dilution_rate must be provided.")  # ✅ Prevent None values
         self.specific_dilution_rate = float(specific_dilution_rate)
 
-        super().__init__(
-            specific_dilution_rate=self.specific_dilution_rate,
-            volume=self.volume,
-            **kwargs
-)
+        super().__init__(**kwargs)
+
 
         with local_persistent_storage("active_calibrations") as cache:
             if "media_pump" not in cache:
