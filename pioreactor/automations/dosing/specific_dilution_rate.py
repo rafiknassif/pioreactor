@@ -26,8 +26,6 @@ class SDR(DosingAutomationJob):
         self.specific_dilution_rate = float(specific_dilution_rate)
 
         super().__init__(
-            unit=kwargs.pop("unit", None),
-            experiment=kwargs.pop("experiment", None),
             specific_dilution_rate=self.specific_dilution_rate,
             volume=self.volume,
             **kwargs
