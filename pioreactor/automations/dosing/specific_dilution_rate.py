@@ -21,6 +21,8 @@ class SDR(DosingAutomationJob):
     def __init__(self, volume: float | str, specific_dilution_rate: float | str, **kwargs) -> None:
         # Ensure `self.volume` and `self.specific_dilution_rate` exist before calling `super()`
         self.volume = float(volume)
+        if specific_dilution_rate is None:
+            raise ValueError("specific_dilution_rate must be provided.")  # ✅ Prevent None values
         self.specific_dilution_rate = float(specific_dilution_rate)
 
         super().__init__(
