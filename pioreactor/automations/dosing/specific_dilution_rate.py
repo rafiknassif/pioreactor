@@ -15,18 +15,10 @@ class SDR(DosingAutomationJob):
     automation_name = "specific_dilution_rate"
     published_settings = {
         "volume": {"datatype": "float", "settable": True, "unit": "mL"},
-        "specific_dilution_rate": {"datatype": "float", "settable": True, "unit": "1/h"},
     }
 
-    def __init__(self, volume: float | str, specific_dilution_rate: float | str, **kwargs) -> None:
-        
-        super().__init__(
-            unit=kwargs.pop("unit", None),
-            experiment=kwargs.pop("experiment", None),
-            volume=float(volume),  # `self.volume` is now properly assigned
-            specific_dilution_rate=float(specific_dilution_rate),
-            **kwargs
-        )
+    def __init__(self, volume: float | str, **kwargs) -> None:
+        super().__init__(**kwargs)
 
         with local_persistent_storage("active_calibrations") as cache:
             if "media_pump" not in cache:
