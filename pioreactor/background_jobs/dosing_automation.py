@@ -228,6 +228,8 @@ class DosingAutomationJob(AutomationJob):
         self,
         unit: str,
         experiment: str,
+        volume: float,
+        specific_dilution_rate: float,
         duration: Optional[float] = None,
         skip_first_run: bool = False,
         initial_alt_media_fraction: float = config.getfloat(
