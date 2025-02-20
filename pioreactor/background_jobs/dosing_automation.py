@@ -229,6 +229,7 @@ class DosingAutomationJob(AutomationJob):
         unit: str,
         experiment: str,
         duration: Optional[float] = None,
+        specific_dilution_rate: Optional[float] = None,
         skip_first_run: bool = False,
         initial_alt_media_fraction: float = config.getfloat(
             "bioreactor", "initial_alt_media_fraction", fallback=0.0
@@ -238,9 +239,9 @@ class DosingAutomationJob(AutomationJob):
     ) -> None:
         super(DosingAutomationJob, self).__init__(unit, experiment)
 
-        if not is_pio_job_running("stirring"):
+        if not is_pio_job_running("custom_air_bubbler"):
             self.logger.warning(
-                "It's recommended to have stirring on to improve mixing during dosing events."
+                "It's recommended to have air bubbler on to improve mixing during dosing events."
             )
 
         self.add_to_published_settings(
@@ -249,6 +250,14 @@ class DosingAutomationJob(AutomationJob):
                 "datatype": "float",
                 "settable": True,
                 "unit": "min",
+            },
+        )
+        self.add_to_published_settings(
+            "specific_dilution_rate",
+            {
+                "datatype": "float",
+                "settable": True,
+                "unit": "1/h",
             },
         )
 
@@ -261,8 +270,20 @@ class DosingAutomationJob(AutomationJob):
         self._init_alt_media_fraction(float(initial_alt_media_fraction))
         self._init_volume_throughput()
         self._init_liquid_volume(float(initial_liquid_volume))
+        
+        if not hasattr(self, "volume"):
+            raise AttributeError("Subclass must define `self.volume` before calling `DosingAutomationJob`.")
 
-        self.set_duration(duration)
+        if self.specific_dilution_rate is not None:
+            if self.volume <= 0:
+                raise ValueError("Dosing volume (self.volume) must be greater than zero.")
+
+            self.duration = (self.specific_dilution_rate / 60) * (initial_liquid_volume / self.volume)
+            self.logger.info(f"Using calculated duration: {self.duration:.2f} minutes from specific_dilution_rate.")
+        else:
+            self.duration = float(duration) if duration else None
+
+        self.set_duration(self.duration)  # Ensure the job is scheduled
 
     def set_duration(self, duration: Optional[float]) -> None:
         if duration:
