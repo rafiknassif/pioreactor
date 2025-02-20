@@ -17,7 +17,7 @@ class SDR(DosingAutomationJob):
         "volume": {"datatype": "float", "settable": True, "unit": "mL"},
     }
 
-    def __init__(self, volume: float | str, **kwargs) -> None:
+    def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
 
         with local_persistent_storage("active_calibrations") as cache:
