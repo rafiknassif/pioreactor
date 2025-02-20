@@ -284,10 +284,11 @@ class DosingAutomationJob(AutomationJob):
         
         self.volume = volume
         self.specific_dilution_rate = specific_dilution_rate
-        if not hasattr(self, "volume"):
-            raise AttributeError("Subclass must define `self.volume` before calling `DosingAutomationJob`.")
 
         if self.specific_dilution_rate is not None:
+            if self.volume is None:
+                raise ValueError("You must supply a 'volume' if using 'specific_dilution_rate'.")
+
             if self.volume <= 0:
                 raise ValueError("Dosing volume (self.volume) must be greater than zero.")
 
