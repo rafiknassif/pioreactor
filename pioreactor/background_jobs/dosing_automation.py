@@ -281,7 +281,9 @@ class DosingAutomationJob(AutomationJob):
         self._init_alt_media_fraction(float(initial_alt_media_fraction))
         self._init_volume_throughput()
         self._init_liquid_volume(float(initial_liquid_volume))
-
+        
+        self.volume = volume
+        self.specific_dilution_rate = specific_dilution_rate
         if not hasattr(self, "volume"):
             raise AttributeError("Subclass must define `self.volume` before calling `DosingAutomationJob`.")
 
