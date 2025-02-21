@@ -251,7 +251,7 @@ class DosingAutomationJob(AutomationJob):
             "duration",
             {
                 "datatype": "float",
-                "settable": False,
+                "settable": True,
                 "unit": "sec",
             },
         )
@@ -259,7 +259,7 @@ class DosingAutomationJob(AutomationJob):
             "volume",
             {
                 "datatype": "float",
-                "settable": False,
+                "settable": True,
                 "unit": "mL",
             },
         )
@@ -267,7 +267,7 @@ class DosingAutomationJob(AutomationJob):
             "specific_dilution_rate",
             {
                 "datatype": "float",
-                "settable": False,
+                "settable": True,
                 "unit": "1/h",
             },
         )
