@@ -787,7 +787,7 @@ available_dosing_automations: dict[str, type[DosingAutomationJob]] = {}
 )
 @click.option("--duration", default=60.0, help="Time, in minutes, between every monitor check")
 @click.option("--volume", default=5.0, help="volume to be dosed. Only used with specific_dilution_rate")
-@click.option("--specific_dilution_rate", default=None, help="set specific dilution rate (do not use duration)")
+@click.option("--specific_dilution_rate", default=0.02, help="set specific dilution rate (do not use duration)")
 @click.option(
     "--skip-first-run",
     type=click.IntRange(min=0, max=1),
@@ -805,7 +805,7 @@ def click_dosing_automation(ctx, automation_name, duration, volume, specific_dil
         volume=float(volume),
         specific_dilution_rate=float(specific_dilution_rate),
         skip_first_run=bool(skip_first_run),
-        # **{ctx.args[i][2:].replace("-", "_"): ctx.args[i + 1] for i in range(0, len(ctx.args), 2)},
+        **{ctx.args[i][2:].replace("-", "_"): ctx.args[i + 1] for i in range(0, len(ctx.args), 2)},
     )
 
     la.block_until_disconnected()
