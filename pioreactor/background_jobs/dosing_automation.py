@@ -252,7 +252,7 @@ class DosingAutomationJob(AutomationJob):
             {
                 "datatype": "float",
                 "settable": True,
-                "unit": "min",
+                "unit": "sec",
             },
         )
         self.add_to_published_settings(
@@ -292,7 +292,7 @@ class DosingAutomationJob(AutomationJob):
             if self.volume <= 0:
                 raise ValueError("Dosing volume (self.volume) must be greater than zero.")
 
-            self.duration = 1/((self.specific_dilution_rate / 60) * (initial_liquid_volume / self.volume))
+            self.duration = 1/((self.specific_dilution_rate / 3600) * (initial_liquid_volume / self.volume))
             self.logger.info(f"Using calculated duration: {self.duration:.2f} minutes from specific_dilution_rate.")
         else:
             self.duration = float(duration) if duration else None
@@ -312,7 +312,7 @@ class DosingAutomationJob(AutomationJob):
                 # - N=60, and it's been 50m since last run. I change to M=30, I should run immediately.
                 run_after = max(
                     0,
-                    (self.duration * 60) - (current_utc_datetime() - self._latest_run_at).seconds,
+                    (self.duration) - (current_utc_datetime() - self._latest_run_at).seconds,
                 )
             else:
                 # there is a race condition here: self.run() will run immediately (see run_immediately), but the state of the job is not READY, since
@@ -321,7 +321,7 @@ class DosingAutomationJob(AutomationJob):
                 run_after = 1.0 / config.getfloat("od_reading.config", "samples_per_second")
 
             self.run_thread = RepeatedTimer(
-                self.duration * 60,
+                self.duration,
                 self.run,
                 job_name=self.job_name,
                 run_immediately=(not self.skip_first_run) or (self._latest_run_at is not None),
