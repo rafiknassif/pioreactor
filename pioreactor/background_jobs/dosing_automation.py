@@ -292,7 +292,7 @@ class DosingAutomationJob(AutomationJob):
             if self.volume <= 0:
                 raise ValueError("Dosing volume (self.volume) must be greater than zero.")
 
-            self.duration = (self.specific_dilution_rate / 60) * (initial_liquid_volume / self.volume)
+            self.duration = 1/((self.specific_dilution_rate / 60) * (initial_liquid_volume / self.volume))
             self.logger.info(f"Using calculated duration: {self.duration:.2f} minutes from specific_dilution_rate.")
         else:
             self.duration = float(duration) if duration else None
