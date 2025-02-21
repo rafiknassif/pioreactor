@@ -15,6 +15,7 @@ class SDR(DosingAutomationJob):
     automation_name = "specific_dilution_rate"
     published_settings = {
         "volume": {"datatype": "float", "settable": True, "unit": "mL"},
+        "specific_dilution_rate": {"datatype": "float", "settable": True, "unit": "1/h"},
     }
 
     def __init__(self, **kwargs) -> None:

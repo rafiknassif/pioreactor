@@ -787,7 +787,7 @@ available_dosing_automations: dict[str, type[DosingAutomationJob]] = {}
 )
 @click.option("--duration", default=60.0, help="Time, in minutes, between every monitor check")
 @click.option("--volume", default=5.0, help="volume to be dosed. Only used with specific_dilution_rate")
-@click.option("--specific_dilution_rate", default=0.01, help="set specific dilution rate (do not use duration)")
+@click.option("--specific_dilution_rate", default=0.02, help="set specific dilution rate (do not use duration)")
 @click.option(
     "--skip-first-run",
     type=click.IntRange(min=0, max=1),
