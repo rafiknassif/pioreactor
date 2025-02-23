@@ -191,7 +191,7 @@ class DosingAutomationJob(AutomationJob):
     run_thread: RepeatedTimer | Thread
     duration: float | None
     volume: float | None
-    specific_dilution_rate: float | None
+    sdr: float | None
 
     # overwrite to use your own dosing programs.
     # interface must look like types.DosingProgram
@@ -232,7 +232,7 @@ class DosingAutomationJob(AutomationJob):
         experiment: str,
         duration: Optional[float] = None,
         volume: Optional[float] = None,
-        specific_dilution_rate: Optional[float] = None,
+        sdr: Optional[float] = None,
         skip_first_run: bool = False,
         initial_alt_media_fraction: float = config.getfloat(
             "bioreactor", "initial_alt_media_fraction", fallback=0.0
@@ -241,11 +241,11 @@ class DosingAutomationJob(AutomationJob):
         **kwargs,
     ) -> None:
         
-        self.logger.debug(f"DosingAutomationJob init params: duration={duration}, volume={volume}, specific_dilution_rate={specific_dilution_rate}, kwargs={kwargs}")
+        self.logger.debug(f"DosingAutomationJob init params: duration={duration}, volume={volume}, sdr={sdr}, kwargs={kwargs}")
 
         super(DosingAutomationJob, self).__init__(unit, experiment)
         
-        self.logger.debug(f"Initializing with volume={volume}, specific_dilution_rate={specific_dilution_rate}, duration={duration}")
+        self.logger.debug(f"Initializing with volume={volume}, sdr={sdr}, duration={duration}")
 
         if not is_pio_job_running("custom_air_bubbler"):
             self.logger.warning(
@@ -269,7 +269,7 @@ class DosingAutomationJob(AutomationJob):
             },
         )
         self.add_to_published_settings(
-            "specific_dilution_rate",
+            "sdr",
             {
                 "datatype": "float",
                 "settable": True,
@@ -288,21 +288,21 @@ class DosingAutomationJob(AutomationJob):
         self._init_liquid_volume(float(initial_liquid_volume))
         
         self.volume = volume
-        self.specific_dilution_rate = specific_dilution_rate
+        self.sdr = sdr
 
-        self.logger.debug(f"After assignment: volume={self.volume}, specific_dilution_rate={self.specific_dilution_rate}")
+        self.logger.debug(f"After assignment: volume={self.volume}, sdr={self.sdr}")
 
-        if self.specific_dilution_rate is not None:
-            self.logger.debug("Entering specific_dilution_rate calculation block")
+        if self.sdr is not None:
+            self.logger.debug("Entering sdr calculation block")
 
             if self.volume is None:
-                raise ValueError("You must supply a 'volume' if using 'specific_dilution_rate'.")
+                raise ValueError("You must supply a 'volume' if using 'sdr'.")
 
             if self.volume <= 0:
                 raise ValueError("Dosing volume (self.volume) must be greater than zero.")
 
-            self.duration = 1/((self.specific_dilution_rate / 3600) * (initial_liquid_volume / self.volume))
-            self.logger.info(f"Using calculated duration: {self.duration:.2f} minutes from specific_dilution_rate.")
+            self.duration = 1/((self.sdr / 3600) * (initial_liquid_volume / self.volume))
+            self.logger.info(f"Using calculated duration: {self.duration:.2f} minutes from sdr.")
         else:
             self.duration = float(duration) if duration else None
 
@@ -745,7 +745,7 @@ def start_dosing_automation(
     automation_name: str,
     duration: Optional[float] = None,
     volume: Optional[float] = None,
-    specific_dilution_rate: Optional[float] = None,
+    sdr: Optional[float] = None,
     skip_first_run: bool = False,
     unit: Optional[str] = None,
     experiment: Optional[str] = None,
@@ -770,7 +770,7 @@ def start_dosing_automation(
             skip_first_run=skip_first_run,
             duration=duration,
             volume=volume,
-            specific_dilution_rate=specific_dilution_rate,
+            sdr=sdr,
             **kwargs,
         )
 
@@ -795,15 +795,15 @@ available_dosing_automations: dict[str, type[DosingAutomationJob]] = {}
     required=True,
 )
 @click.option("--duration", default=60.0, help="Time, in minutes, between every monitor check")
-@click.option("--volume", default=5.0, help="volume to be dosed. Only used with specific_dilution_rate")
-@click.option("--specific_dilution_rate", default=0.02, help="set specific dilution rate (do not use duration)")
+@click.option("--volume", default=5.0, help="volume to be dosed. Only used with sdr")
+@click.option("--sdr", default=0.02, help="set specific dilution rate (do not use duration)")
 @click.option(
     "--skip-first-run",
     type=click.IntRange(min=0, max=1),
     help="Normally algo will run immediately. Set this flag to wait <duration>min before executing.",
 )
 @click.pass_context
-def click_dosing_automation(ctx, automation_name, duration, volume, specific_dilution_rate, skip_first_run):
+def click_dosing_automation(ctx, automation_name, duration, volume, sdr, skip_first_run):
     """
     Start an Dosing automation
     """
@@ -812,7 +812,7 @@ def click_dosing_automation(ctx, automation_name, duration, volume, specific_dil
         automation_name=automation_name,
         duration=float(duration),
         volume=float(volume),
-        specific_dilution_rate=float(specific_dilution_rate),
+        sdr=float(sdr),
         skip_first_run=bool(skip_first_run),
         # **{ctx.args[i][2:].replace("-", "_"): ctx.args[i + 1] for i in range(0, len(ctx.args), 2)},
     )
