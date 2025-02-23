@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-from pioreactor.logging import create_logger
 from pioreactor.automations import events
 from pioreactor.automations.dosing.base import DosingAutomationJob
 from pioreactor.exc import CalibrationError
@@ -11,6 +10,7 @@ class SDR(DosingAutomationJob):
     """
     SDR mode - try to keep [nutrient] constant.
     """
+    automation_name = "specific_dilution_rate"
     published_settings = {
         "volume": {"datatype": "float", "settable": True, "unit": "mL"},
         "sdr": {"datatype": "float", "settable": True, "unit": "1/h"},
