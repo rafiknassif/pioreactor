@@ -19,6 +19,7 @@ class SDR(DosingAutomationJob):
     }
 
     def __init__(self, **kwargs) -> None:
+        self.logger.debug(f"SDR init kwargs: {kwargs}")
         super().__init__(**kwargs)
 
         with local_persistent_storage("active_calibrations") as cache:
