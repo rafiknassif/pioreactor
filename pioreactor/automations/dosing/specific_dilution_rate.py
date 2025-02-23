@@ -11,16 +11,12 @@ class SDR(DosingAutomationJob):
     """
     SDR mode - try to keep [nutrient] constant.
     """
-
-    automation_name = "specific_dilution_rate"
     published_settings = {
         "volume": {"datatype": "float", "settable": True, "unit": "mL"},
         "sdr": {"datatype": "float", "settable": True, "unit": "1/h"},
     }
 
     def __init__(self, **kwargs) -> None:
-        self.logger = create_logger("SDR")
-        self.logger.debug(f"SDR init kwargs: {kwargs}")
         super().__init__(**kwargs)
 
         with local_persistent_storage("active_calibrations") as cache:
