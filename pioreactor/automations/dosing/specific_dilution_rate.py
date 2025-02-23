@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-
+from pioreactor.logging import create_logger
 from pioreactor.automations import events
 from pioreactor.automations.dosing.base import DosingAutomationJob
 from pioreactor.exc import CalibrationError
@@ -19,6 +19,7 @@ class SDR(DosingAutomationJob):
     }
 
     def __init__(self, **kwargs) -> None:
+        self.logger = create_logger("SDR")
         self.logger.debug(f"SDR init kwargs: {kwargs}")
         super().__init__(**kwargs)
 
