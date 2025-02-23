@@ -240,9 +240,6 @@ class DosingAutomationJob(AutomationJob):
         initial_liquid_volume: float = config.getfloat("bioreactor", "initial_volume_ml", fallback=14),
         **kwargs,
     ) -> None:
-        
-        self.logger.debug(f"DosingAutomationJob init params: duration={duration}, volume={volume}, sdr={sdr}, kwargs={kwargs}")
-
         super(DosingAutomationJob, self).__init__(unit, experiment)
         
         self.logger.debug(f"Initializing with volume={volume}, sdr={sdr}, duration={duration}")
