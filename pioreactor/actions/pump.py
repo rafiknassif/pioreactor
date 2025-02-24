@@ -9,6 +9,7 @@ from threading import Event
 from typing import Optional
 
 import click
+import lgpio
 from msgspec.json import encode
 from msgspec.structs import replace
 
@@ -18,7 +19,7 @@ from pioreactor import types as pt
 from pioreactor import utils
 from pioreactor.calibrations import load_active_calibration
 from pioreactor.config import config
-from pioreactor.hardware import PWM_TO_PIN
+from pioreactor import hardware 
 from pioreactor.logging import create_logger
 from pioreactor.logging import CustomLogger
 from pioreactor.pubsub import Client
@@ -74,8 +75,14 @@ class PWMPump:
 
         self.pwm.lock()
 
+        self._handle = lgpio.gpiochip_open(hardware.GPIOCHIP)  # Open the GPIO chip for this instance
+        lgpio.gpio_claim_output(self._handle, hardware.DRIVER_ENA_PIN)
+        lgpio.gpio_write(self._handle, hardware.DRIVER_ENA_PIN, 0)  # Default state is OFF (LOW)
+
+
     def clean_up(self) -> None:
         self.pwm.clean_up()
+        lgpio.gpiochip_close(self._handle)
         # self._thread_pool.shutdown(wait=False)  # Shutdown the thread pool
 
     def continuously(self, block: bool = True) -> None:
@@ -92,6 +99,8 @@ class PWMPump:
     def stop(self) -> None:
         self.pwm.stop()
         self.interrupt.set()
+        if self.pin == hardware.PWM_TO_PIN["media_pump"]:
+            lgpio.gpio_write(self._handle, hardware.DRIVER_ENA_PIN, 0)  # Disable motor driver
 
     def by_volume(self, ml: pt.mL, block: bool = True) -> None:
         if ml < 0:
@@ -149,7 +158,7 @@ class PWMPump:
 
 
 def _get_pin(pump_device: PumpCalibrationDevices) -> pt.GpioPin:
-    return PWM_TO_PIN[config.get("PWM_reverse", pump_device.removesuffix("_pump"))]  # backwards compatibility
+    return hardware.PWM_TO_PIN[config.get("PWM_reverse", pump_device.removesuffix("_pump"))]  # backwards compatibility
 
 
 def _get_calibration(pump_device: PumpCalibrationDevices) -> structs.SimplePeristalticPumpCalibration:
@@ -233,6 +242,7 @@ def _pump_action(
 
     def _get_pump_action(pump_device: PumpCalibrationDevices) -> str:
         if pump_device == "media_pump":
+            lgpio.gpio_write(pump._handle, hardware.DRIVER_ENA_PIN, 1)  # Enable motor driver for media pump
             return "add_media"
         elif pump_device == "alt_media_pump":
             return "add_alt_media"

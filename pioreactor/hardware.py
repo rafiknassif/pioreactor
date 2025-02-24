@@ -38,6 +38,7 @@ PCB_BUTTON_PIN: GpioPin = 24 if (0, 0) < hardware_version_info <= (1, 0) else 4
 # hall sensor
 HALL_SENSOR_PIN: GpioPin = 25 if (0, 0) < hardware_version_info <= (1, 0) else 21
 
+DRIVER_ENA_PIN: GpioPin = 26
 
 # I2C pins
 GPIOCHIP: GpioChip
