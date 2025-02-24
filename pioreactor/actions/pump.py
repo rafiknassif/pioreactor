@@ -99,8 +99,7 @@ class PWMPump:
     def stop(self) -> None:
         self.pwm.stop()
         self.interrupt.set()
-        if self.pin == hardware.PWM_TO_PIN["media_pump"]:
-            lgpio.gpio_write(self._handle, hardware.DRIVER_ENA_PIN, 0)  # Disable motor driver
+        lgpio.gpio_write(self._handle, hardware.DRIVER_ENA_PIN, 0)  # Disable motor driver
 
     def by_volume(self, ml: pt.mL, block: bool = True) -> None:
         if ml < 0:
