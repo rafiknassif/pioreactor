@@ -23,7 +23,7 @@ from pioreactor.config import get_mqtt_address
 from pioreactor.hardware import GPIOCHIP
 from pioreactor.hardware import is_HAT_present
 from pioreactor.hardware import PCB_BUTTON_PIN as BUTTON_PIN
-from pioreactor.hardware import PCB_LED_PIN as LED_PIN
+from pioreactor.hardware import PCB_LED_PIN as LED_PIN, DRIVER_ENA_PIN
 from pioreactor.hardware import TEMP
 from pioreactor.mureq import HTTPException
 from pioreactor.pubsub import get_from
@@ -164,7 +164,11 @@ class Monitor(LongRunningBackgroundJob):
             # Set LED_PIN as output and initialize to low
             lgpio.gpio_claim_output(self._handle, LED_PIN)
             lgpio.gpio_write(self._handle, LED_PIN, 0)
-
+            
+            # Set stepper driver pin as output and initialize to low
+            lgpio.gpio_claim_output(self._handle, DRIVER_ENA_PIN)
+            lgpio.gpio_write(self._handle, DRIVER_ENA_PIN, 0)
+            
             # Set BUTTON_PIN as input with no pull-up
             lgpio.gpio_claim_input(self._handle, BUTTON_PIN, lgpio.SET_PULL_DOWN)
 
