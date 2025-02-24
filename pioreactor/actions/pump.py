@@ -242,7 +242,6 @@ def _pump_action(
 
     def _get_pump_action(pump_device: PumpCalibrationDevices) -> str:
         if pump_device == "media_pump":
-            lgpio.gpio_write(pump._handle, hardware.DRIVER_ENA_PIN, 1)  # Enable motor driver for media pump
             return "add_media"
         elif pump_device == "alt_media_pump":
             return "add_alt_media"
@@ -292,6 +291,8 @@ def _pump_action(
         with PWMPump(
             unit, experiment, pin, calibration=calibration, mqtt_client=mqtt_client, logger=logger
         ) as pump:
+            if pump_device == "media_pump":
+                lgpio.gpio_write(pump._handle, hardware.DRIVER_ENA_PIN, 1)
             if manually:
                 assert ml is not None
                 ml = float(ml)
