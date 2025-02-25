@@ -75,15 +75,7 @@ class PWMPump:
 
         self.pwm.lock()
 
-        self._handle = lgpio.gpiochip_open(hardware.GPIOCHIP)  # Open the GPIO chip for this instance
-
-        # Set stepper driver pin as output and initialize to low
-        try:
-            lgpio.gpio_free(self._handle, hardware.DRIVER_ENA_PIN) # i added this since it is already claimed in monitor.py
-        except lgpio.error as e:
-            self.logger.debug(f"check why monitor.py did not correctly claim ENA pin for stepper driver.")
-            pass
-        
+        self._handle = lgpio.gpiochip_open(hardware.GPIOCHIP)  # Open the GPIO chip for this instance        
         lgpio.gpio_claim_output(self._handle, hardware.DRIVER_ENA_PIN)
         lgpio.gpio_write(self._handle, hardware.DRIVER_ENA_PIN, 0)  # Default state is OFF (LOW)
 

@@ -164,10 +164,11 @@ class Monitor(LongRunningBackgroundJob):
             # Set LED_PIN as output and initialize to low
             lgpio.gpio_claim_output(self._handle, LED_PIN)
             lgpio.gpio_write(self._handle, LED_PIN, 0)
-            
+
             # Set stepper driver pin as output and initialize to low
             lgpio.gpio_claim_output(self._handle, DRIVER_ENA_PIN)
             lgpio.gpio_write(self._handle, DRIVER_ENA_PIN, 0)
+            lgpio.gpio_free(self._handle, DRIVER_ENA_PIN)
 
             # Set BUTTON_PIN as input with no pull-up
             lgpio.gpio_claim_input(self._handle, BUTTON_PIN, lgpio.SET_PULL_DOWN)
