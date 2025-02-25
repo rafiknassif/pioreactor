@@ -166,9 +166,15 @@ class Monitor(LongRunningBackgroundJob):
             lgpio.gpio_write(self._handle, LED_PIN, 0)
             
             # Set stepper driver pin as output and initialize to low
+            try:
+                lgpio.gpio_free(self._handle, DRIVER_ENA_PIN) # i added this since it is already claimed in monitor.py
+            except lgpio.error as e:
+                self.logger.debug(f"check why monitor.py did not correctly claim ENA pin for stepper driver.")
+                pass
+            
             lgpio.gpio_claim_output(self._handle, DRIVER_ENA_PIN)
             lgpio.gpio_write(self._handle, DRIVER_ENA_PIN, 0)
-            
+
             # Set BUTTON_PIN as input with no pull-up
             lgpio.gpio_claim_input(self._handle, BUTTON_PIN, lgpio.SET_PULL_DOWN)
 
