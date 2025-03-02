@@ -18,7 +18,7 @@ from pioreactor.whoami import is_testing_env
 
 # PWMs
 # Heater PWM
-HEATER_PWM_TO_PIN: PwmChannel = "5"
+HEATER_PWM_TO_PIN: PwmChannel = "2"
 
 # map between PWM channels and GPIO pins
 PWM_TO_PIN: dict[PwmChannel, GpioPin] = {
@@ -26,7 +26,7 @@ PWM_TO_PIN: dict[PwmChannel, GpioPin] = {
     "2": 13,  # hardware PWM1 available
     "3": 16,
     "4": 12,  # hardware PWM0 available
-    HEATER_PWM_TO_PIN: 18,  # dedicated to heater
+    HEATER_PWM_TO_PIN: 13,  # dedicated to heater changed from 18
 }
 
 
