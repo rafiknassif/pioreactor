@@ -46,7 +46,7 @@ class TemperatureAutomationJob(AutomationJob):
     MAX_TEMP_TO_REDUCE_HEATING = 63.0
     MAX_TEMP_TO_DISABLE_HEATING = 65.0
     MAX_TEMP_TO_SHUTDOWN = 66.0
-    INFERENCE_EVERY_N_SECONDS: float = 30
+    INFERENCE_EVERY_N_SECONDS: float = 10
 
     # COMMENTED OUT: everything related to OD & growth rate
     # _latest_growth_rate: Optional[float] = None
@@ -312,7 +312,7 @@ class TemperatureAutomationJob(AutomationJob):
         with self.pwm.lock_temporarily():
             previous_heater_dc = self.heater_duty_cycle
             self._update_heater(0)  # turn off heater if you want a passive measurement
-            sleep(1)
+            sleep(2)
             measured_temp = self.read_external_temperature()
             self._update_heater(previous_heater_dc)
 
