@@ -23,7 +23,7 @@ HEATER_PWM_TO_PIN: PwmChannel = "5"
 # map between PWM channels and GPIO pins
 PWM_TO_PIN: dict[PwmChannel, GpioPin] = {
     "1": 6 if hardware_version_info == (0, 1) else 17,
-    "2": 13,  # hardware PWM1 available
+    "5": 13,  # hardware PWM1 available
     "3": 16,
     "4": 12,  # hardware PWM0 available
     HEATER_PWM_TO_PIN: 13,  # dedicated to heater changed from 18
