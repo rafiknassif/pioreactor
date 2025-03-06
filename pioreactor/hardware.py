@@ -26,6 +26,7 @@ PWM_TO_PIN: dict[PwmChannel, GpioPin] = {
     "2": 13,  # hardware PWM1 available
     "3": 16,
     "4": 12,  # hardware PWM0 available
+    "5": 18, #not used currentyl
     HEATER_PWM_TO_PIN: 13,  # dedicated to heater changed from 18
 }
 
