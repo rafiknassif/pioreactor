@@ -46,7 +46,7 @@ class TemperatureAutomationJob(AutomationJob):
     MAX_TEMP_TO_REDUCE_HEATING = 63.0
     MAX_TEMP_TO_DISABLE_HEATING = 65.0
     MAX_TEMP_TO_SHUTDOWN = 66.0
-    INFERENCE_EVERY_N_SECONDS: float = 10
+    INFERENCE_EVERY_N_SECONDS: float = 60
 
     # COMMENTED OUT: everything related to OD & growth rate
     # _latest_growth_rate: Optional[float] = None
