@@ -54,7 +54,7 @@ class TemperatureAutomationJob(AutomationJob):
     INFERENCE_EVERY_N_SECONDS: float = 20
     # Constants for liquid loss detection
     MAX_TEMP_HISTORY: int = 5
-    PLATEAU_TEMP_CHANGE_THRESHOLD: float = 0.2  # °C change considered a plateau
+    PLATEAU_TEMP_CHANGE_THRESHOLD: float = 0.02  # °C change considered a plateau
     PLATEAU_CONSECUTIVE_COUNT: int = 3  # Number of consecutive plateaus to trigger alert
     PLATEAU_MIN_DUTY_CYCLE: float = 30  # Minimum duty cycle to consider plateau detection
 
@@ -219,7 +219,7 @@ class TemperatureAutomationJob(AutomationJob):
         # We look at the last PLATEAU_CONSECUTIVE_COUNT readings
         temp_changes = []
         for i in range(1, min(self.PLATEAU_CONSECUTIVE_COUNT + 1, len(self.recent_temp_readings))):
-            temp_changes.append(abs(self.recent_temp_readings[-i] - self.recent_temp_readings[-(i+1)]))
+            temp_changes.append(self.recent_temp_readings[-i] - self.recent_temp_readings[-(i+1)])
         
         avg_temp_change = sum(temp_changes) / len(temp_changes)
         self.logger.debug(f"Avg temp change: {avg_temp_change:.3f}°C")
@@ -261,7 +261,7 @@ class TemperatureAutomationJob(AutomationJob):
         except OSError as e:
             self.logger.debug(e, exc_info=True)
             raise exc.HardwareNotFoundError(
-                "Is the Heating PCB attached to the Pioreactor HAT? Unable to find temperature sensor."
+                "Is the Thermocouple attached? Unable to find temperature sensor."
             )
 
         averaged_temp = running_sum / running_count
