@@ -53,7 +53,6 @@ class TemperatureAutomationJob(AutomationJob):
     # previous_growth_rate: Optional[float] = None
     INFERENCE_EVERY_N_SECONDS: float = 30
     # Constants for liquid loss detection
-    MAX_TEMP_HISTORY: int = 4
     PLATEAU_TEMP_CHANGE_THRESHOLD: float = 0.05  # °C change considered a plateau
     PLATEAU_CONSECUTIVE_COUNT: int = 3  # Number of consecutive plateaus to trigger alert
     PLATEAU_MIN_DUTY_CYCLE: float = 49  # Minimum duty cycle to consider plateau detection
@@ -102,7 +101,8 @@ class TemperatureAutomationJob(AutomationJob):
         self.heating_pcb_tmp_driver = MCP9600(Thermocouple_ADDR)
 
         # Initialize liquid loss detection
-        self.recent_temp_readings = []
+        self.current_temp = None
+        self.previous_temp = None
         self.plateau_count = 0
         self.liquid_loss_detected = False
 
@@ -204,38 +204,32 @@ class TemperatureAutomationJob(AutomationJob):
     #             "readings are too stale (over 5 minutes old) - are `od_reading` and `growth_rate_calculating` running?"
     #         )
     #     return cast(float, self._latest_normalized_od)
+
     def detect_temp_plateau(self) -> bool:
         """
         Detect suspicious temperature plateaus during heating which may indicate liquid loss.
+        Simply checks if temperature change between last two readings is below threshold.
         
         Returns:
             bool: True if a plateau is detected (potential liquid loss), False otherwise
         """
-        # Need enough readings and significant heating to detect a plateau
-        if len(self.recent_temp_readings) < self.MAX_TEMP_HISTORY or self.heater_duty_cycle < self.PLATEAU_MIN_DUTY_CYCLE:
+        # Need both temperature readings and significant heating to detect a plateau
+        if self.current_temp is None or self.previous_temp is None or self.heater_duty_cycle < self.PLATEAU_MIN_DUTY_CYCLE:
             return False
         
-        # Calculate temperature change over last few readings
-        # We look at the last PLATEAU_CONSECUTIVE_COUNT readings
-        temp_changes = []
-        for i in range(1, min(self.PLATEAU_CONSECUTIVE_COUNT + 1, len(self.recent_temp_readings))):
-            temp_changes.append(self.recent_temp_readings[-i] - self.recent_temp_readings[-(i+1)])
+        # Calculate temperature change between current and previous reading
+        temp_change = self.current_temp - self.previous_temp
         
-        avg_temp_change = sum(temp_changes) / len(temp_changes)
-        self.logger.debug(f"Avg temp change: {avg_temp_change:.3f}°C")
-
-        # Current temperature
-        current_temp = self.recent_temp_readings[-1]
+        self.logger.debug(f"Temp change: {temp_change:.3f}°C")
         
-        # If heater is on significantly but temperature is barely rising
-        # and we're not at equilibrium temperature, this is suspicious
+        # If heater is on significantly but temperature is barely rising, this is suspicious
         if (self.heater_duty_cycle >= self.PLATEAU_MIN_DUTY_CYCLE and 
-            avg_temp_change < self.PLATEAU_TEMP_CHANGE_THRESHOLD):
+            temp_change < self.PLATEAU_TEMP_CHANGE_THRESHOLD):
             
             self.plateau_count += 1
             self.logger.debug(f"Temperature plateau detected ({self.plateau_count}/{self.PLATEAU_CONSECUTIVE_COUNT}). "
                             f"Duty cycle: {self.heater_duty_cycle}%, "
-                            f"Avg temp change: {avg_temp_change:.3f}°C")
+                            f"Temp change: {temp_change:.3f}°C")
             
             if self.plateau_count >= self.PLATEAU_CONSECUTIVE_COUNT:
                 return True
@@ -369,10 +363,9 @@ class TemperatureAutomationJob(AutomationJob):
             timestamp=current_utc_datetime(),
         )
         
-        # Add to temperature history for plateau detection
-        self.recent_temp_readings.append(measured_temp)
-        if len(self.recent_temp_readings) > self.MAX_TEMP_HISTORY:
-            self.recent_temp_readings.pop(0)
+        # Update temperature tracking for plateau detection
+        self.previous_temp = self.current_temp
+        self.current_temp = measured_temp
         
         # Check for liquid loss via temperature plateau detection
         # Only run this check if heating is active
@@ -381,7 +374,7 @@ class TemperatureAutomationJob(AutomationJob):
             
             if potential_liquid_loss:
                 self.logger.error(
-                    "Temperature plateau detected while heating - possible liquid loss or poor thermal contact. Check air bubbler"
+                    "Temperature plateau detected while heating - possible liquid loss or poor thermal contact. Check air bubbler. "
                     "Disabling heating for safety."
                 )
                 self.set_state(self.DISCONNECTED)
