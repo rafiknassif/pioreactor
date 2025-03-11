@@ -51,7 +51,7 @@ class TemperatureAutomationJob(AutomationJob):
     # _latest_normalized_od: Optional[float] = None
     # previous_normalized_od: Optional[float] = None
     # previous_growth_rate: Optional[float] = None
-    INFERENCE_EVERY_N_SECONDS: float = 20
+    INFERENCE_EVERY_N_SECONDS: float = 30
     # Constants for liquid loss detection
     MAX_TEMP_HISTORY: int = 4
     PLATEAU_TEMP_CHANGE_THRESHOLD: float = 0.05  # °C change considered a plateau
