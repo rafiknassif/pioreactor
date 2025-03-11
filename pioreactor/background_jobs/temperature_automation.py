@@ -53,10 +53,10 @@ class TemperatureAutomationJob(AutomationJob):
     # previous_growth_rate: Optional[float] = None
     INFERENCE_EVERY_N_SECONDS: float = 20
     # Constants for liquid loss detection
-    MAX_TEMP_HISTORY: int = 5
-    PLATEAU_TEMP_CHANGE_THRESHOLD: float = 0.02  # °C change considered a plateau
+    MAX_TEMP_HISTORY: int = 4
+    PLATEAU_TEMP_CHANGE_THRESHOLD: float = 0.05  # °C change considered a plateau
     PLATEAU_CONSECUTIVE_COUNT: int = 3  # Number of consecutive plateaus to trigger alert
-    PLATEAU_MIN_DUTY_CYCLE: float = 30  # Minimum duty cycle to consider plateau detection
+    PLATEAU_MIN_DUTY_CYCLE: float = 40  # Minimum duty cycle to consider plateau detection
 
     latest_temperature = None
     previous_temperature = None
