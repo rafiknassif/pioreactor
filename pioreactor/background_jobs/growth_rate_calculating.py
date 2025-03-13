@@ -521,7 +521,7 @@ class GrowthRateCalculator(BackgroundJob):
             self.time_of_previous_observation = timestamp
             
         dilution = getattr(self, "latest_sdr", 0)  # Default to 0 if not yet received
-        self.logger.info(f"DILUTION VALUE PASSED TO UKF: {dilution} 1/h")
+        self.logger.debug(f"DILUTION VALUE PASSED TO UKF: {dilution} 1/h")
 
         updated_state_, covariance_ = self.ukf.update(list(scaled_observations.values()), dt, updating_noise_covariance, dilution)
         latest_od_filtered, latest_specific_growth_rate = float(updated_state_[0]), float(updated_state_[1])
