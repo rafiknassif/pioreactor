@@ -47,7 +47,7 @@ def briefer_pause() -> float:
 
 
 def pause_between_subdoses() -> float:
-    d = float(config.get("dosing_automation.config", "pause_between_subdoses_seconds", fallback=5.0))
+    d = float(config.get("bioreactor", "pause_between_subdoses_seconds", fallback=5.0))
     time.sleep(d)
     return d
 
@@ -211,12 +211,12 @@ class DosingAutomationJob(AutomationJob):
     alt_media_throughput: float  # amount of alt-media that has been expelled
     liquid_volume: float  # amount in the vial
     MAX_VIAL_VOLUME_TO_STOP: float = config.getfloat(
-        "dosing_automation.config", "max_volume_to_stop", fallback=18.0
+        "bioreactor", "max_volume_to_stop", fallback=18.0
     )
     MAX_VIAL_VOLUME_TO_WARN: float = 0.95 * MAX_VIAL_VOLUME_TO_STOP
 
     MAX_SUBDOSE = config.getfloat(
-        "dosing_automation.config", "max_subdose", fallback=1.0
+        "bioreactor", "max_subdose", fallback=1.0
     )  # arbitrary, but should be some value that the pump is well calibrated for.
 
     def __init_subclass__(cls, **kwargs) -> None:
@@ -505,7 +505,7 @@ class DosingAutomationJob(AutomationJob):
 
                 # run remove_waste for an additional few seconds to keep volume constant (determined by the length of the waste tube)
                 extra_waste_ml = waste_ml * config.getfloat(
-                    "dosing_automation.config", "waste_removal_multiplier", fallback=2.0
+                    "bioreactor", "waste_removal_multiplier", fallback=2.0
                 )
                 # fmt: skip
                 if extra_waste_ml > 0:
