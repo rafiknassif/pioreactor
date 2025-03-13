@@ -234,9 +234,8 @@ class CultureGrowthUKF:
         self._scale_covariance_timer: Optional[Timer] = None
         self._covariance_pre_scale = None
         
-        def f(x, dt):
+        def f(x, dt, dilution):
             """State transition function"""
-            dilution = 0 #to be incoroporated later
             od_ratio, specific_growth_rate, acc = x
             od_pred_ratio=od_ratio*np.exp(((specific_growth_rate-dilution)*dt)+(0.5*acc*dt**2))
             specific_growth_rate_pred= specific_growth_rate + (acc*dt)
@@ -257,7 +256,7 @@ class CultureGrowthUKF:
 
 
     
-    def update(self, observation_: list[float], dt: float, updating_noise_covariance: float):
+    def update(self, observation_: list[float], dt: float, updating_noise_covariance: float, dilution: float):
 
         observation = np.asarray(observation_)
         # assert observation.shape[0] == self.n_sensors, (observation, self.n_sensors)
@@ -265,7 +264,7 @@ class CultureGrowthUKF:
         self.ukf.R = np.asarray(updating_noise_covariance)
 
         # Predict
-        self.ukf.predict(dt=dt)
+        self.ukf.predict(dt=dt, dilution=dilution)
         '''
         # state_prediction = self.update_state_from_previous_state(self.state_, dt)
         # covariance_prediction = self.update_covariance_from_old_covariance(self.state_, self.covariance_, dt)

@@ -230,7 +230,8 @@ class GrowthRateCalculator(BackgroundJob):
             alpha,
             beta,
             kappa,
-            covariance_estimate
+            covariance_estimate,
+            dilution = 0
         )
 
     # def create_obs_noise_covariance(self, obs_std):  # type: ignore
@@ -520,7 +521,10 @@ class GrowthRateCalculator(BackgroundJob):
                 dt = 0.0
 
             self.time_of_previous_observation = timestamp
-        updated_state_, covariance_ = self.ukf.update(list(scaled_observations.values()), dt, updating_noise_covariance)
+            
+        dilution = getattr(self, "latest_sdr", 0)  # Default to 0 if not yet received
+
+        updated_state_, covariance_ = self.ukf.update(list(scaled_observations.values()), dt, updating_noise_covariance, dilution)
         latest_od_filtered, latest_specific_growth_rate = float(updated_state_[0]), float(updated_state_[1])
         density_converted = self.od_to_density_converion*latest_od_filtered*self.od_normalization_factors['1']#unideal hardcoding the channel for now
         od_filtered = structs.ODFiltered(
@@ -567,6 +571,15 @@ class GrowthRateCalculator(BackgroundJob):
                     fallback=2500,
                 ),
             )
+    
+    def _update_sdr(self, message: pt.MQTTMessage) -> None:
+        """Callback function to update the latest dilution rate from MQTT"""
+        if message.payload:
+            try:
+                self.latest_sdr = float(message.payload.decode())
+                self.logger.info(f"Updated SDR from MQTT: {self.latest_sdr} 1/h")
+            except ValueError:
+                self.logger.warning(f"Invalid SDR value received: {message.payload}")
 
     def start_passive_listeners(self) -> None:
         # process incoming data
@@ -581,6 +594,12 @@ class GrowthRateCalculator(BackgroundJob):
             f"pioreactor/{self.unit}/{self.experiment}/dosing_events",
             qos=QOS.EXACTLY_ONCE,
             allow_retained=False,
+        )
+        self.subscribe_and_callback(
+            self._update_sdr,
+            f"pioreactor/{self.unit}/{self.experiment}/dosing_automation/specific_dilution_rate",
+            qos=QOS.EXACTLY_ONCE,
+            allow_retained=True,  # Allow retrieval of last published SDR value
         )
 
     @staticmethod

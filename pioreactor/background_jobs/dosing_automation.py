@@ -28,7 +28,7 @@ from pioreactor.utils import SummableDict
 from pioreactor.utils import whoami
 from pioreactor.utils.timing import current_utc_datetime
 from pioreactor.utils.timing import RepeatedTimer
-
+from pioreactor.pubsub import publish
 
 def close(x: float, y: float) -> bool:
     return abs(x - y) < 1e-9
@@ -580,6 +580,10 @@ class DosingAutomationJob(AutomationJob):
     ########## Private & internal methods
 
     def on_disconnected(self) -> None:
+
+        publish(f"pioreactor/{self.unit}/{self.experiment}/dosing_automation/specific_dilution_rate","0")
+        self.logger.debug("Dosing job stopped. SDR reset to 0.")
+
         with suppress(AttributeError):
             self.run_thread.join(
                 timeout=10

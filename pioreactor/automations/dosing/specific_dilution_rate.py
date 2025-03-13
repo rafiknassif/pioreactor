@@ -4,6 +4,7 @@ from pioreactor.automations import events
 from pioreactor.automations.dosing.base import DosingAutomationJob
 from pioreactor.exc import CalibrationError
 from pioreactor.utils import local_persistent_storage
+from pioreactor.pubsub import publish
 
 
 class SDR(DosingAutomationJob):
@@ -27,6 +28,17 @@ class SDR(DosingAutomationJob):
 
     def execute(self) -> events.DilutionEvent:
         volume_actually_cycled = self.execute_io_action(media_ml=self.volume, waste_ml=self.volume)
+
+        # Calculate and Publish the specific dilution rate (SDR)
+        dilution_rate = self.sdr if self.sdr is not None else 0  # Ensure a default value
+
+        publish(
+            f"pioreactor/{self.unit}/{self.experiment}/dosing_automation/specific_dilution_rate",
+            str(dilution_rate)
+        )
+
+        self.logger.debug(f"Published SDR: {dilution_rate} 1/h")
+
         return events.DilutionEvent(
             f"exchanged {volume_actually_cycled['waste_ml']}mL",
             data={"volume_actually_cycled": volume_actually_cycled["waste_ml"]},
