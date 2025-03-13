@@ -230,8 +230,7 @@ class GrowthRateCalculator(BackgroundJob):
             alpha,
             beta,
             kappa,
-            covariance_estimate,
-            dilution = 0
+            covariance_estimate
         )
 
     # def create_obs_noise_covariance(self, obs_std):  # type: ignore
