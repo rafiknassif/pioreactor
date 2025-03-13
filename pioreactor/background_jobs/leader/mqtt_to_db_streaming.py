@@ -178,7 +178,7 @@ def parse_od(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "angle": int(od_reading.angle),
         "channel": int(od_reading.channel),
     }
-    logger.debug(data)
+    # logger.debug(data)
     return data
 
 
@@ -196,7 +196,7 @@ def parse_od_filtered(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "normalized_od_reading": od_reading.od_filtered,
     }
 
-    logger.debug(data)
+    # logger.debug(data)
     return data
 def parse_density(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
@@ -212,7 +212,7 @@ def parse_density(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "density": density.density,
     }
 
-    logger.debug(data)
+    # logger.debug(data)
     return data
 
 def parse_od_blank(topic: str, payload: pt.MQTTMessagePayload) -> dict:
@@ -303,7 +303,7 @@ def parse_absolute_growth_rate(topic: str, payload: pt.MQTTMessagePayload) -> di
         "absolute_growth_rate": agr.absolute_growth_rate,
     }
 
-    logger.debug(data)
+    # logger.debug(data)
     return data
 
 def parse_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
@@ -370,7 +370,7 @@ def parse_max_lightrod_temperature(topic: str, payload: pt.MQTTMessagePayload) -
     }
     from pioreactor.logging import create_logger
     logger = create_logger("max_lightrod_parse-testing")
-    logger.debug(f"Parsed LRT for plotting: {parsed_data}")
+    # logger.debug(f"Parsed LRT for plotting: {parsed_data}")
 
     return parsed_data
 
@@ -387,7 +387,7 @@ def parse_pbr_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     }
     from pioreactor.logging import create_logger
     logger = create_logger("max_lightrod_parse-testing")
-    logger.debug(f"Parsed PBR TEMP: {parsed_data}")
+    # logger.debug(f"Parsed PBR TEMP: {parsed_data}")
 
     return parsed_data
 

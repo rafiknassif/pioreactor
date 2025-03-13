@@ -413,19 +413,19 @@ class GrowthRateCalculator(BackgroundJob):
 
         return variances
 
-    def update_ukf_variance_after_event(self, minutes: float, factor: float) -> None: #look into this
-        if whoami.is_testing_env():
-            msg = subscribe(  # needs to be pubsub.subscribe (ie not sub_client.subscribe) since this is called in a callback
-                f"pioreactor/{self.unit}/{self.experiment}/od_reading/interval",
-                timeout=1.0,
-            )
-            if msg:
-                interval = float(msg.payload)
-            else:
-                interval = 5
-            self.ukf.scale_OD_variance_for_next_n_seconds(factor, minutes * (12 * interval))
-        else:
-            self.ukf.scale_OD_variance_for_next_n_seconds(factor, minutes * 60)
+    # def update_ukf_variance_after_event(self, minutes: float, factor: float) -> None: #look into this
+    #     if whoami.is_testing_env():
+    #         msg = subscribe(  # needs to be pubsub.subscribe (ie not sub_client.subscribe) since this is called in a callback
+    #             f"pioreactor/{self.unit}/{self.experiment}/od_reading/interval",
+    #             timeout=1.0,
+    #         )
+    #         if msg:
+    #             interval = float(msg.payload)
+    #         else:
+    #             interval = 5
+    #         self.ukf.scale_OD_variance_for_next_n_seconds(factor, minutes * (12 * interval))
+    #     else:
+    #         self.ukf.scale_OD_variance_for_next_n_seconds(factor, minutes * 60)
 
     def scale_raw_observations(self, observations: dict[pt.PdChannel, float]) -> dict[pt.PdChannel, float]:
         """
@@ -449,7 +449,6 @@ class GrowthRateCalculator(BackgroundJob):
         updating_noise_covariance = (1e-5*np.exp(7.0895 * scaled_signals['1']*self.od_normalization_factors['1']))/(self.od_normalization_factors['1']**2)
 
         return scaled_signals, updating_noise_covariance
-
 
     def respond_to_od_readings_from_mqtt(self, message: pt.MQTTMessage) -> None:
         if self.state != self.READY:
@@ -550,33 +549,33 @@ class GrowthRateCalculator(BackgroundJob):
 
         return growth_rate, od_filtered, kf_outputs, absolute_growth_rate, density
 
-    def respond_to_dosing_event_from_mqtt(self, message: pt.MQTTMessage) -> None:
-        dosing_event = decode(message.payload, type=structs.DosingEvent)
-        return self.respond_to_dosing_event(dosing_event)
+    # def respond_to_dosing_event_from_mqtt(self, message: pt.MQTTMessage) -> None:
+    #     dosing_event = decode(message.payload, type=structs.DosingEvent)
+    #     return self.respond_to_dosing_event(dosing_event)
 
-    def respond_to_dosing_event(self, dosing_event: structs.DosingEvent) -> None:
-        # here we can add custom logic to handle dosing events.
-        # an improvement to this: the variance factor is proportional to the amount exchanged.
-        if dosing_event.event != "remove_waste":
-            self.update_ukf_variance_after_event(
-                minutes=config.getfloat(
-                    "growth_rate_calculating.config",
-                    "ukf_variance_shift_post_dosing_minutes",
-                    fallback=0.40,
-                ),
-                factor=config.getfloat(
-                    "growth_rate_calculating.config",
-                    "ukf_variance_shift_post_dosing_factor",
-                    fallback=2500,
-                ),
-            )
+    # def respond_to_dosing_event(self, dosing_event: structs.DosingEvent) -> None:
+    #     # here we can add custom logic to handle dosing events.
+    #     # an improvement to this: the variance factor is proportional to the amount exchanged.
+    #     if dosing_event.event != "remove_waste":
+    #         self.update_ukf_variance_after_event(
+    #             minutes=config.getfloat(
+    #                 "growth_rate_calculating.config",
+    #                 "ukf_variance_shift_post_dosing_minutes",
+    #                 fallback=0.40,
+    #             ),
+    #             factor=config.getfloat(
+    #                 "growth_rate_calculating.config",
+    #                 "ukf_variance_shift_post_dosing_factor",
+    #                 fallback=2500,
+    #             ),
+    #         )
     
     def _update_sdr(self, message: pt.MQTTMessage) -> None:
         """Callback function to update the latest dilution rate from MQTT"""
         if message.payload:
             try:
                 self.latest_sdr = float(message.payload.decode())
-                self.logger.info(f"Updated SDR from MQTT: {self.latest_sdr} 1/h")
+                self.logger.debug(f"Updated SDR from MQTT: {self.latest_sdr} 1/h")
             except ValueError:
                 self.logger.warning(f"Invalid SDR value received: {message.payload}")
 
@@ -588,12 +587,12 @@ class GrowthRateCalculator(BackgroundJob):
             qos=QOS.EXACTLY_ONCE,
             allow_retained=False,
         )
-        self.subscribe_and_callback(
-            self.respond_to_dosing_event_from_mqtt,
-            f"pioreactor/{self.unit}/{self.experiment}/dosing_events",
-            qos=QOS.EXACTLY_ONCE,
-            allow_retained=False,
-        )
+        # self.subscribe_and_callback(
+        #     self.respond_to_dosing_event_from_mqtt,
+        #     f"pioreactor/{self.unit}/{self.experiment}/dosing_events",
+        #     qos=QOS.EXACTLY_ONCE,
+        #     allow_retained=False,
+        # )
         self.subscribe_and_callback(
             self._update_sdr,
             f"pioreactor/{self.unit}/{self.experiment}/dosing_automation/specific_dilution_rate",

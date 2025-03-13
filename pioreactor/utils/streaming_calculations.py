@@ -90,7 +90,7 @@ class ExponentialMovingStd:
 
 
 class CultureGrowthUKF:
-
+    # these comments are from old code just keeping here as reference to find real equation derivation used for UKF check local docs
     """
     Modified from the algorithm in
     https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0181923#pone.0181923.s007
@@ -304,42 +304,42 @@ class CultureGrowthUKF:
 
         return self.ukf.x, self.ukf.P
 
-    def scale_OD_variance_for_next_n_seconds(self, factor: float, seconds: float):
-        """
-        This is a bit tricky: we do some state handling here (eg: keeping track of the previous covariance matrix)
-        but we will be invoking this function multiple times. So we start a Timer but cancel it
-        if we invoke this function again (i.e. a new dosing event). When the Timer successfully
-        executes its function, then we restore state (add back the covariance matrix.)
+    # def scale_OD_variance_for_next_n_seconds(self, factor: float, seconds: float):
+    #     """
+    #     This is a bit tricky: we do some state handling here (eg: keeping track of the previous covariance matrix)
+    #     but we will be invoking this function multiple times. So we start a Timer but cancel it
+    #     if we invoke this function again (i.e. a new dosing event). When the Timer successfully
+    #     executes its function, then we restore state (add back the covariance matrix.)
 
-        TODO: this should be decoupled from the UKF class.
+    #     TODO: this should be decoupled from the UKF class.
 
-        """
-        import numpy as np
+    #     """
+    #     import numpy as np
 
-        def reverse_scale_covariance() -> None:
-            self._currently_scaling_covariance = False
-            self.covariance_ = self._covariance_pre_scale
-            self._covariance_pre_scale = None
-            self.handle_outliers = True
+    #     def reverse_scale_covariance() -> None:
+    #         self._currently_scaling_covariance = False
+    #         self.covariance_ = self._covariance_pre_scale
+    #         self._covariance_pre_scale = None
+    #         self.handle_outliers = True
 
-        def forward_scale_covariance():
-            if not self._currently_scaling_covariance:
-                self._covariance_pre_scale = self.covariance_.copy()
+    #     def forward_scale_covariance():
+    #         if not self._currently_scaling_covariance:
+    #             self._covariance_pre_scale = self.covariance_.copy()
 
-            self._currently_scaling_covariance = True
-            self.covariance_ = np.diag(self._covariance_pre_scale.diagonal())
-            self.covariance_[0, 0] *= factor
-            self.handle_outliers = False
+    #         self._currently_scaling_covariance = True
+    #         self.covariance_ = np.diag(self._covariance_pre_scale.diagonal())
+    #         self.covariance_[0, 0] *= factor
+    #         self.handle_outliers = False
 
-        if self._currently_scaling_covariance:
-            assert self._scale_covariance_timer is not None
-            self._scale_covariance_timer.cancel()
+    #     if self._currently_scaling_covariance:
+    #         assert self._scale_covariance_timer is not None
+    #         self._scale_covariance_timer.cancel()
 
-        self._scale_covariance_timer = Timer(seconds, reverse_scale_covariance)
-        self._scale_covariance_timer.daemon = True
-        self._scale_covariance_timer.start()
+    #     self._scale_covariance_timer = Timer(seconds, reverse_scale_covariance)
+    #     self._scale_covariance_timer.daemon = True
+    #     self._scale_covariance_timer.start()
 
-        forward_scale_covariance()
+    #     forward_scale_covariance()
     '''
     # def update_state_from_previous_state(self, state, dt: float):
     #     Denoted "f" in literature, x_{k} = f(x_{k-1})
