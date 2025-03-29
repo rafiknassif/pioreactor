@@ -29,6 +29,7 @@ class ReadLightRodTemps(BackgroundJob):
         self.initializeDrivers(LightRodTemp_ADDR)
         self.set_warning_threshold(temp_thresh)
         self.lightrod_temps = None  # initialize for mqtt broadcast
+        self.connected_lightrods = {}  # Track which lightrods are connected
 
         dt = 1 / (config.getfloat("lightrod_temp_reading.config", "samples_per_second", fallback=0.033))
 
@@ -44,6 +45,28 @@ class ReadLightRodTemps(BackgroundJob):
             LightRod: [TMP1075(address=addr) for addr in addresses]
             for LightRod, addresses in addr_map.items()
         }
+        # Check which lightrods are actually connected
+        self.check_connected_lightrods()
+
+    def check_connected_lightrods(self):
+        """Check which lightrods are connected by trying to read from them once"""
+        self.connected_lightrods = {}
+        for lightRod, drivers in self.tmp_driver_map.items():
+            rod_connected = True
+            # Try to read from each sensor in the lightrod
+            for i, driver in enumerate(drivers):
+                try:
+                    driver.get_temperature()
+                except OSError:
+                    # If any sensor fails, mark the whole lightrod as disconnected
+                    rod_connected = False
+                    break
+            
+            self.connected_lightrods[lightRod] = rod_connected
+            if not rod_connected:
+                self.logger.info(f"Lightrod {lightRod} appears to be disconnected - skipping it for temperature readings.")
+            else:
+                self.logger.info(f"Lightrod {lightRod} is connected and will be monitored.")
 
     def set_warning_threshold(self, temp_thresh):
         self.warning_threshold = temp_thresh
@@ -51,23 +74,38 @@ class ReadLightRodTemps(BackgroundJob):
     def read_temps(self):
         lightrod_dict = {}
         for lightRod, drivers in self.tmp_driver_map.items():
-            temps = np.zeros(3)
-            for i in range(3):
-                temps[i] = self._read_average_temperature(drivers[i])
+            # Skip disconnected lightrods
+            if not self.connected_lightrods.get(lightRod, False):
+                continue
+                
+            try:
+                temps = np.zeros(3)
+                for i in range(3):
+                    temps[i] = self._read_average_temperature(drivers[i])
 
-            lightrod_dict[lightRod] = LightRodTemperature(
-                top_temp=float(round(temps[0], 2)),
-                middle_temp=float(round(temps[1], 2)),
-                bottom_temp=float(round(temps[2], 2)),
+                lightrod_dict[lightRod] = LightRodTemperature(
+                    top_temp=float(round(temps[0], 2)),
+                    middle_temp=float(round(temps[1], 2)),
+                    bottom_temp=float(round(temps[2], 2)),
+                    timestamp=current_utc_datetime(),
+                )
+            except exc.HardwareNotFoundError as e:
+                # If a lightrod's sensor fails during operation, mark it as disconnected
+                self.logger.warning(f"Lightrod {lightRod} disconnected during operation: {str(e)}")
+                self.connected_lightrods[lightRod] = False
+                continue
+                
+        # Only proceed if we have at least one connected lightrod
+        if lightrod_dict:
+            self.publish_max_temps(lightrod_dict)
+            lightRod_temperatures = LightRodTemperatures(
                 timestamp=current_utc_datetime(),
+                temperatures=lightrod_dict,
             )
-        self.publish_max_temps(lightrod_dict)
-        lightRod_temperatures = LightRodTemperatures(
-            timestamp=current_utc_datetime(),
-            temperatures=lightrod_dict,
-        )
-        # self.log_lightrod_temperatures(lightRod_temperatures)
-        self.lightrod_temps = lightRod_temperatures
+            # self.log_lightrod_temperatures(lightRod_temperatures)
+            self.lightrod_temps = lightRod_temperatures
+        else:
+            self.logger.warning("No lightrods connected - unable to read any temperatures")
 
     def publish_max_temps(self, lightrod_dict):
         unit = get_unit_name()
@@ -98,7 +136,6 @@ class ReadLightRodTemps(BackgroundJob):
                 f"LightRod: {lightRod} | "
                 f"Top: {temperature.top_temp}℃, "
                 f"Middle: {temperature.middle_temp}℃, "
-
                 f"Bottom: {temperature.bottom_temp}℃ | "
                 f"Timestamp: {temperature.timestamp}"
             )
@@ -106,6 +143,15 @@ class ReadLightRodTemps(BackgroundJob):
     def on_disconnected(self) -> None:
         with suppress(AttributeError):
             self.read_lightrod_temperature_timer.cancel()
+
+    # def reset_connected_status(self):
+    #     """
+    #     Method to rescan and reset connected status of all lightrods.
+    #     This could be called periodically or via MQTT to check for reconnected lightrods.
+    #     """
+    #     self.logger.info("Rescanning for connected lightrods...")
+    #     self.check_connected_lightrods()
+    #     return self.connected_lightrods
 
     ########## Private & internal methods
 
@@ -153,18 +199,6 @@ class ReadLightRodTemps(BackgroundJob):
 
         return temp > self.warning_threshold
 
-
-# if __name__ == "__main__":
-#     from pioreactor.whoami import get_unit_name
-#     from pioreactor.whoami import get_assigned_experiment_name
-#
-#     unit = get_unit_name()
-#     experiment = get_assigned_experiment_name(unit)
-#
-#     job = ReadLightRodTempsJob(unit=unit, experiment=experiment)
-#
-#
-#     job.block_until_disconnected()
 
 import click
 

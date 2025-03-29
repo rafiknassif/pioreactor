@@ -27,7 +27,23 @@ BEGIN
         LR_C_top_temp,
         LR_C_middle_temp,
         LR_C_bottom_temp,
-        LR_C_timestamp
+        LR_C_timestamp,
+        LR_D_top_temp,
+        LR_D_middle_temp,
+        LR_D_bottom_temp,
+        LR_D_timestamp,
+        LR_E_top_temp,
+        LR_E_middle_temp,
+        LR_E_bottom_temp,
+        LR_E_timestamp,
+        LR_F_top_temp,
+        LR_F_middle_temp,
+        LR_F_bottom_temp,
+        LR_F_timestamp,
+        LR_G_top_temp,
+        LR_G_middle_temp,
+        LR_G_bottom_temp,
+        LR_G_timestamp
     ) VALUES (
         new.pioreactor_unit,
         new.experiment,
@@ -43,7 +59,23 @@ BEGIN
         new.LR_C_top_temp,
         new.LR_C_middle_temp,
         new.LR_C_bottom_temp,
-        new.LR_C_timestamp
+        new.LR_C_timestamp,
+        new.LR_D_top_temp,
+        new.LR_D_middle_temp,
+        new.LR_D_bottom_temp,
+        new.LR_D_timestamp,
+        new.LR_E_top_temp,
+        new.LR_E_middle_temp,
+        new.LR_E_bottom_temp,
+        new.LR_E_timestamp,
+        new.LR_F_top_temp,
+        new.LR_F_middle_temp,
+        new.LR_F_bottom_temp,
+        new.LR_F_timestamp,
+        new.LR_G_top_temp,
+        new.LR_G_middle_temp,
+        new.LR_G_bottom_temp,
+        new.LR_G_timestamp
     )
     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
         LR_A_top_temp=excluded.LR_A_top_temp,
@@ -57,7 +89,23 @@ BEGIN
         LR_C_top_temp=excluded.LR_C_top_temp,
         LR_C_middle_temp=excluded.LR_C_middle_temp,
         LR_C_bottom_temp=excluded.LR_C_bottom_temp,
-        LR_C_timestamp=excluded.LR_C_timestamp;
+        LR_C_timestamp=excluded.LR_C_timestamp,
+        LR_D_top_temp=excluded.LR_D_top_temp,
+        LR_D_middle_temp=excluded.LR_D_middle_temp,
+        LR_D_bottom_temp=excluded.LR_D_bottom_temp,
+        LR_D_timestamp=excluded.LR_D_timestamp,
+        LR_E_top_temp=excluded.LR_E_top_temp,
+        LR_E_middle_temp=excluded.LR_E_middle_temp,
+        LR_E_bottom_temp=excluded.LR_E_bottom_temp,
+        LR_E_timestamp=excluded.LR_E_timestamp,
+        LR_F_top_temp=excluded.LR_F_top_temp,
+        LR_F_middle_temp=excluded.LR_F_middle_temp,
+        LR_F_bottom_temp=excluded.LR_F_bottom_temp,
+        LR_F_timestamp=excluded.LR_F_timestamp,
+        LR_G_top_temp=excluded.LR_G_top_temp,
+        LR_G_middle_temp=excluded.LR_G_middle_temp,
+        LR_G_bottom_temp=excluded.LR_G_bottom_temp,
+        LR_G_timestamp=excluded.LR_G_timestamp;
 END;
 
 
