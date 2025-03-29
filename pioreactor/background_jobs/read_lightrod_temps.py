@@ -29,7 +29,6 @@ class ReadLightRodTemps(BackgroundJob):
         self.initializeDrivers(LightRodTemp_ADDR)
         self.set_warning_threshold(temp_thresh)
         self.lightrod_temps = None  # initialize for mqtt broadcast
-        self.connected_lightrods = {}  # Track which lightrods are connected
 
         dt = 1 / (config.getfloat("lightrod_temp_reading.config", "samples_per_second", fallback=0.033))
 
@@ -63,7 +62,7 @@ class ReadLightRodTemps(BackgroundJob):
                     break
             
             self.connected_lightrods[lightRod] = rod_connected
-            self.logger.debug(f"connect LRs: {self.connected_lightrods.__repr__()}")
+            # self.logger.debug(f"connect LRs: {self.connected_lightrods.__repr__()}")
             if not rod_connected:
                 self.logger.info(f"Lightrod {lightRod} appears to be disconnected - skipping it for temperature readings.")
             else:
