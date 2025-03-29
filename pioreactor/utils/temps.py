@@ -15,53 +15,16 @@ class TMP1075:
     """
 
     TEMP_REGISTER = bytearray([0x00])
-    # CONFIG_REGISTER = bytearray([0x01])
+    CONFIG_REGISTER = bytearray([0x01])
 
     def __init__(self, address: int = 0x4F):
-        """Initialize the TMP1075 driver.
-        
-        This version doesn't raise an exception if the device is not connected.
-        Instead, it sets a flag that's checked during temperature readings.
-        """
-        from pioreactor.hardware import SCL, SDA
-        
-        self.address = address
-        self.connected = False
-        self.i2c = None
-        self.comm_port = None
-        
-        try:
-            self.comm_port = I2C(SCL, SDA)
-            # Check if the device is present before trying to create a device
-            self.i2c = I2CDevice(self.comm_port, address, probe=True)
-            
-            # Try an actual read to confirm connectivity
-            test_buf = bytearray(2)
-            self.i2c.write_then_readinto(self.TEMP_REGISTER, test_buf)
-            
-            self.connected = True
-        except (ValueError, OSError):
-            # Device not found or error reading - will return None for temperature readings
-            self.connected = False
-            # Don't raise an exception here, just mark as disconnected
-            pass
+        comm_port = I2C(hardware.SCL, hardware.SDA)
+        self.i2c = I2CDevice(comm_port, address)
 
     def get_temperature(self) -> float:
-        """Read temperature from the sensor.
-        
-        If the sensor is not connected, raises OSError.
-        """
-        if not self.connected or self.i2c is None:
-            raise OSError(f"Temperature sensor at address 0x{self.address:02x} is not connected")
-            
         b = bytearray(2)
-        try:
-            self.i2c.write_then_readinto(self.TEMP_REGISTER, b)
-            return ((b[0] << 4) + (b[1] >> 4)) * 0.0625
-        except OSError as e:
-            # If we get an error during reading, mark the device as disconnected
-            self.connected = False
-            raise OSError(f"Error reading from temperature sensor at address 0x{self.address:02x}: {str(e)}")
+        self.i2c.write_then_readinto(self.TEMP_REGISTER, b)
+        return ((b[0] << 4) + (b[1] >> 4)) * 0.0625
 
     @property
     def temperature(self) -> float:
