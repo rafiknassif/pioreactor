@@ -76,7 +76,7 @@ class ReadLightRodTemps(BackgroundJob):
         sensor_success = None
         for lightRod, drivers in self.tmp_driver_map.items():
             # Skip disconnected lightrods
-            if self.connected_lightrods[lightRod] == False:
+            if (self.connected_lightrods is not None) and (self.connected_lightrods[lightRod] == False):
                 continue
 
             try:
