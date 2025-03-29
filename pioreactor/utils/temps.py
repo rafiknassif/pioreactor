@@ -28,14 +28,20 @@ class TMP1075:
         self.address = address
         self.connected = False
         self.i2c = None
+        self.comm_port = None
         
         try:
-            comm_port = I2C(SCL, SDA)
+            self.comm_port = I2C(SCL, SDA)
             # Check if the device is present before trying to create a device
-            self.i2c = I2CDevice(comm_port, address, probe=True)
+            self.i2c = I2CDevice(self.comm_port, address, probe=True)
+            
+            # Try an actual read to confirm connectivity
+            test_buf = bytearray(2)
+            self.i2c.write_then_readinto(self.TEMP_REGISTER, test_buf)
+            
             self.connected = True
-        except ValueError:
-            # Device not found - will return None for temperature readings
+        except (ValueError, OSError):
+            # Device not found or error reading - will return None for temperature readings
             self.connected = False
             # Don't raise an exception here, just mark as disconnected
             pass

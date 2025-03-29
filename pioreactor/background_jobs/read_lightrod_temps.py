@@ -73,6 +73,8 @@ class ReadLightRodTemps(BackgroundJob):
 
     def read_temps(self):
         lightrod_dict = {}
+        any_success = False
+        
         for lightRod, drivers in self.tmp_driver_map.items():
             # Skip disconnected lightrods
             if not self.connected_lightrods.get(lightRod, False):
@@ -80,23 +82,39 @@ class ReadLightRodTemps(BackgroundJob):
                 
             try:
                 temps = np.zeros(3)
+                sensor_success = False
+                
                 for i in range(3):
-                    temps[i] = self._read_average_temperature(drivers[i])
-
-                lightrod_dict[lightRod] = LightRodTemperature(
-                    top_temp=float(round(temps[0], 2)),
-                    middle_temp=float(round(temps[1], 2)),
-                    bottom_temp=float(round(temps[2], 2)),
-                    timestamp=current_utc_datetime(),
-                )
-            except exc.HardwareNotFoundError as e:
-                # If a lightrod's sensor fails during operation, mark it as disconnected
+                    try:
+                        temps[i] = self._read_average_temperature(drivers[i])
+                        sensor_success = True
+                    except exc.HardwareNotFoundError as e:
+                        # Individual sensor failure
+                        self.logger.debug(f"Sensor {i} on lightrod {lightRod} failed: {str(e)}")
+                        temps[i] = float('nan')  # Mark as NaN
+                
+                # Only add this lightrod if at least one sensor worked
+                if sensor_success:
+                    any_success = True
+                    lightrod_dict[lightRod] = LightRodTemperature(
+                        top_temp=float(round(temps[0], 2)) if not np.isnan(temps[0]) else float('nan'),
+                        middle_temp=float(round(temps[1], 2)) if not np.isnan(temps[1]) else float('nan'),
+                        bottom_temp=float(round(temps[2], 2)) if not np.isnan(temps[2]) else float('nan'),
+                        timestamp=current_utc_datetime(),
+                    )
+                else:
+                    # All sensors failed, mark lightrod as disconnected
+                    self.connected_lightrods[lightRod] = False
+                    self.logger.warning(f"All sensors on lightrod {lightRod} failed - marking as disconnected")
+                    
+            except Exception as e:
+                # Error with entire lightrod
                 self.logger.warning(f"Lightrod {lightRod} disconnected during operation: {str(e)}")
                 self.connected_lightrods[lightRod] = False
                 continue
-                
-        # Only proceed if we have at least one connected lightrod
-        if lightrod_dict:
+        
+        # Only proceed if we successfully read from at least one sensor
+        if any_success and lightrod_dict:
             self.publish_max_temps(lightrod_dict)
             lightRod_temperatures = LightRodTemperatures(
                 timestamp=current_utc_datetime(),
@@ -106,7 +124,7 @@ class ReadLightRodTemps(BackgroundJob):
             self.lightrod_temps = lightRod_temperatures
         else:
             self.logger.warning("No lightrods connected - unable to read any temperatures")
-
+        
     def publish_max_temps(self, lightrod_dict):
         unit = get_unit_name()
         experiment = get_assigned_experiment_name(unit)
