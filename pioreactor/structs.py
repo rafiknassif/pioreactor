@@ -323,7 +323,7 @@ class Density(JSONPrintedStruct):
     timestamp: t.Annotated[datetime, Meta(tz=True)]
 
 class SpecificDilutionRate(JSONPrintedStruct):
-    SDR: float
+    specific_dilution_rate: float
     timestamp: t.Annotated[datetime, Meta(tz=True)]
 
 class Dataset(JSONPrintedStruct):

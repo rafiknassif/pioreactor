@@ -552,7 +552,7 @@ class GrowthRateCalculator(BackgroundJob):
             timestamp=timestamp,
         )
         specific_dilution_rate = structs.SpecificDilutionRate(
-            SDR=self.latest_sdr,
+            specific_dilution_rate=self.latest_sdr,
             timestamp=timestamp,
         )
 

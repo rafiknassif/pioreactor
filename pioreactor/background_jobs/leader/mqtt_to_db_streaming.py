@@ -317,7 +317,7 @@ def parse_specific_dilution_rate(topic: str, payload: pt.MQTTMessagePayload) -> 
         "experiment": metadata.experiment,
         "pioreactor_unit": metadata.pioreactor_unit,
         "timestamp": sdr.timestamp,
-        "sdr": sdr.SDR,
+        "sdr": sdr.specific_dilution_rate,
     }
     logger.debug(data)
     return data
