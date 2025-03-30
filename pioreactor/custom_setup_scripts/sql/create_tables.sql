@@ -92,6 +92,19 @@ CREATE TABLE IF NOT EXISTS absolute_growth_rates (
 CREATE INDEX IF NOT EXISTS absolute_growth_rates_ix
 ON absolute_growth_rates (experiment, pioreactor_unit, timestamp);
 
+DROP TABLE IF EXISTS specific_dilution_rates;
+
+CREATE TABLE IF NOT EXISTS specific_dilution_rates (
+    experiment TEXT NOT NULL,
+    pioreactor_unit TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    sdr REAL,
+    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS specific_dilution_rates_ix
+ON specific_dilution_rates (experiment, pioreactor_unit, timestamp);
+
 DROP TABLE IF EXISTS pioreactor_unit_activity_data;
 
 CREATE TABLE IF NOT EXISTS pioreactor_unit_activity_data (
@@ -142,6 +155,7 @@ CREATE TABLE IF NOT EXISTS pioreactor_unit_activity_data (
     max_temperature REAL,
     density Real,
     absolute_growth_rate Real,
+    sdr Real,
 
     FOREIGN KEY (experiment) REFERENCES experiments (
         experiment

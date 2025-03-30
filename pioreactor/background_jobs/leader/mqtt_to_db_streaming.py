@@ -306,6 +306,22 @@ def parse_absolute_growth_rate(topic: str, payload: pt.MQTTMessagePayload) -> di
     # logger.debug(data)
     return data
 
+def parse_specific_dilution_rate(topic: str, payload: pt.MQTTMessagePayload) -> dict:
+    metadata = produce_metadata(topic)
+    sdr = msgspec_loads(payload, type=structs.SpecificDilutionRate)
+    
+    from pioreactor.logging import create_logger
+    logger = create_logger("sdr_parse-testing")
+
+    data = {
+        "experiment": metadata.experiment,
+        "pioreactor_unit": metadata.pioreactor_unit,
+        "timestamp": sdr.timestamp,
+        "sdr": sdr.SDR,
+    }
+    logger.debug(data)
+    return data
+
 def parse_temperature(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
     temp = msgspec_loads(payload, type=structs.Temperature)
@@ -542,6 +558,11 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 "pioreactor/+/+/growth_rate_calculating/absolute_growth_rate",
                 parse_absolute_growth_rate,
                 "absolute_growth_rates",
+            ),
+            TopicToParserToTable(
+                "pioreactor/+/+/growth_rate_calculating/specific_dilution_rate",
+                parse_specific_dilution_rate,
+                "specific_dilution_rates",
             ),
             TopicToParserToTable(
                 "pioreactor/+/+/temperature_automation/temperature",

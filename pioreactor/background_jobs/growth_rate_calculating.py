@@ -91,6 +91,7 @@ class GrowthRateCalculator(BackgroundJob):
             "persist": True,
         },
         "density": {"datatype": "Density", "settable": False},
+        "specific_dilution_rate": {"datatype": "SpecificDilutionRate", "settable": False, "unit": "1/h", "persist": True,},
     }
 
     def __init__(
@@ -110,6 +111,8 @@ class GrowthRateCalculator(BackgroundJob):
             "od_reading.config", "stats_samples_per_second", fallback=self.samples_per_second
         )
         self.expected_dt = 1 / (60 * 60 * self.samples_per_second)
+        self.latest_sdr = 0.0
+
 
     def on_ready(self) -> None:
         # Initialization when job is marked as READY.
@@ -474,12 +477,13 @@ class GrowthRateCalculator(BackgroundJob):
                 self.od_filtered,
                 self.kalman_filter_outputs,
                 self.absolute_growth_rate,
-                self.density
+                self.density,
+                self.specific_dilution_rate
             ) = self._update_state_from_observation(od_readings)
         except Exception as e:
             self.logger.debug(f"Updating Kalman Filter failed with {e}", exc_info=True)
             # just return the previous data
-            return self.growth_rate, self.od_filtered, self.kalman_filter_outputs, self.absolute_growth_rate, self.density
+            return self.growth_rate, self.od_filtered, self.kalman_filter_outputs, self.absolute_growth_rate, self.density, self.specific_dilution_rate
 
         # save to cache
         with local_persistent_storage("growth_rate") as cache:
@@ -547,8 +551,12 @@ class GrowthRateCalculator(BackgroundJob):
             absolute_growth_rate=latest_specific_growth_rate*density_converted,
             timestamp=timestamp,
         )
+        specific_dilution_rate = structs.SpecificDilutionRate(
+            SDR=self.latest_sdr,
+            timestamp=timestamp,
+        )
 
-        return growth_rate, od_filtered, kf_outputs, absolute_growth_rate, density
+        return growth_rate, od_filtered, kf_outputs, absolute_growth_rate, density, specific_dilution_rate
 
     # def respond_to_dosing_event_from_mqtt(self, message: pt.MQTTMessage) -> None:
     #     dosing_event = decode(message.payload, type=structs.DosingEvent)

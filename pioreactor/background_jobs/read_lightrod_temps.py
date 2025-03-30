@@ -77,7 +77,7 @@ class ReadLightRodTemps(BackgroundJob):
         for lightRod, drivers in self.tmp_driver_map.items():
             # Skip disconnected lightrods
 
-            self.logger.debug(f"connect LRs: {self.connected_lightrods.__repr__()}")
+            # self.logger.debug(f"connect LRs: {self.connected_lightrods.__repr__()}")
             if not self.connected_lightrods.get(lightRod, False):
                 continue
 

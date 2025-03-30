@@ -187,3 +187,22 @@ BEGIN
     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
         absolute_growth_rate=excluded.absolute_growth_rate;
 END;
+
+DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_specific_dilution_rates;
+
+CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_specific_dilution_rates AFTER INSERT ON specific_dilution_rates
+BEGIN
+    INSERT INTO pioreactor_unit_activity_data(
+        pioreactor_unit,
+        experiment,
+        timestamp,
+        sdr
+    ) VALUES (
+        new.pioreactor_unit,
+        new.experiment,
+        new.timestamp,
+        new.sdr
+    )
+    ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+        sdr=excluded.sdr;
+END;
