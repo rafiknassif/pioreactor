@@ -78,7 +78,7 @@ class LightrodLightControl(LEDAutomationJob):
         self.set_led_intensity(self.relayChannel, 100)  # turn on the relay 
         self.logger.debug(f"Enable LED relay")
 
-    def set_driver_intensity(self, intensity: float | str):
+    def set_driver_intensity(self, intensity: list[float | str]):
         """
         Update light intensity for the bioreactor.
         """
