@@ -17,7 +17,7 @@ class LightrodLightControl(LEDAutomationJob):
     """
     Lightrod light control automation for managing LED based on ReadLightRodTemps status.
     """
-
+    instances = []
     automation_name: str = "lightrod_light_control"
     published_settings = {
         "relay_enabled": {"datatype": "float", "settable": True, "unit": "%"},
@@ -31,7 +31,8 @@ class LightrodLightControl(LEDAutomationJob):
         DRV_B_intensity: float | str,
         relay_enabled: float | str,
         **kwargs,
-    ):
+    ):  
+        self.instances.append(self)
         super().__init__(**kwargs)
         self.DRV_A_intensity = float(DRV_A_intensity)
         self.DRV_B_intensity = float(DRV_B_intensity)
@@ -112,8 +113,30 @@ class LightrodLightControl(LEDAutomationJob):
             payload=driverIntensity  # Publish as an object
         )
 
-# @click.option(
-#     "--set-both-channels",
-#     type=click.IntRange(min=0, max=1),
-#     help="Both channels will get set to the instensity specified for DRV_A",
-# )
+@classmethod
+def getInstance(cls):
+    return cls.instances[0]
+
+import click
+
+@click.command(name="lightrod_light_control")
+@click.option(
+    "--DRV_A_SETPOINT",
+    default=0,
+    show_default=True,
+    type=click.FloatRange(0, 100, clamp=True),
+)
+@click.option(
+    "--DRV_B_SETPOINT",
+    default=0,
+    show_default=True,
+    type=click.FloatRange(0, 100, clamp=True),
+)
+def click_lightrod_light_control(DRV_A_SETPOINT, DRV_B_SETPOINT):
+    unit = get_unit_name()
+    experiment = get_assigned_experiment_name(unit)
+
+    inst = LightrodLightControl.getInstance()
+    inst.DRV_A_intensity = float(DRV_A_SETPOINT)
+    inst.DRV_B_intensity = float(DRV_B_SETPOINT)
+    inst.drv_intensity = [inst.DRV_A_intensity, inst.DRV_B_intensity]
