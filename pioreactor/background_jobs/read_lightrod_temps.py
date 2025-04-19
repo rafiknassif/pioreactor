@@ -16,6 +16,8 @@ from pioreactor.actions.led_intensity import led_intensity
 from pioreactor.actions.led_driver import led_driver_intensity 
 from pioreactor.whoami import get_unit_name, get_assigned_experiment_name
 
+from pioreactor.automations.led.lightrod_light_control import LightrodLightControl
+
 
 class ReadLightRodTemps(BackgroundJob):
     job_name = "read_lightrod_temps"
@@ -229,38 +231,10 @@ class ReadLightRodTemps(BackgroundJob):
                 pubsub_client=self.pub_client,
                 source_of_event=f"{self.job_name}",
             )
-            channels = ['DRV_A', 'DRV_B']
-            success1 = led_driver_intensity(
-                {channels[0]: 0, channels[1]: 0},
-                unit=self.unit,
-                experiment=self.experiment,
-                pubsub_client=self.pub_client,
-                source_of_event=f"{self.job_name}:{self.automation_name}",
-            )
-
-            if success and success1:
+            if success:
                 self.logger.warning("lights were turned off due to high temp")
-
-            driverIntensity = LEDDriverIntensity(
-                timestamp=current_utc_datetime(),
-                channel=channels[0],
-                driver_intensity=0
-            )
-            BackgroundJob.publish(
-                self,
-                topic=f"pioreactor/{self.unit}/{self.experiment}/lightrod_light_control/driver_intensity",
-                payload=driverIntensity  # Publish as an object
-            )
-            driverIntensity = LEDDriverIntensity(
-                timestamp=current_utc_datetime(),
-                channel=channels[1],
-                driver_intensity=0
-            )
-            BackgroundJob.publish(
-                self,
-                topic=f"pioreactor/{self.unit}/{self.experiment}/lightrod_light_control/driver_intensity",
-                payload=driverIntensity  # Publish as an object
-            )
+            
+            LightrodLightControl.click_lightrod_light_control(0, 0)  # set inensities to zero
 
         return temp > self.warning_threshold
 
