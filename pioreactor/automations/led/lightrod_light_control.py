@@ -95,13 +95,13 @@ class LightrodLightControl(LEDAutomationJob):
             self.disable_relay()
 
         if self.light_active:
-            self.set_led_driver_intensity(self.channels[0], self.drv_A_intensity)
-            self.publish_intensity(self.channels[0], self.drv_A_intensity)
-            self.logger.debug(f"Set LED channel {self.channels[0]} to an intensity of {self.drv_A_intensity}")
+            self.set_led_driver_intensity(self.channels[0], self.DRV_A_intensity)
+            self.publish_intensity(self.channels[0], self.DRV_A_intensity)
+            self.logger.debug(f"Set LED channel {self.channels[0]} to an intensity of {self.DRV_A_intensity}")
 
-            self.set_led_driver_intensity(self.channels[1], self.drv_B_intensity)
-            self.publish_intensity(self.channels[1], self.drv_B_intensity)
-            self.logger.debug(f"Set LED channel {self.channels[1]} to an intensity of {self.drv_B_intensity}")
+            self.set_led_driver_intensity(self.channels[1], self.DRV_B_intensity)
+            self.publish_intensity(self.channels[1], self.DRV_B_intensity)
+            self.logger.debug(f"Set LED channel {self.channels[1]} to an intensity of {self.DRV_B_intensity}")
 
     def publish_intensity(self, channel, intensity):
         driverIntensity = LEDDriverIntensity(
