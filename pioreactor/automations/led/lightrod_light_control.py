@@ -3,6 +3,7 @@ from pioreactor.types import LedDriverChannel, LedChannel
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from typing import Optional
+from pioreactor.actions.led_driver import initialize_dac
 
 
 class LightrodLightControl(LEDAutomationJob):
@@ -28,6 +29,7 @@ class LightrodLightControl(LEDAutomationJob):
         self.channels: list[LedDriverChannel] = ["DRV_A", "DRV_B"]
         self.relayChannel : LedChannel = "B"
         self.light_active: bool = False
+        initialize_dac()
 
     def execute(self) -> Optional[events.AutomationEvent]:
         """

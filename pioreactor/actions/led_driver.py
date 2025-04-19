@@ -28,6 +28,12 @@ from pioreactor.whoami import is_testing_env
 
 ALL_DRIVER_CHANNELS: list[LedDriverChannel] = ["DRV_A", "DRV_B"]
 LEDsToIntensityMapping = dict[LedDriverChannel, LedIntensityValue]
+dac = None
+
+def initialize_dac():
+    from pioreactor.utils.dacs import MCP47CxBxx
+    global dac
+    dac = MCP47CxBxx(LR_DAC_ADDR, 8)  # Hard coded to 8 bit resolution
 
 def _update_current_state(
     state: LEDsToIntensityMapping,
@@ -100,7 +106,6 @@ def led_driver_intensity(
     logger = create_logger("led_driver_intensity", experiment=experiment, unit=unit, pub_client=pubsub_client)
     updated_successfully = True
 
-    from pioreactor.utils.dacs import MCP47CxBxx
 
     if pubsub_client is None:
         mqtt_publishing = create_client(client_id=f"led_driver_intensity-{unit}-{experiment}")
@@ -119,8 +124,6 @@ def led_driver_intensity(
                 assert (
                     0.0 <= intensity <= 100.0
                 ), f"Channel {channel} intensity should be between 0 and 100, inclusive"
-
-                dac = MCP47CxBxx(LR_DAC_ADDR, 8, logger)  # Hard coded to 8 bit resolution
                 dac.set_intensity_to(channel, intensity)
             except (ValueError, HardwareNotFoundError) as e:
                 logger.debug(e, exc_info=True)
