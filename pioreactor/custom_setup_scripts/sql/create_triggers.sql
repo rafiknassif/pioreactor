@@ -109,100 +109,119 @@ BEGIN
 END;
 
 
-DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_pbr_temperature;
+-- DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_pbr_temperature;
 
-CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_pbr_temperature AFTER INSERT ON pbr_temperature
+-- CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_pbr_temperature AFTER INSERT ON pbr_temperature
+-- BEGIN
+--     INSERT INTO pioreactor_unit_activity_data(
+--         pioreactor_unit,
+--         experiment,
+--         timestamp,
+--         pbr_temperature
+--     ) VALUES (
+--         new.pioreactor_unit,
+--         new.experiment,
+--         new.timestamp,
+--         new.pbr_temperature
+--     )
+--     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+--         pbr_temperature=excluded.pbr_temperature;
+-- END;
+
+
+-- DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_plot_lightrod_temperatures;
+
+-- CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_plot_lightrod_temperatures AFTER INSERT ON plot_lightrod_temperatures
+-- BEGIN
+--     INSERT INTO pioreactor_unit_activity_data(
+--         pioreactor_unit,
+--         experiment,
+--         timestamp,
+--         max_temperature
+--     ) VALUES (
+--         new.pioreactor_unit,
+--         new.experiment,
+--         new.timestamp,
+--         new.max_temperature
+--     )
+--     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+--         max_temperature=excluded.max_temperature;
+-- END;
+
+
+-- DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_density;
+
+-- CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_density AFTER INSERT ON density
+-- BEGIN
+--     INSERT INTO pioreactor_unit_activity_data(
+--         pioreactor_unit,
+--         experiment,
+--         timestamp,
+--         density
+--     ) VALUES (
+--         new.pioreactor_unit,
+--         new.experiment,
+--         new.timestamp,
+--         new.density
+--     )
+--     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+--         density=excluded.density;
+-- END;
+
+
+-- DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_absolute_growth_rates;
+
+-- CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_absolute_growth_rates AFTER INSERT ON absolute_growth_rates
+-- BEGIN
+--     INSERT INTO pioreactor_unit_activity_data(
+--         pioreactor_unit,
+--         experiment,
+--         timestamp,
+--         absolute_growth_rate
+--     ) VALUES (
+--         new.pioreactor_unit,
+--         new.experiment,
+--         new.timestamp,
+--         new.absolute_growth_rate
+--     )
+--     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+--         absolute_growth_rate=excluded.absolute_growth_rate;
+-- END;
+
+-- DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_specific_dilution_rates;
+
+-- CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_specific_dilution_rates AFTER INSERT ON specific_dilution_rates
+-- BEGIN
+--     INSERT INTO pioreactor_unit_activity_data(
+--         pioreactor_unit,
+--         experiment,
+--         timestamp,
+--         sdr
+--     ) VALUES (
+--         new.pioreactor_unit,
+--         new.experiment,
+--         new.timestamp,
+--         new.sdr
+--     )
+--     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+--         sdr=excluded.sdr;
+-- END;
+
+DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_driver_intensity;
+
+CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_driver_intensity AFTER INSERT ON driver_intensity
 BEGIN
     INSERT INTO pioreactor_unit_activity_data(
         pioreactor_unit,
         experiment,
         timestamp,
-        pbr_temperature
+        driver_intensity
     ) VALUES (
         new.pioreactor_unit,
         new.experiment,
         new.timestamp,
-        new.pbr_temperature
+        new.driver_intensity
     )
     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
-        pbr_temperature=excluded.pbr_temperature;
-END;
-
-
-DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_plot_lightrod_temperatures;
-
-CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_plot_lightrod_temperatures AFTER INSERT ON plot_lightrod_temperatures
-BEGIN
-    INSERT INTO pioreactor_unit_activity_data(
-        pioreactor_unit,
-        experiment,
-        timestamp,
-        max_temperature
-    ) VALUES (
-        new.pioreactor_unit,
-        new.experiment,
-        new.timestamp,
-        new.max_temperature
-    )
-    ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
-        max_temperature=excluded.max_temperature;
-END;
-
-
-DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_density;
-
-CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_density AFTER INSERT ON density
-BEGIN
-    INSERT INTO pioreactor_unit_activity_data(
-        pioreactor_unit,
-        experiment,
-        timestamp,
-        density
-    ) VALUES (
-        new.pioreactor_unit,
-        new.experiment,
-        new.timestamp,
-        new.density
-    )
-    ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
-        density=excluded.density;
-END;
-
-
-DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_absolute_growth_rates;
-
-CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_absolute_growth_rates AFTER INSERT ON absolute_growth_rates
-BEGIN
-    INSERT INTO pioreactor_unit_activity_data(
-        pioreactor_unit,
-        experiment,
-        timestamp,
-        absolute_growth_rate
-    ) VALUES (
-        new.pioreactor_unit,
-        new.experiment,
-        new.timestamp,
-        new.absolute_growth_rate
-    )
-    ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
-        absolute_growth_rate=excluded.absolute_growth_rate;
-END;
-
-DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_specific_dilution_rates;
-
-CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_specific_dilution_rates AFTER INSERT ON specific_dilution_rates
-BEGIN
-    INSERT INTO pioreactor_unit_activity_data(
-        pioreactor_unit,
-        experiment,
-        timestamp,
-        sdr
-    ) VALUES (
-        new.pioreactor_unit,
-        new.experiment,
-        new.timestamp,
-        new.sdr
-    )
-    ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
-        sdr=excluded.sdr;
+        driver_intensity=excluded.driver_intensity;
 END;

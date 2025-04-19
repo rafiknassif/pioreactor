@@ -419,6 +419,22 @@ def parse_pbr_pH(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "pbr_ph_ph": ph.pH,
     }
 
+def parse_driver_intensity(topic: str, payload: pt.MQTTMessagePayload) -> dict:
+    metadata = produce_metadata(topic)
+    drv_int = msgspec_loads(payload, type=structs.LEDDriverIntensity)
+
+    parsed_data = {
+        "experiment": metadata.experiment,
+        "pioreactor_unit": str(metadata.pioreactor_unit) + "-" + drv_int.channel,
+        "timestamp": drv_int.timestamp,  # Single timestamp for all readings
+        "driver_intensity": drv_int.driver_intensity
+    }
+    from pioreactor.logging import create_logger
+    logger = create_logger("max_lightrod_parse-testing")
+    logger.debug(f"Parsed driver intensity for db and plotting: {parsed_data}")
+
+    return parsed_data
+
 def parse_automation_event(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     metadata = produce_metadata(topic)
     event = msgspec_loads(payload, type=structs.subclass_union(structs.AutomationEvent))
@@ -588,6 +604,11 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 "pioreactor/+/+/read_pbr_ph/PBR_pH",
                 parse_pbr_pH,
                 "pbr_ph",
+            ),
+            TopicToParserToTable(
+                "pioreactor/+/+/leds/driver_intensity",
+                parse_driver_intensity,
+                "driver_intensity",
             ),
             TopicToParserToTable(
                 "pioreactor/+/+/dosing_automation/alt_media_fraction",

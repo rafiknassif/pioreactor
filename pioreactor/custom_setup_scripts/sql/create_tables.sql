@@ -1,109 +1,124 @@
-DROP TABLE IF EXISTS lightrod_temperatures;
+-- DROP TABLE IF EXISTS lightrod_temperatures;
 
-CREATE TABLE IF NOT EXISTS lightrod_temperatures (
+-- CREATE TABLE IF NOT EXISTS lightrod_temperatures (
+--     experiment TEXT NOT NULL,
+--     pioreactor_unit TEXT NOT NULL,
+--     timestamp TEXT NOT NULL,
+--     LR_A_top_temp REAL,
+--     LR_A_middle_temp REAL,
+--     LR_A_bottom_temp REAL,
+--     LR_A_timestamp TEXT,
+--     LR_B_top_temp REAL,
+--     LR_B_middle_temp REAL,
+--     LR_B_bottom_temp REAL,
+--     LR_B_timestamp TEXT,
+--     LR_C_top_temp REAL,
+--     LR_C_middle_temp REAL,
+--     LR_C_bottom_temp REAL,
+--     LR_C_timestamp TEXT,
+--     LR_D_top_temp REAL,
+--     LR_D_middle_temp REAL,
+--     LR_D_bottom_temp REAL,
+--     LR_D_timestamp TEXT,
+--     LR_E_top_temp REAL,
+--     LR_E_middle_temp REAL,
+--     LR_E_bottom_temp REAL,
+--     LR_E_timestamp TEXT,
+--     LR_F_top_temp REAL,
+--     LR_F_middle_temp REAL,
+--     LR_F_bottom_temp REAL,
+--     LR_F_timestamp TEXT,
+--     LR_G_top_temp REAL,
+--     LR_G_middle_temp REAL,
+--     LR_G_bottom_temp REAL,
+--     LR_G_timestamp TEXT,
+--     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+-- );
+
+-- CREATE INDEX IF NOT EXISTS lightrod_temperatures_ix
+-- ON lightrod_temperatures (experiment, pioreactor_unit, timestamp);
+
+-- DROP TABLE IF EXISTS pbr_temperature;
+
+-- CREATE TABLE IF NOT EXISTS pbr_temperature (
+--     experiment TEXT NOT NULL,
+--     pioreactor_unit TEXT NOT NULL,
+--     timestamp TEXT NOT NULL,
+--     pbr_temperature REAL,
+--     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+-- );
+
+-- CREATE INDEX IF NOT EXISTS pbr_temperature_ix
+-- ON pbr_temperature (experiment, pioreactor_unit, timestamp);
+
+
+-- DROP TABLE IF EXISTS plot_lightrod_temperatures;
+
+-- CREATE TABLE IF NOT EXISTS plot_lightrod_temperatures (
+--     experiment TEXT NOT NULL,
+--     pioreactor_unit TEXT NOT NULL,
+--     timestamp TEXT NOT NULL,
+--     max_temperature REAL,
+--     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+-- );
+
+-- CREATE INDEX IF NOT EXISTS plot_lightrod_temperatures_ix
+-- ON plot_lightrod_temperatures (experiment, pioreactor_unit, timestamp);
+
+-- DROP TABLE IF EXISTS density;
+
+-- CREATE TABLE IF NOT EXISTS density (
+--     experiment TEXT NOT NULL,
+--     pioreactor_unit TEXT NOT NULL,
+--     timestamp TEXT NOT NULL,
+--     density REAL,
+--     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+-- );
+
+-- CREATE INDEX IF NOT EXISTS density_ix
+-- ON density (experiment, pioreactor_unit, timestamp);
+
+
+-- DROP TABLE IF EXISTS absolute_growth_rates;
+
+-- CREATE TABLE IF NOT EXISTS absolute_growth_rates (
+--     experiment TEXT NOT NULL,
+--     pioreactor_unit TEXT NOT NULL,
+--     timestamp TEXT NOT NULL,
+--     absolute_growth_rate REAL,
+--     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+-- );
+
+-- CREATE INDEX IF NOT EXISTS absolute_growth_rates_ix
+-- ON absolute_growth_rates (experiment, pioreactor_unit, timestamp);
+
+-- DROP TABLE IF EXISTS specific_dilution_rates;
+
+-- CREATE TABLE IF NOT EXISTS specific_dilution_rates (
+--     experiment TEXT NOT NULL,
+--     pioreactor_unit TEXT NOT NULL,
+--     timestamp TEXT NOT NULL,
+--     sdr REAL,
+--     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+-- );
+
+-- CREATE INDEX IF NOT EXISTS specific_dilution_rates_ix
+-- ON specific_dilution_rates (experiment, pioreactor_unit, timestamp);
+
+DROP TABLE IF EXISTS driver_intensity;
+
+CREATE TABLE IF NOT EXISTS driver_intensity (
     experiment TEXT NOT NULL,
     pioreactor_unit TEXT NOT NULL,
     timestamp TEXT NOT NULL,
-    LR_A_top_temp REAL,
-    LR_A_middle_temp REAL,
-    LR_A_bottom_temp REAL,
-    LR_A_timestamp TEXT,
-    LR_B_top_temp REAL,
-    LR_B_middle_temp REAL,
-    LR_B_bottom_temp REAL,
-    LR_B_timestamp TEXT,
-    LR_C_top_temp REAL,
-    LR_C_middle_temp REAL,
-    LR_C_bottom_temp REAL,
-    LR_C_timestamp TEXT,
-    LR_D_top_temp REAL,
-    LR_D_middle_temp REAL,
-    LR_D_bottom_temp REAL,
-    LR_D_timestamp TEXT,
-    LR_E_top_temp REAL,
-    LR_E_middle_temp REAL,
-    LR_E_bottom_temp REAL,
-    LR_E_timestamp TEXT,
-    LR_F_top_temp REAL,
-    LR_F_middle_temp REAL,
-    LR_F_bottom_temp REAL,
-    LR_F_timestamp TEXT,
-    LR_G_top_temp REAL,
-    LR_G_middle_temp REAL,
-    LR_G_bottom_temp REAL,
-    LR_G_timestamp TEXT,
+    driver_intensity REAL,
     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS lightrod_temperatures_ix
-ON lightrod_temperatures (experiment, pioreactor_unit, timestamp);
-
-DROP TABLE IF EXISTS pbr_temperature;
-
-CREATE TABLE IF NOT EXISTS pbr_temperature (
-    experiment TEXT NOT NULL,
-    pioreactor_unit TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    pbr_temperature REAL,
-    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS pbr_temperature_ix
-ON pbr_temperature (experiment, pioreactor_unit, timestamp);
+CREATE INDEX IF NOT EXISTS driver_intensity_ix
+ON driver_intensity (experiment, pioreactor_unit, timestamp);
 
 
-DROP TABLE IF EXISTS plot_lightrod_temperatures;
-
-CREATE TABLE IF NOT EXISTS plot_lightrod_temperatures (
-    experiment TEXT NOT NULL,
-    pioreactor_unit TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    max_temperature REAL,
-    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS plot_lightrod_temperatures_ix
-ON plot_lightrod_temperatures (experiment, pioreactor_unit, timestamp);
-
-DROP TABLE IF EXISTS density;
-
-CREATE TABLE IF NOT EXISTS density (
-    experiment TEXT NOT NULL,
-    pioreactor_unit TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    density REAL,
-    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS density_ix
-ON density (experiment, pioreactor_unit, timestamp);
-
-
-DROP TABLE IF EXISTS absolute_growth_rates;
-
-CREATE TABLE IF NOT EXISTS absolute_growth_rates (
-    experiment TEXT NOT NULL,
-    pioreactor_unit TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    absolute_growth_rate REAL,
-    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS absolute_growth_rates_ix
-ON absolute_growth_rates (experiment, pioreactor_unit, timestamp);
-
-DROP TABLE IF EXISTS specific_dilution_rates;
-
-CREATE TABLE IF NOT EXISTS specific_dilution_rates (
-    experiment TEXT NOT NULL,
-    pioreactor_unit TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    sdr REAL,
-    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS specific_dilution_rates_ix
-ON specific_dilution_rates (experiment, pioreactor_unit, timestamp);
 
 DROP TABLE IF EXISTS pioreactor_unit_activity_data;
 
@@ -156,6 +171,7 @@ CREATE TABLE IF NOT EXISTS pioreactor_unit_activity_data (
     density Real,
     absolute_growth_rate Real,
     sdr Real,
+    driver_intensity REAL,
 
     FOREIGN KEY (experiment) REFERENCES experiments (
         experiment

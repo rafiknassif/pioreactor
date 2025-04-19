@@ -161,6 +161,11 @@ class PH(JSONPrintedStruct):
     timestamp: t.Annotated[datetime, Meta(tz=True)]
     pH: float
 
+class LEDDriverIntensity(JSONPrintedStruct):
+    timestamp:t.Annotated[datetime, Meta(tz=True)]
+    channel: pt.LedDriverChannel
+    driver_intensity: pt.LedIntensityValue
+
 class Voltage(JSONPrintedStruct):
     timestamp: t.Annotated[datetime, Meta(tz=True)]
     voltage: pt.Voltage
