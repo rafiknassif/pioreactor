@@ -184,22 +184,22 @@ class ReadLightRodTemps(BackgroundJob):
         """
         Read the current temperature from sensor, in Celsius
         """
-        running_sum, running_count = 0.0, 0
+        running_sum, running_count, averaged_temp = 0.0, 0, 0
         try:
             # check temp is fast, let's do it a few times to reduce variance.
             for i in range(6):
                 running_sum += driver.get_temperature()
                 running_count += 1
-                sleep(0.05)
+                sleep(0.1)
+            averaged_temp = running_sum / running_count
 
         except OSError as e:
             self.logger.debug(e, exc_info=True)
             self.logger.error(exc.HardwareNotFoundError(
-                "Is the Light Rod connected to the I2C bus? Unable to find temperature sensor."
+                f"Is Light Rod {driver.address} connected to the I2C bus? Unable to find temperature sensor."
             ))
-            running_sum = 0
 
-        averaged_temp = running_sum / running_count
+        
         self._check_if_exceeds_max_temp(averaged_temp)
 
         return averaged_temp
