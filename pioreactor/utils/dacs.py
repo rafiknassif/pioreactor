@@ -70,7 +70,7 @@ class MCP47CxBxx:
             return False; 
         # ch_ref 11 = buffered Vref, 10 = unbuffered Vref, 01 = Internal Bandgap, 00 = VDD
         command = bytearray(1)
-        command = (0x08 << 3)  # Config register for channel
+        command[0] = (0x08 << 3)  # Config register for channel
         data = bytearray(2)
         data[1] = ch0_ref | (ch1_ref << 2)
         data[0] = 0
@@ -78,7 +78,7 @@ class MCP47CxBxx:
     
     def setGain(self, ch0_2x, ch1_2x):
         command = bytearray(1)
-        command = (0x0a << 3);  #  Config register
+        command[0] = (0x0a << 3);  #  Config register
         # Set gain bits in the second byte (MSB):
         # Bit 8 : Channel 0 gain
         # Bit 9 : Channel 1 gain
@@ -95,7 +95,7 @@ class MCP47CxBxx:
              return False
         # ch_mode 00 = normal, 01 = 1k pull-down, 10 = 100k pull-down, 11 = open-circuit
         command = bytearray(1)
-        command = 0x09 << 3  # Config register for channel
+        command[0] = 0x09 << 3  # Config register for channel
         
         data = bytearray(2)
         data[1] = ch0_mode | (ch1_mode << 2) 
