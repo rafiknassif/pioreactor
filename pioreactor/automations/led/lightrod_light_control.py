@@ -91,7 +91,7 @@ class LightrodLightControl(LEDAutomationJob):
         """
         Update light intensity for the bioreactor.
         """
-        if all(i==0 for i in self.drv_intensity):
+        if self.drv_A_intensity==0 and self.drv_B_intensity==0:
             self.disable_relay()
 
         if self.light_active:
