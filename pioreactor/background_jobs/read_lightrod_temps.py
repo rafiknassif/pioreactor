@@ -235,7 +235,11 @@ class ReadLightRodTemps(BackgroundJob):
                 self.logger.warning("lights were turned off due to high temp")
             
             lrctrl = LightrodLightControl.getInstance()
-            self.logger.debug(f"lightrodcontrol instance: {lrctrl.__repr__()}")
+            if lrctrl:
+                self.logger.debug(f"lightrodcontrol instance: {lrctrl.__repr__()}")
+                lrctrl.shutdown_drivers()
+            else:
+                self.logger.warning("No LightrodLightControl instance available to shut down drivers")
             lrctrl.shutdown_drivers()  # set intensities to zero
 
         return temp > self.warning_threshold

@@ -128,7 +128,7 @@ class LightrodLightControl(LEDAutomationJob):
 
     @classmethod
     def getInstance(cls):
-        return cls.instances[0]
+        return cls.instances[0] if cls.instances else None
 
 import click
 
