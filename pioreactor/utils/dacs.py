@@ -54,7 +54,6 @@ class MCP47CxBxx:
     
     def writei2c(self, command, data):
         command.extend(data)
-        self.logger.debug(f"i2c wrote: {command.hex()}")
         self.i2c.write(command)
 
     def set_intensity_to(self, channel, intensity):
