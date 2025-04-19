@@ -66,7 +66,7 @@ class LightrodLightControl(LEDAutomationJob):
             self.logger.info(f"Turned off relay.")
 
         if self.light_active:
-            self.set_driver_intensity(self.drv_intensity)
+            self.set_driver_intensity()
 
         return None
     
@@ -78,14 +78,13 @@ class LightrodLightControl(LEDAutomationJob):
         self.set_led_intensity(self.relayChannel, 100)  # turn on the relay 
         self.logger.debug(f"Enable LED relay")
 
-    def set_driver_intensity(self, intensity: list[float | str]):
+    def set_driver_intensity(self):
         """
         Update light intensity for the bioreactor.
         """
-        if intensity == 0:
+        if all(i==0 for i in self.drv_intensity):
             self.disable_relay()
 
-        self.drv_intensity = float(intensity)
         if self.light_active:
             for i in range(len(self.channels)):
                 self.set_led_driver_intensity(self.channels[i], self.drv_intensity[i])
