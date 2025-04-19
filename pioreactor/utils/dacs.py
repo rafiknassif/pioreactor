@@ -50,8 +50,8 @@ class MCP47CxBxx:
         return self.i2c.probe(self.i2cAddress)  # responds with true if device responds
     
     def writei2c(self, command, data):
-        buf = command.extend(data)
-        self.i2c.write(buf)
+        command.extend(data)
+        self.i2c.write(command)
         # self.i2c.write(data)
 
     def set_intensity_to(self, channel, intensity):
