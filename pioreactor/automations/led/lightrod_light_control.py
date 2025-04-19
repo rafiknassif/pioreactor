@@ -1,4 +1,5 @@
 from pioreactor.automations.led.base import LEDAutomationJob
+from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.types import LedDriverChannel, LedChannel
 from pioreactor.structs import LEDDriverIntensity
 from pioreactor.automations import events
@@ -105,7 +106,7 @@ class LightrodLightControl(LEDAutomationJob):
             channel=channel,
             driver_intensity=intensity
         )
-        self.publish(
+        BackgroundJob.publish(
             self,
             topic=f"pioreactor/{self.unit}/{self.experiment}/lightrod_light_control/driver_intensity",
             payload=driverIntensity  # Publish as an object
