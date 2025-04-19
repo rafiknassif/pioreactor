@@ -606,7 +606,7 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 "pbr_ph",
             ),
             TopicToParserToTable(
-                "pioreactor/+/+/leds/driver_intensity",
+                "pioreactor/+/+/lightrod_light_control/driver_intensity ",
                 parse_driver_intensity,
                 "driver_intensity",
             ),
