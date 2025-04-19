@@ -8,11 +8,12 @@ from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.hardware import LightRodTemp_ADDR
 from pioreactor.structs import LightRodTemperature
 from pioreactor.structs import LightRodTemperatures
-from pioreactor.structs import PlotLightRodTemperatures
+from pioreactor.structs import PlotLightRodTemperatures, LEDDriverIntensity
 from pioreactor.utils.temps import TMP1075
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
 from pioreactor.config import config
-from pioreactor.actions.led_intensity import led_intensity
+from pioreactor.actions.led_intensity import led_intensity 
+from pioreactor.actions.led_driver import led_driver_intensity 
 from pioreactor.whoami import get_unit_name, get_assigned_experiment_name
 
 
@@ -221,16 +222,45 @@ class ReadLightRodTemps(BackgroundJob):
             )
 
             channel = 'B'
-            success = led_intensity(
+            success = led_intensity(  # Turn off relay
                 {channel: 0},
                 unit=self.unit,
                 experiment=self.experiment,
                 pubsub_client=self.pub_client,
                 source_of_event=f"{self.job_name}",
             )
+            channels = ['DRV_A', 'DRV_B']
+            success1 = led_driver_intensity(
+                {channels[0]: 0, channels[1]: 0},
+                unit=self.unit,
+                experiment=self.experiment,
+                pubsub_client=self.pub_client,
+                source_of_event=f"{self.job_name}:{self.automation_name}",
+            )
 
-            if success:
+            if success and success1:
                 self.logger.warning("lights were turned off due to high temp")
+
+            driverIntensity = LEDDriverIntensity(
+                timestamp=current_utc_datetime(),
+                channel=channels[0],
+                driver_intensity=0
+            )
+            BackgroundJob.publish(
+                self,
+                topic=f"pioreactor/{self.unit}/{self.experiment}/lightrod_light_control/driver_intensity",
+                payload=driverIntensity  # Publish as an object
+            )
+            driverIntensity = LEDDriverIntensity(
+                timestamp=current_utc_datetime(),
+                channel=channels[1],
+                driver_intensity=0
+            )
+            BackgroundJob.publish(
+                self,
+                topic=f"pioreactor/{self.unit}/{self.experiment}/lightrod_light_control/driver_intensity",
+                payload=driverIntensity  # Publish as an object
+            )
 
         return temp > self.warning_threshold
 

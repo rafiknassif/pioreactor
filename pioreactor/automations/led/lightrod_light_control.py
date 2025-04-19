@@ -82,6 +82,10 @@ class LightrodLightControl(LEDAutomationJob):
     def disable_relay(self):
         self.set_led_intensity(self.relayChannel, 0)  # turn off the relay
         self.logger.debug(f"Disable LED relay")
+        self.DRV_A_intensity = 0
+        self.DRV_B_intensity = 0
+        self.publish_intensity(self.channels[0], self.DRV_A_intensity)
+        self.publish_intensity(self.channels[1], self.DRV_B_intensity)
 
     def enable_relay(self):
         self.set_led_intensity(self.relayChannel, 100)  # turn on the relay 
