@@ -234,7 +234,8 @@ class ReadLightRodTemps(BackgroundJob):
             if success:
                 self.logger.warning("lights were turned off due to high temp")
             
-            LightrodLightControl.shutdown_drivers()  # set inensities to zero
+            lrctrl = LightrodLightControl.getInstance()
+            lrctrl.shutdown_drivers()  # set intensities to zero
 
         return temp > self.warning_threshold
 

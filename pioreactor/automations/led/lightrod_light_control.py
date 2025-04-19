@@ -125,9 +125,9 @@ class LightrodLightControl(LEDAutomationJob):
             payload=driverIntensity  # Publish as an object
         )
 
-@classmethod
-def getInstance(cls):
-    return cls.instances[0]
+    @classmethod
+    def getInstance(cls):
+        return cls.instances[0]
 
 import click
 
