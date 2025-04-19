@@ -120,7 +120,7 @@ def led_driver_intensity(
                     0.0 <= intensity <= 100.0
                 ), f"Channel {channel} intensity should be between 0 and 100, inclusive"
 
-                dac = MCP47CxBxx(LR_DAC_ADDR, 8)  # Hard coded to 8 bit resolution
+                dac = MCP47CxBxx(LR_DAC_ADDR, 8, logger)  # Hard coded to 8 bit resolution
                 dac.set_intensity_to(channel, intensity)
             except (ValueError, HardwareNotFoundError) as e:
                 logger.debug(e, exc_info=True)

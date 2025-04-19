@@ -21,9 +21,10 @@ class MCP47CxBxx:
     See datasheet: https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/DataSheets/MCP47CXBXX-Data-Sheet-DS20006089B.pdf
     """
 
-    def __init__(self, i2cAddress, resolution):
+    def __init__(self, i2cAddress, resolution, logger):
         self.i2cAddress = i2cAddress
         self.resolution = resolution
+        self.logger = logger
 
         match resolution: 
             case 8: 
@@ -58,10 +59,10 @@ class MCP47CxBxx:
     def set_intensity_to(self, channel, intensity):
         # TODO: account for the nonlinear current drive vs dac value here
         desiredOutput = int(intensity/100*255)  # Temporarily just map intensity to 0-255 scale
+        self.logger.debug(f"channel: {channel} mapped to {self.channel_idx[channel]}")
         self.setOutput(self.channel_idx[channel], desiredOutput)
-        # self.setOutput(0, desiredOutput)
-        # self.setOutput(1, desiredOutput)
-    
+        self.logger.debug(f"setOutput({self.channel_idx[channel]}, {desiredOutput})")
+        
     def setOutput(self, channel, value: int):
         if channel > 1 or value > self.maxValue:
             return False
