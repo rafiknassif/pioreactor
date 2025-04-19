@@ -43,7 +43,7 @@ class LightrodLightControl(LEDAutomationJob):
             self.light_active = False
             self.disable_relay()
             return events.ChangedLedIntensity("Turned off LEDs due to ReadLightRodTemps not running.")
-
+        self.logger.debug(f"light_active {self.light_active}")
         if not self.light_active:
             self.light_active = True
             self.enable_relay()
@@ -66,7 +66,7 @@ class LightrodLightControl(LEDAutomationJob):
         """
         Update light intensity for the bioreactor.
         """
-
+        self.logger.debug(f"set_light_intensity: {intensity}")
         if intensity == 0:
             self.disable_relay()
         else:
