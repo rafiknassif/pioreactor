@@ -194,9 +194,10 @@ class ReadLightRodTemps(BackgroundJob):
 
         except OSError as e:
             self.logger.debug(e, exc_info=True)
-            raise exc.HardwareNotFoundError(
+            self.logger.error(exc.HardwareNotFoundError(
                 "Is the Light Rod connected to the I2C bus? Unable to find temperature sensor."
-            )
+            ))
+            running_sum = 0
 
         averaged_temp = running_sum / running_count
         self._check_if_exceeds_max_temp(averaged_temp)

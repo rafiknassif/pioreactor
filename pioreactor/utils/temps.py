@@ -63,7 +63,7 @@ class TMP1075:
             # # If we get an error during reading, mark the device as disconnected
             # self.connected = False
             # asyncio.run_coroutine_threadsafe(self.__init__(self.address), self.)  #TODO schedule reconnection
-            raise OSError(f"Error reading from temperature sensor at address 0x{self.address:02x}: {str(e)}")
+            self.logger. OSError(f"Error reading from temperature sensor at address 0x{self.address:02x}: {str(e)}")
 
     @property
     def temperature(self) -> float:
