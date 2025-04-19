@@ -46,7 +46,7 @@ class MCP47CxBxx:
     def testConnection(self):
         return self.i2c.probe(self.i2cAddress)  # responds with true if device responds
     
-    def writeI2c(self, command, data):
+    def writei2c(self, command, data):
         self.i2c.writeto(self.i2cAddress, command)
         self.i2c.writeto(self.i2cAddress, data)
 
@@ -63,7 +63,7 @@ class MCP47CxBxx:
         data = bytearray(2)
         data[0] = 0x0
         data[1] = value & 0xFF
-        self.writeI2c(command, data)
+        self.writei2c(command, data)
 
     def setReference(self, ch0_ref, ch1_ref):
         if ch0_ref > 3 or ch1_ref > 3:
@@ -74,7 +74,7 @@ class MCP47CxBxx:
         data = bytearray(2)
         data[1] = ch0_ref | (ch1_ref << 2)
         data[0] = 0
-        self.writeI2C(command, data)
+        self.writei2c(command, data)
     
     def setGain(self, ch0_2x, ch1_2x):
         command = bytearray(1)
@@ -87,7 +87,7 @@ class MCP47CxBxx:
             data[0] |= 1; # Bit 8
         if ch1_2x:
             data[0] |= 1 << 1; # Bit 9
-        self.writeI2C(command, data)
+        self.writei2c(command, data)
 
 
     def setPowerMode(self, ch0_mode, ch1_mode):
@@ -100,7 +100,7 @@ class MCP47CxBxx:
         data = bytearray(2)
         data[1] = ch0_mode | (ch1_mode << 2) 
         data[0] = 0
-        self.writeI2C(command, data)
+        self.writei2c(command, data)
 
 
 class _DAC:
