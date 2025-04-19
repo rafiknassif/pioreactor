@@ -1,5 +1,5 @@
 from pioreactor.automations.led.base import LEDAutomationJob
-from pioreactor.types import LedDriverChannel
+from pioreactor.types import LedDriverChannel, LedChannel
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from typing import Optional
@@ -23,6 +23,7 @@ class LightrodLightControl(LEDAutomationJob):
         super().__init__(**kwargs)
         self.light_intensity = float(light_intensity)
         self.channels: list[LedDriverChannel] = ["DRV_A","DRV_B"]
+        self.relayChannel : LedChannel = "B"
         self.light_active: bool = False
 
     def execute(self) -> Optional[events.AutomationEvent]:
@@ -39,8 +40,7 @@ class LightrodLightControl(LEDAutomationJob):
         if not is_running:
             self.logger.error("ReadLightRodTemps is not running. Disconnecting LED automation.")
             self.light_active = False
-            for channel in self.channels:
-                self.set_led_driver_intensity(channel, 0)
+            self.set_led_intensity(self.relayChannel, 0)  # turn off the relay
             if self.state != self.DISCONNECTED:
                 self.set_state(self.DISCONNECTED)
             return events.ChangedLedIntensity("Turned off LEDs due to ReadLightRodTemps not running.")
