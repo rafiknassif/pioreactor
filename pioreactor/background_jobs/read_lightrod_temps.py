@@ -16,7 +16,7 @@ from pioreactor.actions.led_intensity import led_intensity
 from pioreactor.actions.led_driver import led_driver_intensity 
 from pioreactor.whoami import get_unit_name, get_assigned_experiment_name
 
-from pioreactor.automations.led.lightrod_light_control import LightrodLightControl
+from pioreactor.automations.led import lightrod_light_control 
 
 
 class ReadLightRodTemps(BackgroundJob):
@@ -234,7 +234,7 @@ class ReadLightRodTemps(BackgroundJob):
             if success:
                 self.logger.warning("lights were turned off due to high temp")
             
-            LightrodLightControl.click_lightrod_light_control(0, 0)  # set inensities to zero
+            lightrod_light_control.click_lightrod_light_control(0, 0)  # set inensities to zero
 
         return temp > self.warning_threshold
 
