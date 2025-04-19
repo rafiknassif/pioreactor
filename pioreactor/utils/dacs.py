@@ -11,6 +11,7 @@ from pioreactor.types import LedDriverChannel
 from pioreactor.exc import HardwareNotFoundError
 from pioreactor.types import FloatBetween0and100
 from pioreactor.version import hardware_version_info
+import time
 
 from adafruit_bus_device.i2c_device import I2CDevice
 from busio import I2C  
@@ -60,10 +61,11 @@ class MCP47CxBxx:
     def set_intensity_to(self, channel, intensity):
         # TODO: account for the nonlinear current drive vs dac value here
         desiredOutput = int(intensity/100*255)  # Temporarily just map intensity to 0-255 scale
-        self.logger.debug(f"channel: {channel} mapped to {self.channel_idx[channel]}")
-        self.setOutput(self.channel_idx[channel], desiredOutput)
+        # self.logger.debug(f"channel: {channel} mapped to {self.channel_idx[channel]}")
         self.logger.debug(f"setOutput({type(self.channel_idx[channel])}({self.channel_idx[channel]}), {desiredOutput})")
-        self.setOutput(0, 75)
+        time.sleep(0.1)
+        self.setOutput(self.channel_idx[channel], desiredOutput)
+        # self.setOutput(0, 75)
         
     def setOutput(self, channel, value: int):
         if channel > 1 or value > self.maxValue:
