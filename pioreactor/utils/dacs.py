@@ -11,6 +11,97 @@ from pioreactor.exc import HardwareNotFoundError
 from pioreactor.types import FloatBetween0and100
 from pioreactor.version import hardware_version_info
 
+from adafruit_bus_device.i2c_device import I2CDevice
+from busio import I2C  
+
+class MCP47CxBxx:
+    """
+    Driver for the MCP47CMB02 digital to analog converter. (can be easily modified to support others of this family by adapting for different bit depth)
+    See datasheet: https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/DataSheets/MCP47CXBXX-Data-Sheet-DS20006089B.pdf
+    """
+
+    def __init__(self, i2cAddress, resolution):
+        self.i2cAddress = i2cAddress
+        self.resolution = resolution
+
+        match resolution: 
+            case 8: 
+                self.maxValue = 255
+            case 10: 
+                self.maxValue = 1023
+            case 12:
+                self.maxValue = 4095
+            case _: 
+                self.maxValue = 4095  # Default to 12-bit
+
+        comm_port = I2C(hardware.SCL, hardware.SDA)
+        self.i2c = I2CDevice(comm_port, self.i2cAddress)
+
+        self.setPowerMode(0, 0)  # Normal mode on both ch
+        self.setReference(0, 0)  # Use VDD as reference on both ch
+        self.setGain(0, 0)  # 1x gain on both ch
+        self.setOutput(0, 0)  # Set DAC outputs to 0 
+        self.setOutput(1, 0)
+    
+    def testConnection(self):
+        return self.i2c.probe(self.i2cAddress)  # responds with true if device responds
+    
+    def writeI2c(self, command, data):
+        self.i2c.writeto(self.i2cAddress, command)
+        self.i2c.writeto(self.i2cAddress, data)
+
+    def set_intensity_to(self, channel, intensity):
+        # TODO: account for the nonlinear current drive vs dac value here
+        desiredOutput = intensity/100*255  # Temporarily just map intensity to 0-255 scale
+        self.setOutput(channel, desiredOutput)
+    
+    def setOutput(self, channel, value):
+        if channel > 1 or value > self.maxValue:
+            return False
+        command = bytearray(1)
+        command[0] = (channel << 3) & 0x1F
+        data = bytearray(2)
+        data[0] = 0x0
+        data[1] = value & 0xFF
+        self.writeI2c(command, data)
+
+    def setReference(self, ch0_ref, ch1_ref):
+        if ch0_ref > 3 or ch1_ref > 3:
+            return False; 
+        # ch_ref 11 = buffered Vref, 10 = unbuffered Vref, 01 = Internal Bandgap, 00 = VDD
+        command = bytearray(1)
+        command = (0x08 << 3)  # Config register for channel
+        data = bytearray(2)
+        data[1] = ch0_ref | (ch1_ref << 2)
+        data[0] = 0
+        self.writeI2C(command, data)
+    
+    def setGain(self, ch0_2x, ch1_2x):
+        command = bytearray(1)
+        command = (0x0a << 3);  #  Config register
+        # Set gain bits in the second byte (MSB):
+        # Bit 8 : Channel 0 gain
+        # Bit 9 : Channel 1 gain
+        data = bytearray(2)
+        if ch0_2x:
+            data[0] |= 1; # Bit 8
+        if ch1_2x:
+            data[0] |= 1 << 1; # Bit 9
+        self.writeI2C(command, data)
+
+
+    def setPowerMode(self, ch0_mode, ch1_mode):
+        if ch0_mode > 3 or ch1_mode > 3:
+             return False
+        # ch_mode 00 = normal, 01 = 1k pull-down, 10 = 100k pull-down, 11 = open-circuit
+        command = bytearray(1)
+        command = 0x09 << 3  # Config register for channel
+        
+        data = bytearray(2)
+        data[1] = ch0_mode | (ch1_mode << 2) 
+        data[0] = 0
+        self.writeI2C(command, data)
+
 
 class _DAC:
     A = 0

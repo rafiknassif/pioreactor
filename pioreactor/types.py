@@ -96,6 +96,7 @@ JobState = t.Literal["init", "ready", "sleeping", "disconnected", "lost"]
 LightRodChannel = t.Literal["LR_A", "LR_B", "LR_C", "LR_D", "LR_E", "LR_F", "LR_G"]  # Define identifiers for each temp measured lightrod
 
 LedChannel = t.Literal["A", "B", "C", "D"]
+LedDriverChannel = t.Literal["DRV_A", "DRV_B"]
 # these are strings! Don't make them ints, since ints suggest we can perform math on them, that's meaningless.
 # str suggest symbols, which they are.
 PdChannel = t.Literal["1", "2"]

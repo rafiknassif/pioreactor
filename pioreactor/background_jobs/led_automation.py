@@ -15,6 +15,7 @@ from pioreactor import exc
 from pioreactor import structs
 from pioreactor import types as pt
 from pioreactor.actions.led_intensity import led_intensity
+from pioreactor.actions.led_driver import led_driver_intensity
 from pioreactor.automations import events
 from pioreactor.automations.base import AutomationJob
 from pioreactor.config import config
@@ -190,6 +191,38 @@ class LEDAutomationJob(AutomationJob):
             time.sleep(0.5)
 
         self.logger.warning(f"{self.automation_name} was unable to update channel {channel}.")
+        return False
+    
+    def set_led_driver_intensity(self, channel: pt.LedDriverChannel, intensity: pt.LedIntensityValue) -> bool:
+        """
+        This first checks the lock on the LED driver channel, and will wait a few seconds for it to clear,
+        and error out if it waits too long.
+
+        Parameters
+        ------------
+
+        Channel:
+            The LED driver channel to modify.
+        Intensity: float
+            A float between 0-100, inclusive.
+
+        """
+        attempts = 6
+        for _ in range(attempts):
+            success = led_driver_intensity(
+                {channel: intensity},
+                unit=self.unit,
+                experiment=self.experiment,
+                pubsub_client=self.pub_client,
+                source_of_event=f"{self.job_name}:{self.automation_name}",
+            )
+
+            if success:
+                return True
+
+            time.sleep(0.5)
+
+        self.logger.warning(f"{self.automation_name} was unable to update LED driver channel {channel}.")
         return False
 
     @property

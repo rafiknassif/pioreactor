@@ -91,6 +91,16 @@ class LEDChangeEvent(JSONPrintedStruct):
     source_of_event: t.Optional[str]
     timestamp: t.Annotated[datetime, Meta(tz=True)]
 
+class LEDDriverChangeEvent(JSONPrintedStruct):
+    """
+    Produced when an LED Driver changes value
+    """
+
+    channel: pt.LedDriverChannel
+    intensity: pt.LedIntensityValue
+    source_of_event: t.Optional[str]
+    timestamp: t.Annotated[datetime, Meta(tz=True)]
+
 
 class DosingEvent(JSONPrintedStruct):
     """

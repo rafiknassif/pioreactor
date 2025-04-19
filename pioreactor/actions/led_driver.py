@@ -16,7 +16,7 @@ from pioreactor.logging import create_logger
 from pioreactor.pubsub import Client
 from pioreactor.pubsub import create_client
 from pioreactor.pubsub import QOS
-from pioreactor.types import LedChannel
+from pioreactor.types import LedDriverChannel
 from pioreactor.types import LedIntensityValue
 from pioreactor.utils import local_intermittent_storage
 from pioreactor.utils.timing import current_utc_datetime
@@ -25,52 +25,8 @@ from pioreactor.whoami import get_unit_name
 from pioreactor.whoami import is_active
 from pioreactor.whoami import is_testing_env
 
-ALL_LED_CHANNELS: list[LedChannel] = ["A", "B", "C", "D"]
-LEDsToIntensityMapping = dict[LedChannel, LedIntensityValue]
-
-
-@contextmanager
-def change_leds_intensities_temporarily(
-    desired_state: LEDsToIntensityMapping,
-    **kwargs: Any,
-) -> Iterator[None]:
-    """
-    Change the LED referenced in `channels` to some intensity `new_intensities`
-    inside the context block. Once the context block has left, change
-    back to the old intensities (even if the intensities were changed inside the block.)
-
-    """
-    old_state = {}
-    try:
-        with local_intermittent_storage("leds") as cache:
-            old_state = {c: cache.get(c, 0.0) for c in desired_state.keys()}
-
-        if not led_intensity(desired_state, **kwargs):
-            raise ValueError("Unable to update LED.")
-
-        yield
-    finally:
-        if not led_intensity(old_state, **kwargs):
-            raise ValueError("Unable to update LED.")
-
-
-@contextmanager
-def lock_leds_temporarily(channels: list[LedChannel]) -> Iterator[None]:
-    try:
-        with local_intermittent_storage("led_locks") as cache:
-            for c in channels:
-                cache[c] = getpid()
-        yield
-    finally:
-        with local_intermittent_storage("led_locks") as cache:
-            for c in channels:
-                cache.pop(c)
-
-
-def is_led_channel_locked(channel: LedChannel) -> bool:
-    with local_intermittent_storage("led_locks") as cache:
-        return cache.get(channel) is not None
-
+ALL_DRIVER_CHANNELS: list[LedDriverChannel] = ["DRV_A", "DRV_B"]
+LEDsToIntensityMapping = dict[LedDriverChannel, LedIntensityValue]
 
 def _update_current_state(
     state: LEDsToIntensityMapping,
@@ -79,24 +35,24 @@ def _update_current_state(
     TODO: Eventually I should try to modify the UI to not even need this `state` variable,
     """
 
-    with local_intermittent_storage("leds") as led_cache:
+    with local_intermittent_storage("led_driver") as led_driver_cache:
         # rehydrate old cache
         old_state: LEDsToIntensityMapping = {
-            channel: led_cache.get(str(channel), 0.0) for channel in ALL_LED_CHANNELS
+            channel: led_driver_cache.get(str(channel), 0.0) for channel in ALL_DRIVER_CHANNELS
         }
 
         # update cache
         for channel, intensity in state.items():
-            led_cache[channel] = intensity
+            led_driver_cache[channel] = intensity
 
         new_state: LEDsToIntensityMapping = {
-            channel: led_cache.get(str(channel), 0.0) for channel in ALL_LED_CHANNELS
+            channel: led_driver_cache.get(str(channel), 0.0) for channel in ALL_DRIVER_CHANNELS
         }
 
         return new_state, old_state
 
 
-def led_intensity(
+def led_driver_intensity(
     desired_state: LEDsToIntensityMapping,
     unit: str | None = None,
     experiment: str | None = None,
@@ -105,7 +61,7 @@ def led_intensity(
     pubsub_client: Client | None = None,
 ) -> bool:
     """
-    Change the intensity of the LED channels A,B,C, or D to an value between 0 and 100.
+    Change the intensity of the LED Driver channels A and B to an value between 0 and 100.
 
     Parameters
     ------------
@@ -129,7 +85,7 @@ def led_intensity(
 
     Notes
     -------
-    State is updated in MQTT and the temporary cache `leds`:
+    State is updated in MQTT and the temporary cache `led_driver`:
 
         pioreactor/<unit>/<experiment>/leds/intensity    {'A': intensityA, 'B': intensityB, ...}
 
@@ -140,47 +96,35 @@ def led_intensity(
     if not is_active(unit):
         return False
 
-    logger = create_logger("led_intensity", experiment=experiment, unit=unit, pub_client=pubsub_client)
+    logger = create_logger("led_driver_intensity", experiment=experiment, unit=unit, pub_client=pubsub_client)
     updated_successfully = True
 
-    if not is_testing_env():
-        from pioreactor.utils.dacs import DAC
-    else:
-        from pioreactor.utils.mock import Mock_DAC as DAC  # type: ignore
+    from pioreactor.utils.dacs import MCP47CxBxx
 
     if pubsub_client is None:
-        mqtt_publishing = create_client(client_id=f"led_intensity-{unit}-{experiment}")
+        mqtt_publishing = create_client(client_id=f"led_driver_intensity-{unit}-{experiment}")
         mqtt_publish = mqtt_publishing.publish
     else:
         mqtt_publishing = nullcontext()
         mqtt_publish = pubsub_client.publish
 
     with mqtt_publishing:
-        # any locked channels?
-        for channel in list(desired_state.keys()):
-            if is_led_channel_locked(channel):
-                logger.debug(
-                    f"Unable to update channel {channel} due to a software lock on it. Please try again."
-                )
-                desired_state = {k: v for k, v in desired_state.items() if k != channel}
-
-                updated_successfully = False
 
         for channel, intensity in desired_state.items():
             try:
                 assert (
-                    channel in ALL_LED_CHANNELS
-                ), f"Saw incorrect channel {channel}, not in {ALL_LED_CHANNELS}"
+                    channel in ALL_DRIVER_CHANNELS
+                ), f"Saw incorrect channel {channel}, not in {ALL_DRIVER_CHANNELS}"
                 assert (
                     0.0 <= intensity <= 100.0
                 ), f"Channel {channel} intensity should be between 0 and 100, inclusive"
 
-                dac = DAC()
+                dac = MCP47CxBxx()
                 dac.set_intensity_to(getattr(dac, channel), intensity)
             except (ValueError, HardwareNotFoundError) as e:
                 logger.debug(e, exc_info=True)
                 logger.error(
-                    "Unable to find i2c for LED driver. Is the Pioreactor HAT attached to the Raspberry Pi? Is the firmware loaded?"
+                    "Unable to find i2c for LED driver. Confirm i2c connected. Did the LED driver explode unexpectedly?"
                 )
                 updated_successfully = False
                 return updated_successfully
@@ -192,7 +136,7 @@ def led_intensity(
         new_state, old_state = _update_current_state(desired_state)
 
         mqtt_publish(
-            f"pioreactor/{unit}/{experiment}/leds/intensity",
+            f"pioreactor/{unit}/{experiment}/leds/driverIntensity",
             encode(new_state),
             qos=QOS.AT_MOST_ONCE,
             retain=True,
@@ -210,36 +154,26 @@ def led_intensity(
                 )
 
                 mqtt_publish(
-                    f"pioreactor/{unit}/{experiment}/led_change_events",
+                    f"pioreactor/{unit}/{experiment}/led_driver_change_events",
                     encode(event),
                     qos=QOS.AT_MOST_ONCE,
                     retain=False,
                 )
 
                 logger.info(
-                    f"Updated LED {channel} from {old_state[channel]:0.3g}% to {new_state[channel]:0.3g}%."
+                    f"Updated LED Driver {channel} from {old_state[channel]:0.3g}% to {new_state[channel]:0.3g}%."
                 )
         return updated_successfully
 
 
-@click.command(name="led_intensity")
+@click.command(name="led_driver_intensity")
 @click.option(
-    "--A",
-    help="value between 0 and 100",
-    type=click.FloatRange(0, 75),  # Set to 75 to protect laser
-)
-@click.option(
-    "--B",
+    "--DRV_A",
     help="value between 0 and 100",
     type=click.FloatRange(0, 100),
 )
 @click.option(
-    "--C",
-    help="value between 0 and 100",
-    type=click.FloatRange(0, 100),
-)
-@click.option(
-    "--D",
+    "--DRV_B",
     help="value between 0 and 100",
     type=click.FloatRange(0, 100),
 )
@@ -247,34 +181,28 @@ def led_intensity(
     "--source-of-event",
     default="CLI",
     type=str,
-    help="whom is calling this function (for logging purposes)",
+    help="who is calling this function (for logging purposes)",
 )
 @click.option("--no-log", is_flag=True, help="skip logging")
 def click_led_intensity(
     a: LedIntensityValue | None = None,
     b: LedIntensityValue | None = None,
-    c: LedIntensityValue | None = None,
-    d: LedIntensityValue | None = None,
     source_of_event: str | None = None,
     no_log: bool = False,
 ) -> bool:
     """
-    Modify the intensity of LED channel(s)
+    Modify the intensity of LED Driver channel(s)
     """
     unit = get_unit_name()
     experiment = get_assigned_experiment_name(unit)
 
     state: LEDsToIntensityMapping = {}
     if a is not None:
-        state["A"] = a
+        state["DRV_A"] = a
     if b is not None:
-        state["B"] = b
-    if c is not None:
-        state["C"] = c
-    if d is not None:
-        state["D"] = d
+        state["DRV_B"] = b
 
-    status = led_intensity(
+    status = led_driver_intensity(
         state,
         source_of_event=source_of_event,
         unit=unit,

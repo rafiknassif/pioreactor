@@ -1,5 +1,5 @@
 from pioreactor.automations.led.base import LEDAutomationJob
-from pioreactor.types import LedChannel
+from pioreactor.types import LedDriverChannel
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from typing import Optional
@@ -22,7 +22,7 @@ class LightrodLightControl(LEDAutomationJob):
     ):
         super().__init__(**kwargs)
         self.light_intensity = float(light_intensity)
-        self.channels: list[LedChannel] = ["B"]
+        self.channels: list[LedDriverChannel] = ["DRV_A","DRV_B"]
         self.light_active: bool = False
 
     def execute(self) -> Optional[events.AutomationEvent]:
@@ -40,7 +40,7 @@ class LightrodLightControl(LEDAutomationJob):
             self.logger.error("ReadLightRodTemps is not running. Disconnecting LED automation.")
             self.light_active = False
             for channel in self.channels:
-                self.set_led_intensity(channel, 0)
+                self.set_led_driver_intensity(channel, 0)
             if self.state != self.DISCONNECTED:
                 self.set_state(self.DISCONNECTED)
             return events.ChangedLedIntensity("Turned off LEDs due to ReadLightRodTemps not running.")
@@ -48,17 +48,18 @@ class LightrodLightControl(LEDAutomationJob):
         if not self.light_active:
             self.light_active = True
             for channel in self.channels:
-                self.set_led_intensity(channel, self.light_intensity)
+                self.set_led_driver_intensity(channel, self.light_intensity)
             return events.ChangedLedIntensity(f"Turned on LEDs at intensity {self.light_intensity}%.")
 
         return None
 
     def set_light_intensity(self, intensity: float | str):
         """
-        Dynamically update light intensity.
+        Update light intensity for the bioreactor.
         """
         self.light_intensity = float(intensity)
         if self.light_active:
             for channel in self.channels:
-                self.set_led_intensity(channel, self.light_intensity)
+                self.set_led_driver_intensity(channel, self.light_intensity)
+
 
