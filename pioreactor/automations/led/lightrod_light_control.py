@@ -4,6 +4,9 @@ from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from typing import Optional
 from pioreactor.actions.led_driver import initialize_dac
+from pioreactor.types import LedIntensityValue
+
+import click
 
 
 class LightrodLightControl(LEDAutomationJob):
@@ -14,17 +17,19 @@ class LightrodLightControl(LEDAutomationJob):
     automation_name: str = "lightrod_light_control"
     published_settings = {
         "relay_enabled": {"datatype": "float", "settable": True, "unit": "%"},
-        "light_intensity": {"datatype": "float", "settable": True, "unit": "%"},
+        "DRV_A_intensity": {"datatype": "float", "settable": True, "unit": "%"},
+        "DRV_B_intensity": {"datatype": "float", "settable": True, "unit": "%"},
     }
 
     def __init__(
         self,
-        light_intensity: float | str,
+        DRV_A_intensity: float | str,
+        DRV_B_intensity: float | str,
         relay_enabled: float | str,
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.light_intensity = float(light_intensity)
+        self.drv_intensity: list[LedIntensityValue] = [float(DRV_A_intensity), float(DRV_B_intensity)]
         self.relay_enabled = float(relay_enabled)
         self.channels: list[LedDriverChannel] = ["DRV_A", "DRV_B"]
         self.relayChannel : LedChannel = "B"
@@ -61,7 +66,7 @@ class LightrodLightControl(LEDAutomationJob):
             self.logger.info(f"Turned off relay.")
 
         if self.light_active:
-            self.set_driver_intensity(self.light_intensity)
+            self.set_driver_intensity(self.drv_intensity)
 
         return None
     
@@ -77,16 +82,18 @@ class LightrodLightControl(LEDAutomationJob):
         """
         Update light intensity for the bioreactor.
         """
-        self.logger.debug("called set_light_intensity")
         if intensity == 0:
             self.disable_relay()
-        # else:
-        #     self.enable_relay()
 
-        self.light_intensity = float(intensity)
+        self.drv_intensity = float(intensity)
         if self.light_active:
-            for channel in self.channels:
-                self.set_led_driver_intensity(channel, self.light_intensity)
-                self.logger.debug(f"Set LED channel {channel} to an intensity of {self.light_intensity}")
+            for i in range(len(self.channels)):
+                self.set_led_driver_intensity(self.channels[i], self.drv_intensity[i])
+                self.logger.debug(f"Set LED channel {self.channels[i]} to an intensity of {self.drv_intensity[i]}")
 
 
+# @click.option(
+#     "--set-both-channels",
+#     type=click.IntRange(min=0, max=1),
+#     help="Both channels will get set to the instensity specified for DRV_A",
+# )
