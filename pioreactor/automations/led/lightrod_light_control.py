@@ -23,7 +23,7 @@ class LightrodLightControl(LEDAutomationJob):
     ):
         super().__init__(**kwargs)
         self.light_intensity = float(light_intensity)
-        self.channels: list[LedDriverChannel] = ["DRV_A","DRV_B"]
+        self.channels: list[LedDriverChannel] = ["DRV_A", "DRV_B"]
         self.relayChannel : LedChannel = "B"
         self.light_active: bool = False
 
@@ -53,11 +53,14 @@ class LightrodLightControl(LEDAutomationJob):
     
     def disable_relay(self):
         self.set_led_intensity(self.relayChannel, 0)  # turn off the relay
+        self.logger.debug(f"Disable LED relay")
         if self.state != self.DISCONNECTED:
             self.set_state(self.DISCONNECTED)
+            self.set_light_intensity(0)
 
     def enable_relay(self):
         self.set_led_intensity(self.relayChannel, 100)  # turn on the relay 
+        self.logger.debug(f"Enable LED relay")
 
     def set_light_intensity(self, intensity: float | str):
         """
@@ -66,8 +69,8 @@ class LightrodLightControl(LEDAutomationJob):
 
         if intensity == 0:
             self.disable_relay()
-        # else:
-        #     self.enable_relay()
+        else:
+            self.enable_relay()
 
         self.light_intensity = float(intensity)
         if self.light_active:
