@@ -46,9 +46,7 @@ class LightrodLightControl(LEDAutomationJob):
         self.experiment = get_assigned_experiment_name(self.unit)
     
     def on_disconnected(self) -> None:
-        self.DRV_A_intensity = 0
-        self.DRV_B_intensity = 0
-        self.set_driver_intensity()
+        self.shutdown_drivers()
         self.disable_relay()
         super().on_disconnected()
 
@@ -93,6 +91,11 @@ class LightrodLightControl(LEDAutomationJob):
     def enable_relay(self):
         self.set_led_intensity(self.relayChannel, 100)  # turn on the relay 
         self.logger.debug(f"Enable LED relay")
+
+    def shutdown_drivers(self):
+        self.DRV_A_intensity = 0
+        self.DRV_B_intensity = 0
+        self.set_driver_intensity()
 
     def set_driver_intensity(self):
         """
