@@ -19,10 +19,12 @@ class LightrodLightControl(LEDAutomationJob):
     def __init__(
         self,
         light_intensity: float | str,
+        relay_enabled: float | str,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.light_intensity = float(light_intensity)
+        self.relay_enabled = float(relay_enabled)
         self.channels: list[LedDriverChannel] = ["DRV_A", "DRV_B"]
         self.relayChannel : LedChannel = "B"
         self.light_active: bool = False
@@ -42,12 +44,19 @@ class LightrodLightControl(LEDAutomationJob):
             self.logger.error("ReadLightRodTemps is not running. Disconnecting LED automation.")
             self.light_active = False
             self.disable_relay()
-            return events.ChangedLedIntensity("Turned off LEDs due to ReadLightRodTemps not running.")
-        self.logger.debug(f"light_active {self.light_active}")
-        if not self.light_active:
+            return events.ChangedLedIntensity("Turned off relay. LEDs disabled due to ReadLightRodTemps not running.")
+        
+        if not self.light_active and self.relay_enabled == 100:
             self.light_active = True
             self.enable_relay()
-            return events.ChangedLedIntensity(f"Turned on relay.")
+            self.logger.info(f"Turned on relay.")
+        else:
+            self.light_active = False
+            self.disable_relay()
+            self.logger.info(f"Turned off relay.")
+
+        if self.light_active:
+            self.set_driver_intensity(self.light_intensity)
 
         return None
     
@@ -56,21 +65,20 @@ class LightrodLightControl(LEDAutomationJob):
         self.logger.debug(f"Disable LED relay")
         if self.state != self.DISCONNECTED:
             self.set_state(self.DISCONNECTED)
-            self.set_light_intensity(0)
 
     def enable_relay(self):
         self.set_led_intensity(self.relayChannel, 100)  # turn on the relay 
         self.logger.debug(f"Enable LED relay")
 
-    def set_light_intensity(self, intensity: float | str):
+    def set_driver_intensity(self, intensity: float | str):
         """
         Update light intensity for the bioreactor.
         """
-        self.logger.debug(f"set_light_intensity: {intensity}")
+        self.logger.debug("called set_light_intensity")
         if intensity == 0:
             self.disable_relay()
-        else:
-            self.enable_relay()
+        # else:
+        #     self.enable_relay()
 
         self.light_intensity = float(intensity)
         if self.light_active:
