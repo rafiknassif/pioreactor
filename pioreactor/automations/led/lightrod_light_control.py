@@ -44,13 +44,16 @@ class LightrodLightControl(LEDAutomationJob):
             self.logger.error("ReadLightRodTemps is not running. Disconnecting LED automation.")
             self.light_active = False
             self.disable_relay()
+            if self.state != self.DISCONNECTED:
+                self.set_state(self.DISCONNECTED)
             return events.ChangedLedIntensity("Turned off relay. LEDs disabled due to ReadLightRodTemps not running.")
         
         if not self.light_active and self.relay_enabled == 100:
             self.light_active = True
             self.enable_relay()
             self.logger.info(f"Turned on relay.")
-        else:
+            
+        if not self.relay_enabled == 100:
             self.light_active = False
             self.disable_relay()
             self.logger.info(f"Turned off relay.")
@@ -63,8 +66,6 @@ class LightrodLightControl(LEDAutomationJob):
     def disable_relay(self):
         self.set_led_intensity(self.relayChannel, 0)  # turn off the relay
         self.logger.debug(f"Disable LED relay")
-        if self.state != self.DISCONNECTED:
-            self.set_state(self.DISCONNECTED)
 
     def enable_relay(self):
         self.set_led_intensity(self.relayChannel, 100)  # turn on the relay 

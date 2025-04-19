@@ -19,10 +19,7 @@ class MCP47CxBxx:
     Driver for the MCP47CMB02 digital to analog converter. (can be easily modified to support others of this family by adapting for different bit depth)
     See datasheet: https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/DataSheets/MCP47CXBXX-Data-Sheet-DS20006089B.pdf
     """
-    # map channel ID to dac channels
-    DRV_A = 0
-    DRV_B = 1
-
+    
     def __init__(self, i2cAddress, resolution):
         self.i2cAddress = i2cAddress
         self.resolution = resolution
@@ -55,6 +52,14 @@ class MCP47CxBxx:
         # self.i2c.write(data)
 
     def set_intensity_to(self, channel, intensity):
+        # map channel ID to dac channels TODO: Make this not dogshit
+        DRV_A = 0
+        DRV_B = 1
+        if channel == 'DRV_A':
+            channel = DRV_A
+        elif channel == 'DRV_B':
+            channel = DRV_B
+
         # TODO: account for the nonlinear current drive vs dac value here
         desiredOutput = int(intensity/100*255)  # Temporarily just map intensity to 0-255 scale
         self.setOutput(channel, desiredOutput)
