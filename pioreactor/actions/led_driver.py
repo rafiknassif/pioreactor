@@ -38,9 +38,6 @@ def initialize_dac():
 def _update_current_state(
     state: LEDsToIntensityMapping,
 ) -> tuple[LEDsToIntensityMapping, LEDsToIntensityMapping]:
-    """
-    TODO: Eventually I should try to modify the UI to not even need this `state` variable,
-    """
 
     with local_intermittent_storage("led_driver") as led_driver_cache:
         # rehydrate old cache

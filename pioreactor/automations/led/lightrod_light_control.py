@@ -36,7 +36,6 @@ class LightrodLightControl(LEDAutomationJob):
         super().__init__(**kwargs)
         self.DRV_A_intensity = float(DRV_A_intensity)
         self.DRV_B_intensity = float(DRV_B_intensity)
-        self.drv_intensity: list[LedIntensityValue] = [self.DRV_A_intensity, self.DRV_B_intensity]
         self.relay_enabled = float(relay_enabled)
         self.channels: list[LedDriverChannel] = ["DRV_A", "DRV_B"]
         self.relayChannel : LedChannel = "B"
@@ -96,10 +95,13 @@ class LightrodLightControl(LEDAutomationJob):
             self.disable_relay()
 
         if self.light_active:
-            for i in range(len(self.channels)):
-                self.set_led_driver_intensity(self.channels[i], self.drv_intensity[i])
-                self.publish_intensity(self.channels[i], self.drv_intensity[i])
-                self.logger.debug(f"Set LED channel {self.channels[i]} to an intensity of {self.drv_intensity[i]}")
+            self.set_led_driver_intensity(self.channels[0], self.drv_A_intensity)
+            self.publish_intensity(self.channels[0], self.drv_A_intensity)
+            self.logger.debug(f"Set LED channel {self.channels[0]} to an intensity of {self.drv_A_intensity}")
+
+            self.set_led_driver_intensity(self.channels[1], self.drv_B_intensity)
+            self.publish_intensity(self.channels[1], self.drv_B_intensity)
+            self.logger.debug(f"Set LED channel {self.channels[1]} to an intensity of {self.drv_B_intensity}")
 
     def publish_intensity(self, channel, intensity):
         driverIntensity = LEDDriverIntensity(
@@ -144,4 +146,3 @@ def click_lightrod_light_control(DRV_A_SETPOINT, DRV_B_SETPOINT):
     logger.debug(f"updating lightrodLightControl instance: {inst.__repr__()}")
     inst.DRV_A_intensity = float(DRV_A_SETPOINT)
     inst.DRV_B_intensity = float(DRV_B_SETPOINT)
-    inst.drv_intensity = [inst.DRV_A_intensity, inst.DRV_B_intensity]
