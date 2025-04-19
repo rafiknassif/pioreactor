@@ -7,6 +7,7 @@ from typing import cast
 import busio  # type: ignore
 
 from pioreactor import hardware
+from pioreactor.types import LedDriverChannel
 from pioreactor.exc import HardwareNotFoundError
 from pioreactor.types import FloatBetween0and100
 from pioreactor.version import hardware_version_info
@@ -19,8 +20,6 @@ class MCP47CxBxx:
     Driver for the MCP47CMB02 digital to analog converter. (can be easily modified to support others of this family by adapting for different bit depth)
     See datasheet: https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/DataSheets/MCP47CXBXX-Data-Sheet-DS20006089B.pdf
     """
-    
-    channel_idx = {"DRV_A": 0, "DRV_B": 1}
 
     def __init__(self, i2cAddress, resolution):
         self.i2cAddress = i2cAddress
@@ -44,6 +43,10 @@ class MCP47CxBxx:
         self.setGain(0, 0)  # 1x gain on both ch
         self.setOutput(0, 0)  # Set DAC outputs to 0 
         self.setOutput(1, 0)
+
+        self.channels: list[LedDriverChannel] = ["DRV_A", "DRV_B"]
+        # { "DRV_A": 0, "DRV_B": 1 }
+        self.channel_idx = { ch: idx for idx, ch in enumerate(self.channels) }
     
     def testConnection(self):
         return self.i2c.probe(self.i2cAddress)  # responds with true if device responds
@@ -51,12 +54,13 @@ class MCP47CxBxx:
     def writei2c(self, command, data):
         command.extend(data)
         self.i2c.write(command)
-        # self.i2c.write(data)
 
     def set_intensity_to(self, channel, intensity):
         # TODO: account for the nonlinear current drive vs dac value here
         desiredOutput = int(intensity/100*255)  # Temporarily just map intensity to 0-255 scale
         self.setOutput(self.channel_idx[channel], desiredOutput)
+        # self.setOutput(0, desiredOutput)
+        # self.setOutput(1, desiredOutput)
     
     def setOutput(self, channel, value: int):
         if channel > 1 or value > self.maxValue:

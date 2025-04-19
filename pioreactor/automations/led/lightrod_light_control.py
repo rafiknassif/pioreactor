@@ -52,7 +52,7 @@ class LightrodLightControl(LEDAutomationJob):
             self.light_active = True
             self.enable_relay()
             self.logger.info(f"Turned on relay.")
-            
+
         if not self.relay_enabled == 100:
             self.light_active = False
             self.disable_relay()
