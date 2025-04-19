@@ -182,17 +182,26 @@ class ReadLightRodTemps(BackgroundJob):
 
     def _read_average_temperature(self, driver) -> float:
         """
-        Read the current temperature from sensor, in Celsius
+        Read the current temperature from sensor, in Celsius.
+        Computes the median of 6 readings, and averages only values within 10% of the median.
         """
-        running_sum, running_count, averaged_temp = 0.0, 0, 0
+        temperatures = []
+        averaged_temp = 0.0
+        
         try:
             # check temp is fast, let's do it a few times to reduce variance.
             for i in range(6):
-                running_sum += driver.get_temperature()
-                running_count += 1
+                temp = driver.get_temperature()
+                temperatures.append(temp)
                 sleep(0.1)
-            averaged_temp = running_sum / running_count
+            # Use NumPy to calculate the median
+            med = np.median(temperatures)
 
+            # Filter values within 10% of the median
+            threshold = 0.1 * med
+            filtered = [t for t in temperatures if abs(t - med) <= threshold]
+            averaged_temp = sum(filtered) / len(filtered)
+                
         except OSError as e:
             self.logger.debug(e, exc_info=True)
             self.logger.error(exc.HardwareNotFoundError(
