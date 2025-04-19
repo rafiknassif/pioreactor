@@ -136,7 +136,12 @@ def click_lightrod_light_control(DRV_A_SETPOINT, DRV_B_SETPOINT):
     unit = get_unit_name()
     experiment = get_assigned_experiment_name(unit)
 
+    from pioreactor.logging import create_logger
+    logger = create_logger("click_lightrod_light_control")
+    logger.debug(f"updated led driver setpoints: {DRV_A_SETPOINT}, {DRV_B_SETPOINT}")
+
     inst = LightrodLightControl.getInstance()
+    logger.debug(f"updating lightrodLightControl instance: {inst.__repr__()}")
     inst.DRV_A_intensity = float(DRV_A_SETPOINT)
     inst.DRV_B_intensity = float(DRV_B_SETPOINT)
     inst.drv_intensity = [inst.DRV_A_intensity, inst.DRV_B_intensity]
