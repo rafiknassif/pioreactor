@@ -426,7 +426,7 @@ def parse_driver_intensity(topic: str, payload: pt.MQTTMessagePayload) -> dict:
     from pioreactor.logging import create_logger
     logger = create_logger("driver_intensity_parse-testing")
     logger.debug(f"Parsed driver intensity for db and plotting: {parsed_data}")
-    
+
     parsed_data = {
         "experiment": metadata.experiment,
         "pioreactor_unit": str(metadata.pioreactor_unit) + "-" + drv_int.channel,
@@ -608,7 +608,7 @@ def add_default_source_to_sinks() -> list[TopicToParserToTable]:
                 "pbr_ph",
             ),
             TopicToParserToTable(
-                "pioreactor/+/+/lightrod_light_control/driver_intensity ",
+                "pioreactor/+/+/lightrod_light_control/driver_intensity",
                 parse_driver_intensity,
                 "driver_intensity",
             ),
