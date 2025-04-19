@@ -96,6 +96,7 @@ class LightrodLightControl(LEDAutomationJob):
         self.DRV_A_intensity = 0
         self.DRV_B_intensity = 0
         self.set_driver_intensity()
+        self.logger.debug("shutdown drivers called - setting intensities to 0")
 
     def set_driver_intensity(self):
         """
