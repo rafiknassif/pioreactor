@@ -54,6 +54,7 @@ class MCP47CxBxx:
     
     def writei2c(self, command, data):
         command.extend(data)
+        self.logger.debug(f"i2c wrote: {command.hex()}")
         self.i2c.write(command)
 
     def set_intensity_to(self, channel, intensity):
@@ -62,7 +63,7 @@ class MCP47CxBxx:
         self.logger.debug(f"channel: {channel} mapped to {self.channel_idx[channel]}")
         self.setOutput(self.channel_idx[channel], desiredOutput)
         self.logger.debug(f"setOutput({type(self.channel_idx[channel])}({self.channel_idx[channel]}), {desiredOutput})")
-        self.setOutput(1, 75)
+        self.setOutput(0, 75)
         
     def setOutput(self, channel, value: int):
         if channel > 1 or value > self.maxValue:
