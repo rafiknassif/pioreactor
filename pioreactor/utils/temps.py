@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
+import asyncio
 
 from adafruit_bus_device.i2c_device import I2CDevice
 from busio import I2C  # type: ignore
@@ -59,8 +60,9 @@ class TMP1075:
             self.i2c.write_then_readinto(self.TEMP_REGISTER, b)
             return ((b[0] << 4) + (b[1] >> 4)) * 0.0625
         except OSError as e:
-            # If we get an error during reading, mark the device as disconnected
-            self.connected = False
+            # # If we get an error during reading, mark the device as disconnected
+            # self.connected = False
+            # asyncio.run_coroutine_threadsafe(self.__init__(self.address), self.)  #TODO schedule reconnection
             raise OSError(f"Error reading from temperature sensor at address 0x{self.address:02x}: {str(e)}")
 
     @property
