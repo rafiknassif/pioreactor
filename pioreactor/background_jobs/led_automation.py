@@ -383,8 +383,3 @@ def click_led_automation(ctx, automation_name, duration, skip_first_run):
     )
 
     la.block_until_disconnected()
-
-    @click.command(
-    name="led_automation",
-    context_settings=dict(ignore_unknown_options=True, allow_extra_args=True),
-)
