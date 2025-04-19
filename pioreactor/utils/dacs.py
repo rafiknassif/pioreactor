@@ -63,8 +63,16 @@ class MCP47CxBxx:
         desiredOutput = int(intensity/100*255)  # Temporarily just map intensity to 0-255 scale
         # self.logger.debug(f"channel: {channel} mapped to {self.channel_idx[channel]}")
         self.logger.debug(f"setOutput({type(self.channel_idx[channel])}({self.channel_idx[channel]}), {desiredOutput})")
-        time.sleep(0.1)
+        time.sleep(0.2)
         self.setOutput(self.channel_idx[channel], desiredOutput)
+        time.sleep(0.2)
+        self.logger.debug(f"setOutput(0, {desiredOutput})")
+        time.sleep(0.2)
+        self.setOutput(0, desiredOutput)
+        time.sleep(0.2)
+        self.logger.debug(f"setOutput(1, {desiredOutput})")
+        time.sleep(0.2)
+        self.setOutput(1, desiredOutput)
         # self.setOutput(0, 75)
         
     def setOutput(self, channel, value: int):
