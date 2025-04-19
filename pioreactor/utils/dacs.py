@@ -19,6 +19,9 @@ class MCP47CxBxx:
     Driver for the MCP47CMB02 digital to analog converter. (can be easily modified to support others of this family by adapting for different bit depth)
     See datasheet: https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/DataSheets/MCP47CXBXX-Data-Sheet-DS20006089B.pdf
     """
+    # map channel ID to dac channels
+    DRV_A = 0
+    DRV_B = 1
 
     def __init__(self, i2cAddress, resolution):
         self.i2cAddress = i2cAddress
