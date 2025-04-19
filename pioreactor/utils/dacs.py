@@ -61,7 +61,8 @@ class MCP47CxBxx:
         desiredOutput = int(intensity/100*255)  # Temporarily just map intensity to 0-255 scale
         self.logger.debug(f"channel: {channel} mapped to {self.channel_idx[channel]}")
         self.setOutput(self.channel_idx[channel], desiredOutput)
-        self.logger.debug(f"setOutput({self.channel_idx[channel]}, {desiredOutput})")
+        self.logger.debug(f"setOutput({type(self.channel_idx[channel])}({self.channel_idx[channel]}), {desiredOutput})")
+        self.setOutput(1, 75)
         
     def setOutput(self, channel, value: int):
         if channel > 1 or value > self.maxValue:
