@@ -12,6 +12,7 @@ class LightrodLightControl(LEDAutomationJob):
 
     automation_name: str = "lightrod_light_control"
     published_settings = {
+        "relay_enabled": {"datatype": "float", "settable": True, "unit": "%"},
         "light_intensity": {"datatype": "float", "settable": True, "unit": "%"},
     }
 
@@ -40,26 +41,38 @@ class LightrodLightControl(LEDAutomationJob):
         if not is_running:
             self.logger.error("ReadLightRodTemps is not running. Disconnecting LED automation.")
             self.light_active = False
-            self.set_led_intensity(self.relayChannel, 0)  # turn off the relay
-            if self.state != self.DISCONNECTED:
-                self.set_state(self.DISCONNECTED)
+            self.disable_relay()
             return events.ChangedLedIntensity("Turned off LEDs due to ReadLightRodTemps not running.")
 
         if not self.light_active:
             self.light_active = True
-            for channel in self.channels:
-                self.set_led_driver_intensity(channel, self.light_intensity)
-            return events.ChangedLedIntensity(f"Turned on LEDs at intensity {self.light_intensity}%.")
+            self.enable_relay()
+            return events.ChangedLedIntensity(f"Turned on relay.")
 
         return None
+    
+    def disable_relay(self):
+        self.set_led_intensity(self.relayChannel, 0)  # turn off the relay
+        if self.state != self.DISCONNECTED:
+            self.set_state(self.DISCONNECTED)
+
+    def enable_relay(self):
+        self.set_led_intensity(self.relayChannel, 100)  # turn on the relay 
 
     def set_light_intensity(self, intensity: float | str):
         """
         Update light intensity for the bioreactor.
         """
+
+        if intensity == 0:
+            self.disable_relay()
+        # else:
+        #     self.enable_relay()
+
         self.light_intensity = float(intensity)
         if self.light_active:
             for channel in self.channels:
                 self.set_led_driver_intensity(channel, self.light_intensity)
+                self.logger.debug(f"Set LED channel {channel} to an intensity of {self.light_intensity}")
 
 
