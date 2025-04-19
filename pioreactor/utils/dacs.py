@@ -55,10 +55,10 @@ class MCP47CxBxx:
 
     def set_intensity_to(self, channel, intensity):
         # TODO: account for the nonlinear current drive vs dac value here
-        desiredOutput = intensity/100*255  # Temporarily just map intensity to 0-255 scale
+        desiredOutput = int(intensity/100*255)  # Temporarily just map intensity to 0-255 scale
         self.setOutput(channel, desiredOutput)
     
-    def setOutput(self, channel, value):
+    def setOutput(self, channel, value: int):
         if channel > 1 or value > self.maxValue:
             return False
         command = bytearray(1)
