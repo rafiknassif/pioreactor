@@ -121,13 +121,13 @@ import click
 
 @click.command(name="lightrod_light_control")
 @click.option(
-    "--DRV_A_SETPOINT",
+    "--DRV_A_intensity",
     default=0,
     show_default=True,
     type=click.FloatRange(0, 100, clamp=True),
 )
 @click.option(
-    "--DRV_B_SETPOINT",
+    "--DRV_B_intensity",
     default=0,
     show_default=True,
     type=click.FloatRange(0, 100, clamp=True),

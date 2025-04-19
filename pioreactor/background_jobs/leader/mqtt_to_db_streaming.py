@@ -425,7 +425,6 @@ def parse_driver_intensity(topic: str, payload: pt.MQTTMessagePayload) -> dict:
 
     from pioreactor.logging import create_logger
     logger = create_logger("driver_intensity_parse-testing")
-    logger.debug(f"Parsed driver intensity for db and plotting: {parsed_data}")
 
     parsed_data = {
         "experiment": metadata.experiment,
@@ -433,6 +432,8 @@ def parse_driver_intensity(topic: str, payload: pt.MQTTMessagePayload) -> dict:
         "timestamp": drv_int.timestamp,  # Single timestamp for all readings
         "driver_intensity": drv_int.driver_intensity
     }
+    
+    logger.debug(f"Parsed driver intensity for db and plotting: {parsed_data}")
     
 
     return parsed_data
