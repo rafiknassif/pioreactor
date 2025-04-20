@@ -439,7 +439,7 @@ class ADCReader(LoggerMixin):
                     sleep(
                         max(
                             0,
-                            -time_sampling_took_to_run() + 5 / (oversampling_count - 1)# aim for 0.85s per read
+                            -time_sampling_took_to_run() + 0.85 / (oversampling_count - 1)# aim for 0.85s per read
                             + 0.0012 * ((counter * 0.618034) % 1), # this is to artificially jitter the samples, so that we observe less aliasing. That constant is phi.
                         )
                     )
