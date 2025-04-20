@@ -5,6 +5,7 @@ from pioreactor.config import config
 from pioreactor.hardware import PWM_TO_PIN
 from pioreactor.utils import clamp
 from pioreactor.utils.pwm import PWM
+from pioreactor.pubsub import QOS
 
 class AirBubbler(BackgroundJob):
     job_name = "custom_air_bubbler"
@@ -23,6 +24,22 @@ class AirBubbler(BackgroundJob):
         self.duty_cycle = duty_cycle
         self.pwm = PWM(self.pin, self.hertz, unit=self.unit, experiment=self.experiment)
         self.pwm.start(0)
+
+        # Subscribe to control topic
+        self.subscribe_and_callback(
+            self.handle_control_message,
+            f"pioreactor/{self.unit}/{self.experiment}/custom_air_bubbler/control",
+            qos=QOS.AT_LEAST_ONCE,
+        )
+
+    def handle_control_message(self, message):
+        command = message.payload.decode()
+        if command == "stop":
+            self.stop_pumping()
+        elif command == "start":
+            self.start_pumping()
+        else:
+            self.logger.warning(f"Unknown command: {command}")
 
     def on_disconnected(self):
         self.stop_pumping()
@@ -62,3 +79,4 @@ def click_air_bubbler():
     ab = AirBubbler(unit=get_unit_name(), experiment=get_latest_experiment_name(), duty_cycle=dc, hertz=hertz)
     ab.start_pumping()
     ab.block_until_disconnected()
+

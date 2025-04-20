@@ -878,16 +878,6 @@ class ODReader(BackgroundJob):
         self.pre_read_callbacks: list[Callable] = self._prepare_pre_callbacks()
         self.post_read_callbacks: list[Callable] = self._prepare_post_callbacks()
         
-        # Air Bubbler Initialization
-        try:
-            self.pin = PWM_TO_PIN[config.get("PWM_reverse", "air_bubbler")]
-        except KeyError:
-            raise KeyError("Unable to find `air_bubbler` under PWM section in the config.ini")
-
-        self.hertz = config.getfloat("custom_air_bubbler.config", "hertz")
-        self.duty_cycle = config.getfloat("custom_air_bubbler.config", "duty_cycle")
-        self.pwm = PWM(self.pin, self.hertz, unit=self.unit, experiment=self.experiment)
-        self.pwm.start(0)  # Start with the air bubbler off
 
         # setup the ADC by turning off all LEDs.
         with led_utils.change_leds_intensities_temporarily(
@@ -950,7 +940,7 @@ class ODReader(BackgroundJob):
         Stops the air bubbler by setting its duty cycle to 0.
         """
         pre_delay = config.getfloat("custom_air_bubbler.config", "pre_delay_duration", fallback=0)
-        self.pwm.change_duty_cycle(0)  # Stop the air bubbler
+        publish(f"pioreactor/{self.unit}/{self.experiment}/air_bubbler/control", "stop", qos=QOS.AT_LEAST_ONCE)
         sleep(pre_delay)  # Wait for the pre-delay
 
     def start_air_bubbler(self):
@@ -959,7 +949,7 @@ class ODReader(BackgroundJob):
         """
         post_delay = config.getfloat("custom_air_bubbler.config", "post_delay_duration", fallback=0)
         sleep(post_delay)  # Wait for the post-delay
-        self.pwm.change_duty_cycle(self.duty_cycle)  # Start the air bubbler
+        publish(f"pioreactor/{self.unit}/{self.experiment}/air_bubbler/control", "start", qos=QOS.AT_LEAST_ONCE)
 
     @staticmethod
     def _determine_best_ir_led_intensity(
