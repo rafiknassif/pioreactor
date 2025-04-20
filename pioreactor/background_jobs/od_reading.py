@@ -940,7 +940,7 @@ class ODReader(BackgroundJob):
         Stops the air bubbler by setting its duty cycle to 0.
         """
         pre_delay = config.getfloat("custom_air_bubbler.config", "pre_delay_duration", fallback=0)
-        publish(f"pioreactor/{self.unit}/{self.experiment}/air_bubbler/control", "stop", qos=QOS.AT_LEAST_ONCE)
+        publish(f"pioreactor/{self.unit}/{self.experiment}/custom_air_bubbler/control", "stop", qos=QOS.AT_LEAST_ONCE)
         sleep(pre_delay)  # Wait for the pre-delay
 
     def start_air_bubbler(self):
@@ -949,7 +949,7 @@ class ODReader(BackgroundJob):
         """
         post_delay = config.getfloat("custom_air_bubbler.config", "post_delay_duration", fallback=0)
         sleep(post_delay)  # Wait for the post-delay
-        publish(f"pioreactor/{self.unit}/{self.experiment}/air_bubbler/control", "start", qos=QOS.AT_LEAST_ONCE)
+        publish(f"pioreactor/{self.unit}/{self.experiment}/custom_air_bubbler/control", "start", qos=QOS.AT_LEAST_ONCE)
 
     @staticmethod
     def _determine_best_ir_led_intensity(
