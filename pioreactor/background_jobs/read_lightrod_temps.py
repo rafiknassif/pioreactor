@@ -15,6 +15,8 @@ from pioreactor.config import config
 from pioreactor.actions.led_intensity import led_intensity 
 from pioreactor.actions.led_driver import led_driver_intensity 
 from pioreactor.whoami import get_unit_name, get_assigned_experiment_name
+from pioreactor.pubsub import publish, QOS
+
 
 from pioreactor.automations.led.lightrod_light_control import LightrodLightControl
 
@@ -222,9 +224,12 @@ class ReadLightRodTemps(BackgroundJob):
                 f"Temperature of light rod has exceeded {self.warning_threshold}℃ - currently {temp}℃. Some action will be taken maybe idk"
                 # TODO implement overtemperature correction action
             )
+            # Turn off drivers
+            publish(f"pioreactor/{self.unit}/{self.experiment}/lightrod_light_control/control", "shutdown_drivers", qos=QOS.AT_LEAST_ONCE)
 
+            # Turn off relay
             channel = 'B'
-            success = led_intensity(  # Turn off relay
+            success = led_intensity(
                 {channel: 0},
                 unit=self.unit,
                 experiment=self.experiment,
@@ -233,21 +238,11 @@ class ReadLightRodTemps(BackgroundJob):
             )
             if success:
                 self.logger.warning("lights were turned off due to high temp")
-            
-            lrctrl = LightrodLightControl.getInstance()
-            if lrctrl:
-                self.logger.debug(f"lightrodcontrol instance: {lrctrl.__repr__()}")
-                lrctrl.shutdown_drivers()
-            else:
-                self.logger.warning("No LightrodLightControl instance available to shut down drivers")
-            lrctrl.shutdown_drivers()  # set intensities to zero
 
         return temp > self.warning_threshold
 
 
 import click
-
-
 @click.command(name="read_lightrod_temps")
 @click.option(
     "--warning-threshold",
