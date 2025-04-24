@@ -9,6 +9,8 @@ from pioreactor.actions.led_driver import initialize_dac
 from pioreactor.types import LedIntensityValue
 from pioreactor.whoami import get_unit_name, get_assigned_experiment_name
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
+from pioreactor.pubsub import QOS
+
 
 import click
 
@@ -41,6 +43,13 @@ class LightrodLightControl(LEDAutomationJob):
         self.relayChannel : LedChannel = "B"
         self.light_active: bool = False
         initialize_dac()
+
+        # Subscribe to control topic
+        self.subscribe_and_callback(
+            self.handle_control_message,
+            f"pioreactor/{self.unit}/{self.experiment}/lightrod_light_control/control",
+            qos=QOS.AT_LEAST_ONCE,
+        )
 
         self.unit = get_unit_name()
         self.experiment = get_assigned_experiment_name(self.unit)
@@ -83,6 +92,21 @@ class LightrodLightControl(LEDAutomationJob):
             self.set_driver_intensity()
 
         return None
+    
+    def handle_control_message(self, message):
+        command = message.payload.decode()
+        if command == "shutdown_drivers":
+            self.shutdown_drivers()
+        elif "DRV_A_intensity" in command:
+            _, param = command.split(" ", 1)
+            self.DRV_A_intensity = float(param)
+            self.set_driver_intensity()
+        elif "DRV_B_intensity" in command:
+            _, param = command.split(" ", 1)
+            self.DRV_B_intensity = float(param)
+            self.set_driver_intensity()
+        else:
+            self.logger.warning(f"Unknown command: {command}")
     
     def disable_relay(self):
         self.set_led_intensity(self.relayChannel, 0)  # turn off the relay
