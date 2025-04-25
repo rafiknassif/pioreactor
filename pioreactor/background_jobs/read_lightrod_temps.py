@@ -83,8 +83,6 @@ class ReadLightRodTemps(BackgroundJob):
             self.connected_lightrods[lightRod] = rod_connected
             if not rod_connected:
                 self.logger.info(f"Lightrod {lightRod} appears to be disconnected - skipping it for temperature readings.")
-            else:
-                self.logger.info(f"Lightrod {lightRod} is connected and will be monitored.")
 
     def read_temps(self):
         lightrod_dict = {}
