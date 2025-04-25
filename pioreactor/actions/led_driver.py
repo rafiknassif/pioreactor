@@ -147,23 +147,24 @@ def led_driver_intensity(
             timestamp_of_change = current_utc_datetime()
 
             for channel, intensity in desired_state.items():
-                event = structs.LEDChangeEvent(
-                    channel=channel,
-                    intensity=intensity,
-                    source_of_event=source_of_event,
-                    timestamp=timestamp_of_change,
-                )
+                if old_state[channel] != new_state[channel]:  # only log on change
+                    event = structs.LEDChangeEvent(
+                        channel=channel,
+                        intensity=intensity,
+                        source_of_event=source_of_event,
+                        timestamp=timestamp_of_change,
+                    )
 
-                mqtt_publish(
-                    f"pioreactor/{unit}/{experiment}/led_driver_change_events",
-                    encode(event),
-                    qos=QOS.AT_MOST_ONCE,
-                    retain=False,
-                )
+                    mqtt_publish(
+                        f"pioreactor/{unit}/{experiment}/led_driver_change_events",
+                        encode(event),
+                        qos=QOS.AT_MOST_ONCE,
+                        retain=False,
+                    )
 
-                logger.info(
-                    f"Updated LED Driver {channel} from {old_state[channel]:0.3g}% to {new_state[channel]:0.3g}%."
-                )
+                    logger.info(
+                        f"Updated LED Driver {channel} from {old_state[channel]:0.3g}% to {new_state[channel]:0.3g}%."
+                    )
         return updated_successfully
 
 
