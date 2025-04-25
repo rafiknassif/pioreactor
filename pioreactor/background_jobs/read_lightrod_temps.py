@@ -48,7 +48,7 @@ class ReadLightRodTemps(BackgroundJob):
         ).start()
         self.rescan_timer = RepeatedTimer(
             600,
-            self.rescan_lightrods,
+            self.reset_connected_status,
             job_name=f"{self.job_name}_rescan",
             run_immediately=False,
         ).start()
