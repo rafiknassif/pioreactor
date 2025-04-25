@@ -42,6 +42,9 @@ class LightrodLightControl(LEDAutomationJob):
         self.channels: list[LedDriverChannel] = ["DRV_A", "DRV_B"]
         self.relayChannel : LedChannel = "B"
         self.light_active: bool = False
+        self.prev_A_intensity = 0
+        self.prev_B_intensity = 0
+
         initialize_dac()
 
         # Subscribe to control topic
@@ -131,12 +134,16 @@ class LightrodLightControl(LEDAutomationJob):
 
         if self.light_active:
             self.set_led_driver_intensity(self.channels[0], self.DRV_A_intensity)
-            self.publish_intensity(self.channels[0], self.DRV_A_intensity)
-            self.logger.debug(f"Set LED channel {self.channels[0]} to an intensity of {self.DRV_A_intensity}")
+            if self.DRV_A_intensity != self.prev_A_intensity:
+                self.prev_A_intensity = self.DRV_A_intensity
+                self.publish_intensity(self.channels[0], self.DRV_A_intensity)
+                self.logger.debug(f"Set LED channel {self.channels[0]} to an intensity of {self.DRV_A_intensity}")
 
             self.set_led_driver_intensity(self.channels[1], self.DRV_B_intensity)
-            self.publish_intensity(self.channels[1], self.DRV_B_intensity)
-            self.logger.debug(f"Set LED channel {self.channels[1]} to an intensity of {self.DRV_B_intensity}")
+            if self.DRV_B_intensity != self.prev_B_intensity:
+                self.prev_B_intensity = self.DRV_B_intensity
+                self.publish_intensity(self.channels[1], self.DRV_B_intensity)
+                self.logger.debug(f"Set LED channel {self.channels[1]} to an intensity of {self.DRV_B_intensity}")
 
     def publish_intensity(self, channel, intensity):
         driverIntensity = LEDDriverIntensity(
