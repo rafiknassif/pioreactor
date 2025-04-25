@@ -58,7 +58,7 @@ class TMP1075:
         b = bytearray(2)
         # try:
         self.i2c.write_then_readinto(self.TEMP_REGISTER, b)
-            return ((b[0] << 4) + (b[1] >> 4)) * 0.0625
+        return ((b[0] << 4) + (b[1] >> 4)) * 0.0625
         # except OSError as e:
             # # If we get an error during reading, mark the device as disconnected
             # self.connected = False
