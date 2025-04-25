@@ -56,14 +56,15 @@ class TMP1075:
             raise OSError(f"Temperature sensor at address 0x{self.address:02x} is not connected")
             
         b = bytearray(2)
-        try:
-            self.i2c.write_then_readinto(self.TEMP_REGISTER, b)
+        # try:
+        self.i2c.write_then_readinto(self.TEMP_REGISTER, b)
             return ((b[0] << 4) + (b[1] >> 4)) * 0.0625
-        except OSError as e:
+        # except OSError as e:
             # # If we get an error during reading, mark the device as disconnected
             # self.connected = False
             # asyncio.run_coroutine_threadsafe(self.__init__(self.address), self.)  #TODO schedule reconnection
             # raise OSError(f"Error reading from temperature sensor at address 0x{self.address:02x}: {str(e)}")
+            
 
     @property
     def temperature(self) -> float:
