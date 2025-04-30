@@ -17,8 +17,7 @@ from pioreactor.logging import create_logger
 from pioreactor.pubsub import Client
 from pioreactor.pubsub import create_client
 from pioreactor.pubsub import QOS
-from pioreactor.types import LedDriverChannel
-from pioreactor.types import LedIntensityValue
+from pioreactor.types import LedDriverChannel, LedIntensityValue, LedDriverCurrent
 from pioreactor.utils import local_intermittent_storage
 from pioreactor.utils.timing import current_utc_datetime
 from pioreactor.whoami import get_assigned_experiment_name
@@ -28,6 +27,7 @@ from pioreactor.whoami import is_testing_env
 
 ALL_DRIVER_CHANNELS: list[LedDriverChannel] = ["DRV_A", "DRV_B"]
 LEDsToIntensityMapping = dict[LedDriverChannel, LedIntensityValue]
+LEDsToCurrentMapping = dict[LedDriverChannel, LedDriverCurrent]
 dac = None
 
 def initialize_dac():
@@ -57,7 +57,7 @@ def _update_current_state(
 
 
 def led_driver_intensity(
-    desired_state: LEDsToIntensityMapping,
+    desired_state: LEDsToIntensityMapping | LEDsToCurrentMapping,
     unit: str | None = None,
     experiment: str | None = None,
     verbose: bool = True,
@@ -113,15 +113,15 @@ def led_driver_intensity(
 
     with mqtt_publishing:
 
-        for channel, intensity in desired_state.items():
+        for channel, setpoint in desired_state.items():
             try:
-                assert (
-                    channel in ALL_DRIVER_CHANNELS
-                ), f"Saw incorrect channel {channel}, not in {ALL_DRIVER_CHANNELS}"
-                assert (
-                    0.0 <= intensity <= 100.0
-                ), f"Channel {channel} intensity should be between 0 and 100, inclusive"
-                dac.set_intensity_to(channel, intensity)
+                assert (channel in ALL_DRIVER_CHANNELS), f"Saw incorrect channel {channel}, not in {ALL_DRIVER_CHANNELS}"
+                if type(setpoint) is LedIntensityValue:
+                    assert (0.0 <= setpoint <= 100.0), f"Channel {channel} intensity should be between 0 and 100, inclusive"
+                    dac.set_intensity_to(channel, setpoint)
+                elif type(setpoint) is LedDriverCurrent:
+                    assert (0.0 <= setpoint <= 750.0), f"Channel {channel} current should be between 0 and 750, inclusive"
+                    dac.set_current_to(channel, setpoint)
             except (ValueError, HardwareNotFoundError) as e:
                 logger.debug(e, exc_info=True)
                 logger.error(

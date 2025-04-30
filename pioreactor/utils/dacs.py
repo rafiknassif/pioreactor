@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import cast
+import numpy as np
 
 import busio  # type: ignore
 
@@ -57,8 +58,29 @@ class MCP47CxBxx:
         self.i2c.write(command)
 
     def set_intensity_to(self, channel, intensity):
-        # TODO: account for the nonlinear current drive vs dac value here
-        desiredOutput = int(intensity/100*255)  # Temporarily just map intensity to 0-255 scale
+        desiredOutput = int(intensity/100*255)  # Map intensity to 0-255 scale
+        self.setOutput(self.channel_idx[channel], desiredOutput)
+    
+    def set_current_to(self, channel, desired_current):
+        COEFFICIENTS = [2e-07, -0.0001, 0.0298, 0.2394, 4.7613]  # [x^4, x^3, x^2, x, constant]
+
+        def current_from_dac(d: float) -> float:
+            return np.polyval(COEFFICIENTS, d)
+        
+        tolerance = 0.01
+        max_iterations=100
+        low, high = 0.0, 255.0
+        for _ in range(max_iterations):
+            mid = (low + high) / 2
+            current = current_from_dac(mid)
+            if abs(current - desired_current) < tolerance:
+                return mid
+            elif current < desired_current:
+                low = mid
+            else:
+                high = mid
+        
+        desiredOutput = int(mid)
         self.setOutput(self.channel_idx[channel], desiredOutput)
         
     def setOutput(self, channel, value: int):

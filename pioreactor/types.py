@@ -115,6 +115,7 @@ AdcChannel = t.Literal[0, 1, 2, 3]
 
 FloatBetween0and100 = t.Annotated[float, Meta(ge=0, le=100)]
 LedIntensityValue = FloatBetween0and100
+LedDriverCurrent = t.Annotated[float, Meta(ge=0, le=750)]
 
 # All GPIO pins below are BCM numbered
 GpioPin = t.Literal[
