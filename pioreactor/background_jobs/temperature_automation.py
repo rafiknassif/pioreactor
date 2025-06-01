@@ -46,19 +46,14 @@ class TemperatureAutomationJob(AutomationJob):
     MAX_TEMP_TO_REDUCE_HEATING = 63.0
     MAX_TEMP_TO_DISABLE_HEATING = 65.0
     MAX_TEMP_TO_SHUTDOWN = 66.0
-    # COMMENTED OUT: everything related to OD & growth rate
-    # _latest_growth_rate: Optional[float] = None
-    # _latest_normalized_od: Optional[float] = None
-    # previous_normalized_od: Optional[float] = None
-    # previous_growth_rate: Optional[float] = None
-    INFERENCE_EVERY_N_SECONDS: float = 30
-    # Constants for liquid loss detection
-    PLATEAU_TEMP_CHANGE_THRESHOLD: float = 0.05  # °C change considered a plateau
-    PLATEAU_CONSECUTIVE_COUNT: int = 15  # Number of consecutive plateaus to trigger alert
-    PLATEAU_MIN_DUTY_CYCLE: float = 65  # Minimum duty cycle to consider plateau detection
 
-    latest_temperature = None
-    previous_temperature = None
+    INFERENCE_EVERY_N_SECONDS: float = 30
+    
+    # Constants for liquid loss detection
+
+    PLATEAU_WINDOW_SECONDS = 300  # Time to declare plateau with <=0 positive slope
+    PLATEAU_TEMP_CHANGE_THRESHOLD: float = 0.05  # °C change considered a plateau
+    PLATEAU_MIN_DUTY_CYCLE: float = 65  # Minimum duty cycle to consider plateau detection
 
     automation_name = "temperature_automation_base"  # is overwritten in subclasses
     job_name = "temperature_automation"
@@ -101,10 +96,7 @@ class TemperatureAutomationJob(AutomationJob):
         self.heating_pcb_tmp_driver = MCP9600(Thermocouple_ADDR)
 
         # Initialize liquid loss detection
-        self.current_temp = None
-        self.previous_temp = None
-        self.plateau_count = 0
-        self.liquid_loss_detected = False
+        self.history = []
 
         # Single timer triggers infer_temperature() at self.INFERENCE_EVERY_N_SECONDS
         self.temperature_timer = RepeatedTimer(
@@ -174,37 +166,6 @@ class TemperatureAutomationJob(AutomationJob):
         """
         return self.pwm.is_locked()
 
-    # COMMENTED OUT: remove references to stale data or OD / growth checks
-    # @property
-    # def most_stale_time(self) -> datetime:
-    #     return min(self.latest_normalized_od_at, self.latest_growth_rate_at)
-
-    # @property
-    # def latest_growth_rate(self) -> float:
-    #     if self._latest_growth_rate is None:
-    #         self.logger.debug("Waiting for OD and growth rate data to arrive")
-    #         if not all(is_pio_job_running(["od_reading", "growth_rate_calculating"])):
-    #             raise exc.JobRequiredError("`od_reading` and `growth_rate_calculating` should be Ready.")
-
-    #     if (current_utc_datetime() - self.most_stale_time).seconds > 5 * 60:
-    #         raise exc.JobRequiredError(
-    #             "readings are too stale (over 5 minutes old) - are `od_reading` and `growth_rate_calculating` running?"
-    #         )
-    #     return cast(float, self._latest_growth_rate)
-
-    # @property
-    # def latest_normalized_od(self) -> float:
-    #     if self._latest_normalized_od is None:
-    #         self.logger.debug("Waiting for OD and growth rate data to arrive")
-    #         if not all(is_pio_job_running(["od_reading", "growth_rate_calculating"])):
-    #             raise exc.JobRequiredError("`od_reading` and `growth_rate_calculating` should be running.")
-
-    #     if (current_utc_datetime() - self.most_stale_time).seconds > 5 * 60:
-    #         raise exc.JobRequiredError(
-    #             "readings are too stale (over 5 minutes old) - are `od_reading` and `growth_rate_calculating` running?"
-    #         )
-    #     return cast(float, self._latest_normalized_od)
-
     def detect_temp_plateau(self) -> bool:
         """
         Detect suspicious temperature plateaus during heating which may indicate liquid loss.
@@ -244,32 +205,20 @@ class TemperatureAutomationJob(AutomationJob):
         """
         Read the current temperature from our sensor, in Celsius
         """
-        running_sum, running_count = 0.0, 0
         try:
-            # check temp is fast, let's do it a few times to reduce variance.
-            for i in range(6):
-                running_sum += self.heating_pcb_tmp_driver.get_hot_junction_temperature()
+            running_sum, running_count = 0.0, 0
+            for _ in range(6):
+                running_sum += self.heating_pcb_tmp_driver.get_temperature()
                 running_count += 1
                 sleep(0.05)
-
+            averaged_temp = running_sum / running_count
+            with local_intermittent_storage("temperature_and_heating") as cache:
+                cache["water_temperature"] = averaged_temp
+                cache["water_temperature_at"] = current_utc_timestamp()
+            return self._check_if_exceeds_max_temp(averaged_temp)
         except OSError as e:
             self.logger.debug(e, exc_info=True)
-            raise exc.HardwareNotFoundError(
-                "Is the Thermocouple attached? Unable to find temperature sensor."
-            )
-
-        averaged_temp = running_sum / running_count
-        if averaged_temp == 0.0 and self.automation_name != "only_record_temperature":
-            # this is a hardware fluke, not sure why, see #308. We will return something very high to make it shutdown
-            # todo: still needed? last observed on  July 18, 2022
-            self.logger.error("Temp sensor failure. Switching off. See issue #308")
-            self._update_heater(0.0)
-
-        with local_intermittent_storage("temperature_and_heating") as cache:
-            cache["heating_pcb_temperature"] = averaged_temp
-            cache["heating_pcb_temperature_at"] = current_utc_timestamp()
-
-        return averaged_temp
+            raise exc.HardwareNotFoundError("Water temperature sensor not found.")
 
     def _update_heater(self, new_duty_cycle: float) -> bool:
         # if new_duty_cycle < 5:  # lower duty cycle
@@ -287,9 +236,7 @@ class TemperatureAutomationJob(AutomationJob):
     def _check_if_exceeds_max_temp(self, temp: float) -> float:
         if temp > self.MAX_TEMP_TO_SHUTDOWN:
             self.logger.error(
-                f"Temperature of heating surface has exceeded {self.MAX_TEMP_TO_SHUTDOWN}℃ - currently {temp}℃. "
-                "This is beyond our recommendations. Shutting down Raspberry Pi to prevent further problems."
-            )
+                f"Water temp has exceeded {self.MAX_TEMP_TO_SHUTDOWN}℃ - currently {temp}℃. Shutting down")
             self._update_heater(0)
             self.blink_error_code(error_codes.PCB_TEMPERATURE_TOO_HIGH)
             from subprocess import call
@@ -298,16 +245,12 @@ class TemperatureAutomationJob(AutomationJob):
         elif temp > self.MAX_TEMP_TO_DISABLE_HEATING:
             self.blink_error_code(error_codes.PCB_TEMPERATURE_TOO_HIGH)
             self.logger.warning(
-                f"Temperature of heating surface has exceeded {self.MAX_TEMP_TO_DISABLE_HEATING}℃ - currently {temp}℃. "
-                "The heating PWM channel will be forced to 0."
-            )
+                f"Temperature of water has exceeded {self.MAX_TEMP_TO_DISABLE_HEATING}℃ - currently {temp}℃. Shutting down heater")
             self._update_heater(0)
 
         elif temp > self.MAX_TEMP_TO_REDUCE_HEATING:
             self.logger.debug(
-                f"Temperature of heating surface has exceeded {self.MAX_TEMP_TO_REDUCE_HEATING}℃ - currently {temp}℃. "
-                "The heating PWM channel will be reduced to 90% its current value."
-            )
+                f"Temperature of water has exceeded {self.MAX_TEMP_TO_REDUCE_HEATING}℃ - currently {temp}℃. Reducing heater power")
             self._update_heater(self.heater_duty_cycle * 0.9)
 
         return temp
@@ -363,66 +306,34 @@ class TemperatureAutomationJob(AutomationJob):
             timestamp=current_utc_datetime(),
         )
         
-        # Update temperature tracking for plateau detection
-        self.previous_temp = self.current_temp
-        self.current_temp = measured_temp
-        
-        # Check for liquid loss via temperature plateau detection
-        # Only run this check if heating is active
-        if self.heater_duty_cycle > 0:
-            potential_liquid_loss = self.detect_temp_plateau()
-            
-            if potential_liquid_loss:
-                self.logger.error(
-                    "Temperature plateau detected while heating - possible liquid loss or poor thermal contact. Check air bubbler. "
-                    "Disabling heating for safety."
-                )
-                self.set_state(self.DISCONNECTED)
-        
+        #check for liquid losses
+        timestamp = current_utc_timestamp()
+        self.history.append((timestamp, self.temperature, self.heater_duty_cycle))
+        self.history = [entry for entry in self.history if entry[0] >= timestamp - 600]
+        self.check_for_liquid_loss()
+
         self._set_latest_temperature(self.temperature)
 
-    # COMMENTED OUT: unsubscribing from OD/growth topics
-    # def _set_growth_rate(self, message: pt.MQTTMessage) -> None:
-    #     if not message.payload:
-    #         return
-    #     self.previous_growth_rate = self._latest_growth_rate
-    #     payload = decode(message.payload, type=structs.GrowthRate)
-    #     self._latest_growth_rate = payload.growth_rate
-    #     self.latest_growth_rate_at = payload.timestamp
-
-    def _set_latest_temperature(self, temperature: structs.Temperature) -> None:
-        # Note: this doesn't use MQTT data (previously it use to)
-        self.previous_temperature = self.latest_temperature
-        self.latest_temperature = temperature.temperature
-        self.latest_temperature_at = temperature.timestamp
-
-        if self.state == self.READY or self.state == self.INIT:
-            self.latest_event = self.execute()
-        return
-
-    # COMMENTED OUT: unsubscribing from OD/growth topics
-    # def _set_OD(self, message: pt.MQTTMessage) -> None:
-    #     if not message.payload:
-    #         return
-    #     self.previous_normalized_od = self._latest_normalized_od
-    #     payload = decode(message.payload, type=structs.ODFiltered)
-    #     self._latest_normalized_od = payload.od_filtered
-    #     self.latest_normalized_od_at = payload.timestamp
-
-    def start_passive_listeners(self) -> None:
-        # COMMENTED OUT: removing the subscription to OD/growth
-        # self.subscribe_and_callback(
-        #     self._set_growth_rate,
-        #     f"pioreactor/{self.unit}/{self.experiment}/growth_rate_calculating/growth_rate",
-        #     allow_retained=False,
-        # )
-        # self.subscribe_and_callback(
-        #     self._set_OD,
-        #     f"pioreactor/{self.unit}/{self.experiment}/growth_rate_calculating/od_filtered",
-        #     allow_retained=False,
-        # )
-        pass
-
+    def check_for_liquid_loss(self):
+        now = current_utc_timestamp()
+        window_start = now - self.PLATEAU_WINDOW_SECONDS
+        recent_history = [entry for entry in self.history if entry[0] >= window_start]
+        if len(recent_history) < 2:
+            return
+        start_time, start_temp, _ = recent_history[0]
+        end_time, end_temp, _ = recent_history[-1]
+        time_span = end_time - start_time
+        if time_span < self.PLATEAU_WINDOW_SECONDS * 0.8:
+            return
+        temp_change = end_temp - start_temp
+        duty_cycles = [entry[2] for entry in recent_history]
+        avg_duty_cycle = sum(duty_cycles) / len(duty_cycles) if duty_cycles else 0
+        if avg_duty_cycle > self.MIN_DUTY_CYCLE and temp_change < self.MIN_TEMP_INCREASE:
+            self.logger.debug(
+                f"Avg duty cycle: {avg_duty_cycle:.2f}%, Temp change: {temp_change:.2f}°C over {time_span:.1f}s"
+            )
+            self.logger.error("Heater may be out of water. Disabling heating.")
+            self.set_state(self.DISCONNECTED)
 
 class TemperatureAutomationJobContrib(TemperatureAutomationJob):
     automation_name: str
