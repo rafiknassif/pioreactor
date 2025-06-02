@@ -332,7 +332,7 @@ class TemperatureAutomationJob(AutomationJob):
         time_span = (end_time - start_time).total_seconds()
         if time_span < self.PLATEAU_WINDOW_SECONDS * 0.8:
             return
-        temp_change = end_temp - start_temp
+        temp_change = end_temp.temperature - start_temp.temperature
         duty_cycles = [entry[2] for entry in recent_history]
         avg_duty_cycle = sum(duty_cycles) / len(duty_cycles) if duty_cycles else 0
         if avg_duty_cycle > self.PLATEAU_MIN_DUTY_CYCLE and temp_change < self.PLATEAU_TEMP_CHANGE_THRESHOLD:
