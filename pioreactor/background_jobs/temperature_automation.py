@@ -320,20 +320,25 @@ class TemperatureAutomationJob(AutomationJob):
         self._set_latest_temperature(self.temperature)
 
     def check_for_liquid_loss(self):
-        now = current_utc_timestamp()
-        window_start = now - self.PLATEAU_WINDOW_SECONDS
-        recent_history = [entry for entry in self.history if entry[0] >= window_start]
+        now = current_utc_datetime()  # Use datetime object
+        window_start = now - timedelta(seconds=self.PLATEAU_WINDOW_SECONDS)
+        recent_history = [
+            entry for entry in self.history
+            if datetime.fromisoformat(entry[0].replace("Z", "+00:00")) >= window_start
+        ]
         if len(recent_history) < 2:
             return
-        start_time, start_temp, _ = recent_history[0]
-        end_time, end_temp, _ = recent_history[-1]
-        time_span = end_time - start_time
+        start_time_str, start_temp, _ = recent_history[0]
+        end_time_str, end_temp, _ = recent_history[-1]
+        start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+        end_time = datetime.fromisoformat(end_time_str.replace("Z", "+00:00"))
+        time_span = (end_time - start_time).total_seconds()
         if time_span < self.PLATEAU_WINDOW_SECONDS * 0.8:
             return
         temp_change = end_temp - start_temp
         duty_cycles = [entry[2] for entry in recent_history]
         avg_duty_cycle = sum(duty_cycles) / len(duty_cycles) if duty_cycles else 0
-        if avg_duty_cycle > self.MIN_DUTY_CYCLE and temp_change < self.MIN_TEMP_INCREASE:
+        if avg_duty_cycle > self.PLATEAU_MIN_DUTY_CYCLE and temp_change < self.PLATEAU_TEMP_CHANGE_THRESHOLD:
             self.logger.debug(
                 f"Avg duty cycle: {avg_duty_cycle:.2f}%, Temp change: {temp_change:.2f}°C over {time_span:.1f}s"
             )
