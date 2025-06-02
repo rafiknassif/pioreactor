@@ -118,7 +118,6 @@ class TemperatureAutomationJob(AutomationJob):
                 temperature=self.read_external_temperature(),
                 timestamp=current_utc_datetime(),
             )
-            self._set_latest_temperature(self.temperature)
 
     @staticmethod
     def seconds_since_last_active_heating() -> float:
@@ -316,8 +315,6 @@ class TemperatureAutomationJob(AutomationJob):
             if datetime.fromisoformat(entry[0].replace("Z", "+00:00")) >= window_start
         ]
         self.check_for_liquid_loss()
-
-        self._set_latest_temperature(self.temperature)
 
     def check_for_liquid_loss(self):
         now = current_utc_datetime()  # Use datetime object
