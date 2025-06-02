@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from time import sleep
 from typing import Any
 from typing import cast
@@ -309,7 +309,12 @@ class TemperatureAutomationJob(AutomationJob):
         #check for liquid losses
         timestamp = current_utc_timestamp()
         self.history.append((timestamp, self.temperature, self.heater_duty_cycle))
-        self.history = [entry for entry in self.history if entry[0] >= timestamp - 600]
+        now = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        window_start = now - timedelta(seconds=600)
+        self.history = [
+            entry for entry in self.history
+            if datetime.fromisoformat(entry[0].replace("Z", "+00:00")) >= window_start
+        ]
         self.check_for_liquid_loss()
 
         self._set_latest_temperature(self.temperature)
