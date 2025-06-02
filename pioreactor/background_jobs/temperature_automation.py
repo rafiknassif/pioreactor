@@ -208,7 +208,7 @@ class TemperatureAutomationJob(AutomationJob):
         try:
             running_sum, running_count = 0.0, 0
             for _ in range(6):
-                running_sum += self.heating_pcb_tmp_driver.get_temperature()
+                running_sum += self.heating_pcb_tmp_driver.get_hot_junction_temperature()
                 running_count += 1
                 sleep(0.05)
             averaged_temp = running_sum / running_count
