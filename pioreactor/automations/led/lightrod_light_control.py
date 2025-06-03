@@ -47,9 +47,6 @@ class LightrodLightControl(LEDAutomationJob):
 
         initialize_dac()
 
-        if not test_i2c_connection():
-            self.logger.warning(f"BAD LED DRIVER CONNECTION")
-
         # Subscribe to control topic
         self.subscribe_and_callback(
             self.handle_control_message,
