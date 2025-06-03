@@ -117,7 +117,7 @@ class TemperatureAutomationJob(AutomationJob):
         # self.ki = 0.015
         # self.integral_error = 0.0
 
-
+        self.latest_temperture_at: datetime = current_utc_datetime()
     
 
     def on_init_to_ready(self):
@@ -127,6 +127,7 @@ class TemperatureAutomationJob(AutomationJob):
                 temperature=self.read_external_temperature(),
                 timestamp=current_utc_datetime(),
             )
+            self._set_latest_temperature(self.temperature)
 
     @staticmethod
     def seconds_since_last_active_heating() -> float:
@@ -324,6 +325,7 @@ class TemperatureAutomationJob(AutomationJob):
             if datetime.fromisoformat(entry[0].replace("Z", "+00:00")) >= window_start
         ]
         self.check_for_liquid_loss()
+        self._set_latest_temperature(self.temperature)
 
     def check_for_liquid_loss(self):
         now = current_utc_datetime()  # Use datetime object
@@ -350,6 +352,17 @@ class TemperatureAutomationJob(AutomationJob):
             )
             self.logger.error("Heater may be out of water. Disabling heating.")
             self.set_state(self.DISCONNECTED)
+
+    def _set_latest_temperature(self, temperature: structs.Temperature) -> None:
+        # Note: this doesn't use MQTT data (previously it use to)
+        self.previous_temperature = self.latest_temperature
+        self.latest_temperature = temperature.temperature
+        self.latest_temperature_at = temperature.timestamp
+
+        if self.state == self.READY or self.state == self.INIT:
+            self.latest_event = self.execute()
+
+        return
 
 class TemperatureAutomationJobContrib(TemperatureAutomationJob):
     automation_name: str
