@@ -53,7 +53,7 @@ class TemperatureAutomationJob(AutomationJob):
     
     # Constants for liquid loss detection
 
-    PLATEAU_WINDOW_SECONDS = 300  # Time to declare plateau with <=0 positive slope
+    PLATEAU_WINDOW_SECONDS = 60*30  # Time to declare plateau with <=0 positive slope
     PLATEAU_TEMP_CHANGE_THRESHOLD: float = 0.05  # °C change considered a plateau
     PLATEAU_MIN_DUTY_CYCLE: float = 65  # Minimum duty cycle to consider plateau detection
 
