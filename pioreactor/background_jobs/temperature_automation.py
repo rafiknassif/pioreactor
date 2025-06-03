@@ -57,6 +57,8 @@ class TemperatureAutomationJob(AutomationJob):
     PLATEAU_TEMP_CHANGE_THRESHOLD: float = 0.05  # °C change considered a plateau
     PLATEAU_MIN_DUTY_CYCLE: float = 65  # Minimum duty cycle to consider plateau detection
 
+    latest_temperature = None
+
     automation_name = "temperature_automation_base"  # is overwritten in subclasses
     job_name = "temperature_automation"
 
