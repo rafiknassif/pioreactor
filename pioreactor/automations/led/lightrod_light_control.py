@@ -5,7 +5,7 @@ from pioreactor.structs import LEDDriverIntensity
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from typing import Optional
-from pioreactor.actions.led_driver import initialize_dac, test_i2c_connection
+from pioreactor.actions.led_driver import initialize_dac
 from pioreactor.types import LedIntensityValue
 from pioreactor.whoami import get_unit_name, get_assigned_experiment_name
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
