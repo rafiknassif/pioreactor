@@ -35,6 +35,9 @@ def initialize_dac():
     global dac
     dac = MCP47CxBxx(LR_DAC_ADDR, 8)  # Hard coded to 8 bit resolution
 
+def test_i2c_connection():
+    return dac.testConnection()
+
 def _update_current_state(
     state: LEDsToIntensityMapping,
 ) -> tuple[LEDsToIntensityMapping, LEDsToIntensityMapping]:

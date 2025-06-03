@@ -5,7 +5,7 @@ from pioreactor.structs import LEDDriverIntensity
 from pioreactor.automations import events
 from pioreactor.utils import is_pio_job_running
 from typing import Optional
-from pioreactor.actions.led_driver import initialize_dac
+from pioreactor.actions.led_driver import initialize_dac, test_i2c_connection
 from pioreactor.types import LedIntensityValue
 from pioreactor.whoami import get_unit_name, get_assigned_experiment_name
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
@@ -46,6 +46,9 @@ class LightrodLightControl(LEDAutomationJob):
         self.prev_B_intensity = 0
 
         initialize_dac()
+
+        if not test_i2c_connection():
+            self.logger.warning(f"BAD LED DRIVER CONNECTION")
 
         # Subscribe to control topic
         self.subscribe_and_callback(
