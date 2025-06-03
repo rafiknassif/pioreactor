@@ -134,6 +134,7 @@ class LightrodLightControl(LEDAutomationJob):
 
         if self.light_active:
             self.set_led_driver_intensity(self.channels[0], self.DRV_A_intensity)
+            self.logger.info(f"LED Driver Intensity Set")
             if self.DRV_A_intensity != self.prev_A_intensity:
                 self.prev_A_intensity = self.DRV_A_intensity
                 self.publish_intensity(self.channels[0], self.DRV_A_intensity)
