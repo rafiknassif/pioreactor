@@ -102,6 +102,7 @@ class LightrodLightControl(LEDAutomationJob):
             self.shutdown_drivers()
         elif "DRV_A_intensity" in command:
             _, param = command.split(" ", 1)
+            self.logger.debug(f"DRV_A_PARAM: {param}")
             self.DRV_A_intensity = float(param)
             self.set_driver_intensity()
         elif "DRV_B_intensity" in command:
