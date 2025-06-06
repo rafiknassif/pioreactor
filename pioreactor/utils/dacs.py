@@ -51,7 +51,14 @@ class MCP47CxBxx:
         self.channel_idx = { ch: idx for idx, ch in enumerate(self.channels) }
     
     def testConnection(self):
-        return self.i2c.probe(self.i2cAddress)  # responds with true if device responds
+        try:
+            # Try an actual read to confirm connectivity
+            test_buf = bytearray(2)
+            self.i2c.write_then_readinto((0 << 3) & 0x1F, test_buf)
+            return True
+        except Exception as e:
+            return False
+        # return self.i2c.probe(self.i2cAddress)  # responds with true if device responds
     
     def writei2c(self, command, data):
         command.extend(data)
@@ -59,7 +66,7 @@ class MCP47CxBxx:
 
     def set_intensity_to(self, channel, intensity):
         desiredOutput = int(intensity/100*255)  # Map intensity to 0-255 scale
-        self.setOutput(self.channel_idx[channel], 255)# desiredOutput)
+        self.setOutput(self.channel_idx[channel], desiredOutput)
     
     def set_current_to(self, channel, desired_current):
         COEFFICIENTS = [2e-07, -0.0001, 0.0298, 0.2394, 4.7613]  # [x^4, x^3, x^2, x, constant]
@@ -81,7 +88,7 @@ class MCP47CxBxx:
                 high = mid
         
         desiredOutput = int(mid)
-        self.setOutput(self.channel_idx[channel], 255)# desiredOutput)
+        self.setOutput(self.channel_idx[channel], desiredOutput)
         
     def setOutput(self, channel, value: int):
         if channel > 1 or value > self.maxValue:
