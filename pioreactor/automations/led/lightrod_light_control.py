@@ -46,6 +46,7 @@ class LightrodLightControl(LEDAutomationJob):
         self.prev_B_intensity = 0
 
         initialize_dac()
+        
 
         # Subscribe to control topic
         self.subscribe_and_callback(
