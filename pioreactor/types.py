@@ -114,27 +114,8 @@ OD600 = t.Annotated[float, Meta(ge=0)]
 AdcChannel = t.Literal[0, 1, 2, 3]
 
 FloatBetween0and100 = t.Annotated[float, Meta(ge=0, le=100)]
-# LedIntensityValue = FloatBetween0and100
-# LedDriverCurrent = t.Annotated[float, Meta(ge=0, le=750)]
-class LedIntensityValue:
-    """Represents an LED intensity value between 0 and 100."""
-    def __init__(self, value: float):
-        if not (0 <= value <= 100):
-            raise ValueError("Intensity must be between 0 and 100")
-        self.value = value
-
-    def __float__(self):
-        return self.value
-
-class LedDriverCurrent:
-    """Represents an LED driver current value between 0 and 750."""
-    def __init__(self, value: float):
-        if not (0 <= value <= 750):
-            raise ValueError("Current must be between 0 and 750")
-        self.value = value
-
-    def __float__(self):
-        return self.value
+LedIntensityValue = FloatBetween0and100
+LedDriverCurrent = t.Annotated[float, Meta(ge=0, le=750)]
 
 # All GPIO pins below are BCM numbered
 GpioPin = t.Literal[

@@ -173,13 +173,13 @@ import click
     "--DRV_A_intensity",
     default=0,
     show_default=True,
-    type=LedIntensityValue(click.FloatRange(0, 100, clamp=True))
+    type=click.FloatRange(0, 100, clamp=True),
 )
 @click.option(
     "--DRV_B_intensity",
     default=0,
     show_default=True,
-    type=LedIntensityValue(click.FloatRange(0, 100, clamp=True))
+    type=click.FloatRange(0, 100, clamp=True),
 )
 def click_lightrod_light_control(DRV_A_SETPOINT, DRV_B_SETPOINT):
     unit = get_unit_name()

@@ -34,6 +34,8 @@ def initialize_dac():
     from pioreactor.utils.dacs import MCP47CxBxx
     global dac
     dac = MCP47CxBxx(LR_DAC_ADDR, 8)  # Hard coded to 8 bit resolution
+    # if not dac.testConnection():
+    #     raise("DAC NOT FOUND EXCEPTION AHHHHHHHHHHHHHHHHHHHHHHHHHHHHH")
 
 def _update_current_state(
     state: LEDsToIntensityMapping,
@@ -116,17 +118,17 @@ def led_driver_intensity(
             try:
                 assert (channel in ALL_DRIVER_CHANNELS), f"Saw incorrect channel {channel}, not in {ALL_DRIVER_CHANNELS}"
                 logger.info(f"Type Setpoint: {type(setpoint)}")
-                if isinstance(setpoint, LedIntensityValue):
+                if type(setpoint) is LedIntensityValue:
                     logger.info(f"CELLULITIS")
-                    assert (0.0 <= setpoint.value <= 100.0), f"Channel {channel} intensity should be between 0 and 100, inclusive"
+                    assert (0.0 <= setpoint <= 100.0), f"Channel {channel} intensity should be between 0 and 100, inclusive"
                     logger.info(f"CELLULITIS2")
-                    dac.set_intensity_to(channel, setpoint.value)
-                    logger.info(f"LED Driver Intensity Set to {setpoint.value}")
-                elif isinstance(setpoint, LedDriverCurrent):
+                    dac.set_intensity_to(channel, setpoint)
+                    logger.info(f"LED Driver Intensity Set to {setpoint}")
+                elif type(setpoint) is LedDriverCurrent:
                     logger.info(f"ANTIBIOTICS")
-                    assert (0.0 <= setpoint.value <= 750.0), f"Channel {channel} current should be between 0 and 750, inclusive"
+                    assert (0.0 <= setpoint <= 750.0), f"Channel {channel} current should be between 0 and 750, inclusive"
                     logger.info(f"ANTIBIOTICS2")
-                    dac.set_current_to(channel, setpoint.value)
+                    dac.set_current_to(channel, setpoint)
                     logger.info(f"LED Driver Current Set to {setpoint}")
             except (ValueError, HardwareNotFoundError) as e:
                 logger.debug(e, exc_info=True)
@@ -156,7 +158,7 @@ def led_driver_intensity(
                 if old_state[channel] != new_state[channel]:  # only log on change
                     event = structs.LEDChangeEvent(
                         channel=channel,
-                        intensity=intensity.value,
+                        intensity=intensity,
                         source_of_event=source_of_event,
                         timestamp=timestamp_of_change,
                     )
@@ -178,12 +180,12 @@ def led_driver_intensity(
 @click.option(
     "--DRV_A",
     help="value between 0 and 100",
-    type=LedIntensityValue(click.FloatRange(0, 100))
+    type=click.FloatRange(0, 100),
 )
 @click.option(
     "--DRV_B",
     help="value between 0 and 100",
-    type=LedIntensityValue(click.FloatRange(0, 100))
+    type=click.FloatRange(0, 100),
 )
 @click.option(
     "--source-of-event",
@@ -206,9 +208,9 @@ def click_led_intensity(
 
     state: LEDsToIntensityMapping = {}
     if a is not None:
-        state["DRV_A"] = LedIntensityValue(a)
+        state["DRV_A"] = a
     if b is not None:
-        state["DRV_B"] = LedIntensityValue(b)
+        state["DRV_B"] = b
 
     status = led_driver_intensity(
         state,
