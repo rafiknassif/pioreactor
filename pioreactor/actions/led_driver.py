@@ -178,12 +178,12 @@ def led_driver_intensity(
 @click.option(
     "--DRV_A",
     help="value between 0 and 100",
-    type=LedIntensityValue(click.FloatRange(0, 100))
+    type=click.FloatRange(0, 100)
 )
 @click.option(
     "--DRV_B",
     help="value between 0 and 100",
-    type=LedIntensityValue(click.FloatRange(0, 100))
+    type=click.FloatRange(0, 100)
 )
 @click.option(
     "--source-of-event",
@@ -193,8 +193,8 @@ def led_driver_intensity(
 )
 @click.option("--no-log", is_flag=True, help="skip logging")
 def click_led_intensity(
-    a: LedIntensityValue | None = None,
-    b: LedIntensityValue | None = None,
+    a: float | None = None,
+    b: float | None = None,
     source_of_event: str | None = None,
     no_log: bool = False,
 ) -> bool:
