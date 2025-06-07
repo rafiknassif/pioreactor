@@ -210,7 +210,7 @@ class LEDAutomationJob(AutomationJob):
         attempts = 6
         for _ in range(attempts):
             success = led_driver_intensity(
-                {channel: intensity},
+                {channel: pt.LedIntensityValue(intensity)},
                 unit=self.unit,
                 experiment=self.experiment,
                 pubsub_client=self.pub_client,
