@@ -23,21 +23,21 @@ class LightrodLightControl(LEDAutomationJob):
     automation_name: str = "lightrod_light_control"
     published_settings = {
         "relay_enabled": {"datatype": "float", "settable": True, "unit": "%"},
-        "DRV_A_intensity": {"datatype": "LedIntensityValue", "settable": True, "unit": "%"},
-        "DRV_B_intensity": {"datatype": "LedIntensityValue", "settable": True, "unit": "%"},
+        "DRV_A_intensity": {"datatype": "float", "settable": True, "unit": "%"},
+        "DRV_B_intensity": {"datatype": "float", "settable": True, "unit": "%"},
     }
 
     def __init__(
         self,
-        DRV_A_intensity: LedIntensityValue | str,
-        DRV_B_intensity: LedIntensityValue | str,
+        DRV_A_intensity: float | str,
+        DRV_B_intensity: float | str,
         relay_enabled: float | str,
         **kwargs,
     ):  
         self.instances.append(self)
         super().__init__(**kwargs)
-        self.DRV_A_intensity = LedIntensityValue(DRV_A_intensity)
-        self.DRV_B_intensity = LedIntensityValue(DRV_B_intensity)
+        self.DRV_A_intensity = float(DRV_A_intensity)
+        self.DRV_B_intensity = float(DRV_B_intensity)
         self.relay_enabled = float(relay_enabled)
         self.channels: list[LedDriverChannel] = ["DRV_A", "DRV_B"]
         self.relayChannel : LedChannel = "B"
@@ -105,12 +105,12 @@ class LightrodLightControl(LEDAutomationJob):
         elif "DRV_A_intensity" in command:
             _, param = command.split(" ", 1)
             self.logger.info(f"DRV_A_intensity updated to: {param}")
-            self.DRV_A_intensity = LedIntensityValue(param)
+            self.DRV_A_intensity = float(param)
             self.set_driver_intensity()
         elif "DRV_B_intensity" in command:
             _, param = command.split(" ", 1)
             self.logger.info(f"DRV_B_intensity updated to: {param}")
-            self.DRV_B_intensity = LedIntensityValue(param)
+            self.DRV_B_intensity = float(param)
             self.set_driver_intensity()
         else:
             self.logger.warning(f"Unknown command: {command}")
@@ -124,8 +124,8 @@ class LightrodLightControl(LEDAutomationJob):
         self.logger.debug(f"Enable LED relay")
 
     def shutdown_drivers(self):
-        self.DRV_A_intensity = LedIntensityValue(0)
-        self.DRV_B_intensity = LedIntensityValue(0)
+        self.DRV_A_intensity = 0
+        self.DRV_B_intensity = 0
         self.set_driver_intensity()
         self.logger.debug("shutdown drivers called - setting intensities to 0")
 
@@ -133,7 +133,7 @@ class LightrodLightControl(LEDAutomationJob):
         """
         Update light intensity for the bioreactor.
         """
-        if self.DRV_A_intensity==LedIntensityValue(0) and self.DRV_B_intensity==LedIntensityValue(0):
+        if self.DRV_A_intensity==0 and self.DRV_B_intensity==0:
             self.disable_relay()
 
         if self.light_active:
@@ -191,6 +191,6 @@ def click_lightrod_light_control(DRV_A_SETPOINT, DRV_B_SETPOINT):
 
     inst = LightrodLightControl.getInstance()
     logger.debug(f"updating lightrodLightControl instance: {inst.__repr__()}")
-    inst.DRV_A_intensity = LedIntensityValue(DRV_A_SETPOINT)
-    inst.DRV_B_intensity = LedIntensityValue(DRV_B_SETPOINT)
+    inst.DRV_A_intensity = float(DRV_A_SETPOINT)
+    inst.DRV_B_intensity = float(DRV_B_SETPOINT)
 
