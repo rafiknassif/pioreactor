@@ -98,14 +98,14 @@ def led_driver_intensity(
     """
     unit = unit or get_unit_name()
     experiment = experiment or get_assigned_experiment_name(unit)
+    logger = create_logger("led_driver_intensity", experiment=experiment, unit=unit, pub_client=pubsub_client)
+
     logger.info(f"CALL1")
     if not is_active(unit):
         return False
     logger.info(f"CALL2")
 
-    logger = create_logger("led_driver_intensity", experiment=experiment, unit=unit, pub_client=pubsub_client)
     updated_successfully = True
-
 
     if pubsub_client is None:
         mqtt_publishing = create_client(client_id=f"led_driver_intensity-{unit}-{experiment}")
