@@ -117,19 +117,15 @@ def led_driver_intensity(
         for channel, setpoint in desired_state.items():
             try:
                 assert (channel in ALL_DRIVER_CHANNELS), f"Saw incorrect channel {channel}, not in {ALL_DRIVER_CHANNELS}"
-                logger.info(f"Type Setpoint: {type(setpoint)}")
-                if type(setpoint) is LedIntensityValue:
-                    logger.info(f"CELLULITIS")
-                    assert (0.0 <= setpoint <= 100.0), f"Channel {channel} intensity should be between 0 and 100, inclusive"
-                    logger.info(f"CELLULITIS2")
-                    dac.set_intensity_to(channel, setpoint)
-                    logger.info(f"LED Driver Intensity Set to {setpoint}")
-                elif type(setpoint) is LedDriverCurrent:
-                    logger.info(f"ANTIBIOTICS")
-                    assert (0.0 <= setpoint <= 750.0), f"Channel {channel} current should be between 0 and 750, inclusive"
-                    logger.info(f"ANTIBIOTICS2")
-                    dac.set_current_to(channel, setpoint)
-                    logger.info(f"LED Driver Current Set to {setpoint}")
+                logger.info(f"CELLULITIS")
+                assert (0.0 <= setpoint <= 100.0), f"Channel {channel} intensity should be between 0 and 100, inclusive"
+                logger.info(f"CELLULITIS2")
+                dac.set_intensity_to(channel, setpoint)
+                logger.info(f"LED Driver Intensity Set to {setpoint}")
+                # elif type(setpoint) is LedDriverCurrent:
+                #     assert (0.0 <= setpoint <= 750.0), f"Channel {channel} current should be between 0 and 750, inclusive"
+                #     dac.set_current_to(channel, setpoint)
+                #     logger.info(f"LED Driver Current Set to {setpoint}")
             except (ValueError, HardwareNotFoundError) as e:
                 logger.debug(e, exc_info=True)
                 logger.error(
