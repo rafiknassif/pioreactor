@@ -31,7 +31,6 @@ from pioreactor.utils.timing import RepeatedTimer
 from pioreactor.whoami import is_active
 from pioreactor.whoami import is_testing_env
 from pioreactor.whoami import UNIVERSAL_IDENTIFIER
-from pioreactor.types import LedIntensityValue
 
 
 T = t.TypeVar("T")
