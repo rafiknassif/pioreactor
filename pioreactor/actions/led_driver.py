@@ -100,10 +100,8 @@ def led_driver_intensity(
     experiment = experiment or get_assigned_experiment_name(unit)
     logger = create_logger("led_driver_intensity", experiment=experiment, unit=unit, pub_client=pubsub_client)
 
-    logger.info(f"CALL1")
     if not is_active(unit):
         return False
-    logger.info(f"CALL2")
 
     updated_successfully = True
 
@@ -117,11 +115,9 @@ def led_driver_intensity(
     with mqtt_publishing:
 
         for channel, setpoint in desired_state.items():
-            logger.info(f"AIDS1")
             try:
-                logger.info(f"AIDS2")
                 assert (channel in ALL_DRIVER_CHANNELS), f"Saw incorrect channel {channel}, not in {ALL_DRIVER_CHANNELS}"
-                logger.info(f"AIDS3")
+                logger.info(f"Type Setpoint: {type(setpoint)}")
                 if type(setpoint) is LedIntensityValue:
                     logger.info(f"CELLULITIS")
                     assert (0.0 <= setpoint <= 100.0), f"Channel {channel} intensity should be between 0 and 100, inclusive"
