@@ -100,14 +100,16 @@ class LightrodLightControl(LEDAutomationJob):
     def handle_control_message(self, message):
         command = message.payload.decode()
         if command == "shutdown_drivers":
+            self.logger.info("Shutdown_drivers command called - shutting off LED drivers.")
             self.shutdown_drivers()
         elif "DRV_A_intensity" in command:
             _, param = command.split(" ", 1)
-            self.logger.debug(f"DRV_A_PARAM: {param}")
+            self.logger.info(f"DRV_A_intensity updated to: {param}")
             self.DRV_A_intensity = float(param)
             self.set_driver_intensity()
         elif "DRV_B_intensity" in command:
             _, param = command.split(" ", 1)
+            self.logger.info(f"DRV_B_intensity updated to: {param}")
             self.DRV_B_intensity = float(param)
             self.set_driver_intensity()
         else:
@@ -137,16 +139,16 @@ class LightrodLightControl(LEDAutomationJob):
         if self.light_active:
             self.set_led_driver_intensity(self.channels[0], self.DRV_A_intensity)
             self.logger.info(f"LED Driver Intensity Set")
-            # if self.DRV_A_intensity != self.prev_A_intensity:
-            self.prev_A_intensity = self.DRV_A_intensity
-            self.publish_intensity(self.channels[0], self.DRV_A_intensity)
-            self.logger.debug(f"Set LED channel {self.channels[0]} to an intensity of {self.DRV_A_intensity}")
+            if self.DRV_A_intensity != self.prev_A_intensity:
+                self.prev_A_intensity = self.DRV_A_intensity
+                self.publish_intensity(self.channels[0], self.DRV_A_intensity)
+                self.logger.debug(f"Set LED channel {self.channels[0]} to an intensity of {self.DRV_A_intensity}")
 
             self.set_led_driver_intensity(self.channels[1], self.DRV_B_intensity)
-            # if self.DRV_B_intensity != self.prev_B_intensity:
-            self.prev_B_intensity = self.DRV_B_intensity
-            self.publish_intensity(self.channels[1], self.DRV_B_intensity)
-            self.logger.debug(f"Set LED channel {self.channels[1]} to an intensity of {self.DRV_B_intensity}")
+            if self.DRV_B_intensity != self.prev_B_intensity:
+                self.prev_B_intensity = self.DRV_B_intensity
+                self.publish_intensity(self.channels[1], self.DRV_B_intensity)
+                self.logger.debug(f"Set LED channel {self.channels[1]} to an intensity of {self.DRV_B_intensity}")
 
     def publish_intensity(self, channel, intensity):
         driverIntensity = LEDDriverIntensity(
