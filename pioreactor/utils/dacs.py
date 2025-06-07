@@ -65,11 +65,13 @@ class MCP47CxBxx:
         self.i2c.write(command)
 
     def set_intensity_to(self, channel, intensity):
-        desiredOutput = int(intensity/100*255)  # Map intensity to 0-255 scale
-        self.setOutput(self.channel_idx[channel], desiredOutput)
+        # desiredOutput = int(intensity/100*255)  # Map intensity to 0-255 scale
+        # self.setOutput(self.channel_idx[channel], desiredOutput)
+        self.set_current_to(channel, intensity/100*750) # map intensity (0-100) to current (0-750 mA)
     
     def set_current_to(self, channel, desired_current):
-        COEFFICIENTS = [2e-07, -0.0001, 0.0298, 0.2394, 4.7613]  # [x^4, x^3, x^2, x, constant]
+        # Set the DAC value such that the driver output current is between 0 and 750 mA
+        COEFFICIENTS = [0.000000186566, -0.000123202, 0.0298475, 0.239437, 4.76126]  # [x^4, x^3, x^2, x, constant]
 
         def current_from_dac(d: float) -> float:
             return np.polyval(COEFFICIENTS, d)

@@ -117,9 +117,7 @@ def led_driver_intensity(
         for channel, setpoint in desired_state.items():
             try:
                 assert (channel in ALL_DRIVER_CHANNELS), f"Saw incorrect channel {channel}, not in {ALL_DRIVER_CHANNELS}"
-                logger.info(f"CELLULITIS")
                 assert (0.0 <= setpoint <= 100.0), f"Channel {channel} intensity should be between 0 and 100, inclusive"
-                logger.info(f"CELLULITIS2")
                 dac.set_intensity_to(channel, setpoint)
                 logger.info(f"LED Driver Intensity Set to {setpoint}")
                 # elif type(setpoint) is LedDriverCurrent:
