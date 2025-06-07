@@ -34,8 +34,8 @@ def initialize_dac():
     from pioreactor.utils.dacs import MCP47CxBxx
     global dac
     dac = MCP47CxBxx(LR_DAC_ADDR, 8)  # Hard coded to 8 bit resolution
-    if not dac.testConnection():
-        raise("DAC NOT FOUND EXCEPTION AHHHHHHHHHHHHHHHHHHHHHHHHHHHHH")
+    # if not dac.testConnection():
+    #     raise("DAC NOT FOUND EXCEPTION AHHHHHHHHHHHHHHHHHHHHHHHHHHHHH")
 
 def _update_current_state(
     state: LEDsToIntensityMapping,
