@@ -13,9 +13,13 @@ from pioreactor.exc import HardwareNotFoundError
 from pioreactor.types import FloatBetween0and100
 from pioreactor.version import hardware_version_info
 import time
+from pioreactor.logging import create_logger
 
 from adafruit_bus_device.i2c_device import I2CDevice
 from busio import I2C  
+
+
+logger = create_logger("dacs.py", experiment="NONE", unit='NONE', pub_client=None)
 
 class MCP47CxBxx:
     """
@@ -45,6 +49,8 @@ class MCP47CxBxx:
         self.setGain(0, 0)  # 1x gain on both ch
         self.setOutput(0, 0)  # Set DAC outputs to 0 
         self.setOutput(1, 0)
+        
+        logger.debug(f"Initialized DAC :D")
 
         self.channels: list[LedDriverChannel] = ["DRV_A", "DRV_B"]
         # { "DRV_A": 0, "DRV_B": 1 }
@@ -67,7 +73,9 @@ class MCP47CxBxx:
     def set_intensity_to(self, channel, intensity):
         # desiredOutput = int(intensity/100*255)  # Map intensity to 0-255 scale
         # self.setOutput(self.channel_idx[channel], desiredOutput)
-        self.set_current_to(channel, intensity/100*750) # map intensity (0-100) to current (0-750 mA)
+        current_map = intensity/100*750
+        logger.debug(f"calling dac.set_current_to: {current_map} mA")
+        self.set_current_to(channel, current_map) # map intensity (0-100) to current (0-750 mA)
     
     def set_current_to(self, channel, desired_current):
         # Set the DAC value such that the driver output current is between 0 and 750 mA
@@ -79,16 +87,20 @@ class MCP47CxBxx:
         tolerance = 0.01
         max_iterations=100
         low, high = 0.0, 255.0
-        for _ in range(max_iterations):
-            mid = (low + high) / 2
-            current = current_from_dac(mid)
-            if abs(current - desired_current) < tolerance:
-                return mid
-            elif current < desired_current:
-                low = mid
-            else:
-                high = mid
-        
+        try:
+            for _ in range(max_iterations):
+                mid = (low + high) / 2
+                current = current_from_dac(mid)
+                if abs(current - desired_current) < tolerance:
+                    return mid
+                elif current < desired_current:
+                    low = mid
+                else:
+                    high = mid
+        except Exception as e:
+            logger.debug(f"Failed Newton search for valid DAC command to achieve desired output current. Setting to 0"),
+            mid = 0
+
         desiredOutput = int(mid)
         self.setOutput(self.channel_idx[channel], desiredOutput)
         
