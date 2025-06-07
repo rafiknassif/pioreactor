@@ -92,13 +92,14 @@ class MCP47CxBxx:
                 mid = (low + high) / 2
                 current = current_from_dac(mid)
                 if abs(current - desired_current) < tolerance:
-                    return mid
+                    break
                 elif current < desired_current:
                     low = mid
                 else:
                     high = mid
+            logger.debug(f"Newton search found DAC setting of {mid} corresponding to a LED current of {desired_current} mA")
         except Exception as e:
-            logger.debug(f"Failed Newton search for valid DAC command to achieve desired output current. Setting to 0"),
+            logger.debug(f"Failed Newton search for valid DAC command to achieve desired output current. Setting to 0")
             mid = 0
 
         desiredOutput = int(mid)
