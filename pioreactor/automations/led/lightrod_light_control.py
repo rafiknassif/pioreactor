@@ -23,8 +23,8 @@ class LightrodLightControl(LEDAutomationJob):
     automation_name: str = "lightrod_light_control"
     published_settings = {
         "relay_enabled": {"datatype": "float", "settable": True, "unit": "%"},
-        "DRV_A_intensity": {"datatype": "float", "settable": True, "unit": "%"},
-        "DRV_B_intensity": {"datatype": "float", "settable": True, "unit": "%"},
+        "DRV_A_intensity": {"datatype": "LedIntensityValue", "settable": True, "unit": "%"},
+        "DRV_B_intensity": {"datatype": "LedIntensityValue", "settable": True, "unit": "%"},
     }
 
     def __init__(
@@ -154,7 +154,7 @@ class LightrodLightControl(LEDAutomationJob):
         driverIntensity = LEDDriverIntensity(
             timestamp=current_utc_datetime(),
             channel=channel,
-            driver_intensity=float(intensity)
+            driver_intensity=intensity
         )
         BackgroundJob.publish(
             self,

@@ -921,17 +921,9 @@ class _BackgroundJob(metaclass=PostInitCaller):
             raise RuntimeError(f"{self.job_name} is already running. Skipping.")
 
     def __setattr__(self, name: str, value: t.Any) -> None:
-        # super(_BackgroundJob, self).__setattr__(name, value)
-        # if name in self.published_settings:
-        #     self._publish_setting(name)
+        super(_BackgroundJob, self).__setattr__(name, value)
         if name in self.published_settings:
-            # Convert LedIntensityValue to float for publishing
-            publish_value = value.value if isinstance(value, LedIntensityValue) else value
-            super().__setattr__(name, value)
-            if self.state != self.DISCONNECTED:
-                self._publish_setting(name, publish_value)
-        else:
-            super().__setattr__(name, value)
+            self._publish_setting(name)
 
     def __enter__(self: BJT) -> BJT:
         return self
