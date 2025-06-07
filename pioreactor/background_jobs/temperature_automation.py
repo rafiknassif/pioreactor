@@ -32,7 +32,7 @@ from pioreactor.utils.timing import to_datetime
 from pioreactor.version import rpi_version_info
 
 
-MAX_HEATER_DUTY_CYCLE = 70.0
+MAX_HEATER_DUTY_CYCLE = 100.0
 
 class TemperatureAutomationJob(AutomationJob):
     """
@@ -235,7 +235,7 @@ class TemperatureAutomationJob(AutomationJob):
         # if new_duty_cycle < 5:  # lower duty cycle
         #     new_duty_cycle = 0.0
         # clamp to [required range], round to two decimals
-        self.heater_duty_cycle = clamp(0.0, round(float(new_duty_cycle), 3), 70)  # last number upper duty cycle
+        self.heater_duty_cycle = clamp(0.0, round(float(new_duty_cycle), 3), MAX_HEATER_DUTY_CYCLE)  # last number upper duty cycle
         self.pwm.change_duty_cycle(self.heater_duty_cycle)
 
         if self.heater_duty_cycle == 0.0:
