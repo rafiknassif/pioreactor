@@ -888,7 +888,7 @@ class ODReader(BackgroundJob):
             pubsub_client=self.pub_client,
             verbose=False,
         ):
-            sleep(2)
+            sleep(6)
             with led_utils.lock_leds_temporarily(self.non_ir_led_channels):
                 # IR led is on
                 self.start_ir_led()
