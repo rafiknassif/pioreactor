@@ -16,6 +16,10 @@ from pioreactor.actions.led_intensity import led_intensity
 from pioreactor.utils.adcs import ADC101C02x
 import click
 
+NEUTRAL_PH = 7
+BASIC_PH = 10
+NEUTRAL_PH_ADC = 500  # raw ADC reading at neutral pH 
+BASIC_PH_ADC   = 200  # raw ADC reading at basic pH
 
 class ReadPBRPH(BackgroundJob):
     job_name = "read_pbr_ph"
@@ -86,7 +90,7 @@ class ReadPBRPH(BackgroundJob):
         try:
             # check temp is fast, let's do it a few times to reduce variance.
             for i in range(6):
-                running_sum += self.driver.read_raw()/80
+                running_sum += self._read_ph()
                 running_count += 1
                 sleep(0.05)
 
@@ -100,6 +104,16 @@ class ReadPBRPH(BackgroundJob):
         self._check_if_exceeds_pH_range(averaged_pH)
 
         return averaged_pH
+    
+    def _read_ph(self) -> float:
+        raw = self.driver.read_raw()
+
+        #TODO: WHAT IS THIS 1500/3 number for???
+        slope = (NEUTRAL_PH-BASIC_PH)/((NEUTRAL_PH_ADC-1500.0)/3.0 - (BASIC_PH_ADC-1500.0)/3.0)
+        intercept =  NEUTRAL_PH - slope*(NEUTRAL_PH_ADC-1500.0)/3.0
+        phValue = slope*(raw-1500.0)/3.0+intercept
+
+        return phValue
 
     def _check_if_exceeds_pH_range(self, ph: float) -> bool:
         if ph > self.upper_warning_threshold:
