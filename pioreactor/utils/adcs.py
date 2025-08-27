@@ -9,6 +9,162 @@ from pioreactor import hardware
 from pioreactor import types as pt
 from pioreactor.version import hardware_version_info
 
+# -*- coding: utf-8 -*-
+# adcs.py
+from __future__ import annotations
+
+from typing import Optional
+import struct
+
+import busio  # type: ignore
+from adafruit_bus_device.i2c_device import I2CDevice
+from busio import I2C
+
+from pioreactor import hardware
+from pioreactor.exc import HardwareNotFoundError
+from pioreactor.logging import create_logger
+
+logger = create_logger("adcs.py", experiment="NONE", unit="NONE", pub_client=None)
+
+
+class ADC101C02x:
+    # Registers
+    _REG_CONV   = 0x00
+    _REG_ALERT  = 0x01
+    _REG_CONFIG = 0x02
+    _REG_VLOW   = 0x03
+    _REG_VHIGH  = 0x04
+    _REG_VHYST  = 0x05
+    _REG_VMIN   = 0x06
+    _REG_VMAX   = 0x07
+
+    # Cycle time field values (CONFIG[7:5])
+    CYCLE_DISABLED = 0b000
+    CYCLE_x32      = 0b001
+    CYCLE_x64      = 0b010
+    CYCLE_x128     = 0b011
+    CYCLE_x256     = 0b100
+    CYCLE_x512     = 0b101
+    CYCLE_x1024    = 0b110
+    CYCLE_x2048    = 0b111
+
+    def __init__(self, i2c_address: int = 0x54) -> None:
+        # SOT-6 021 default is 0x54; VSSOP-8/027 vary with ADR pins.
+        comm = I2C(hardware.SCL, hardware.SDA)
+        self._dev = I2CDevice(comm, i2c_address)
+        self.address = i2c_address
+
+    # --- low-level ---
+    def _write8(self, reg: int, val: int) -> None:
+        buf = bytes([reg, val & 0xFF])
+        with self._dev as i2c:
+            i2c.write(buf)
+
+    def _write16(self, reg: int, val: int) -> None:
+        msb = (val >> 8) & 0xFF
+        lsb = val & 0xFF
+        with self._dev as i2c:
+            i2c.write(bytes([reg, msb, lsb]))
+
+    def _read8(self, reg: int) -> int:
+        out = bytearray(1)
+        with self._dev as i2c:
+            i2c.write_then_readinto(bytes([reg]), out)
+        return out[0]
+
+    def _read16(self, reg: int) -> int:
+        out = bytearray(2)
+        with self._dev as i2c:
+            i2c.write_then_readinto(bytes([reg]), out)
+        return struct.unpack(">H", out)[0]  # device sends MSB first
+
+    # --- public API ---
+    def test_connection(self) -> bool:
+        try:
+            _ = self._read16(self._REG_CONV)
+            return True
+        except Exception:
+            return False
+
+    def read_raw(self) -> int:
+        """Return 10-bit code (0..1023)."""
+        v = self._read16(self._REG_CONV)
+        return (v >> 2) & 0x03FF  # D11..D2
+
+    def read_voltage(self, vref: float) -> float:
+        """Code→volts using supply/reference vref."""
+        code = self.read_raw()
+        return (code * vref) / 1024.0
+
+    # --- configuration (CONFIG 0x02) ---
+    def set_cycle(self, cycle_field: int) -> None:
+        c = 0
+        try:
+            c = self._read8(self._REG_CONFIG)
+        except Exception:
+            pass
+        c &= ~0b1110_0000
+        c |= (cycle_field & 0x07) << 5
+        self._write8(self._REG_CONFIG, c)
+
+    def set_alert_hold(self, hold: bool) -> None:
+        c = self._read8(self._REG_CONFIG)
+        c = (c | (1 << 4)) if hold else (c & ~(1 << 4))
+        self._write8(self._REG_CONFIG, c)
+
+    def set_alert_flag_enable(self, en: bool) -> None:
+        c = self._read8(self._REG_CONFIG)
+        c = (c | (1 << 3)) if en else (c & ~(1 << 3))
+        self._write8(self._REG_CONFIG, c)
+
+    def set_alert_pin_enable(self, en: bool) -> None:
+        c = self._read8(self._REG_CONFIG)
+        c = (c | (1 << 2)) if en else (c & ~(1 << 2))
+        self._write8(self._REG_CONFIG, c)
+
+    def set_alert_polarity_active_high(self, active_high: bool) -> None:
+        c = self._read8(self._REG_CONFIG)
+        c = (c | 0x01) if active_high else (c & ~0x01)
+        self._write8(self._REG_CONFIG, c)
+
+    # --- limits / hysteresis ---
+    @staticmethod
+    def _to_reg_16_from_code(code10: int) -> int:
+        return (code10 & 0x03FF) << 2
+
+    @staticmethod
+    def _from_reg_16_to_code(val16: int) -> int:
+        return (val16 >> 2) & 0x03FF
+
+    def set_low_limit(self, code10: int) -> None:
+        self._write16(self._REG_VLOW, self._to_reg_16_from_code(code10))
+
+    def set_high_limit(self, code10: int) -> None:
+        self._write16(self._REG_VHIGH, self._to_reg_16_from_code(code10))
+
+    def set_hysteresis(self, code10: int) -> None:
+        self._write16(self._REG_VHYST, self._to_reg_16_from_code(code10))
+
+    # --- min / max (auto mode only) ---
+    def read_min(self) -> int:
+        return self._from_reg_16_to_code(self._read16(self._REG_VMIN))
+
+    def read_max(self) -> int:
+        return self._from_reg_16_to_code(self._read16(self._REG_VMAX))
+
+    def clear_min(self) -> None:
+        self._write16(self._REG_VMIN, 0x0FFF)
+
+    def clear_max(self) -> None:
+        self._write16(self._REG_VMAX, 0x0000)
+
+    # --- alerts ---
+    def read_alert_status(self) -> int:
+        return self._read8(self._REG_ALERT) & 0x03  # bit1=over, bit0=under
+
+    def clear_alerts(self, mask: int = 0x03) -> None:
+        self._write8(self._REG_ALERT, mask & 0x03)
+
 
 class _ADC:
     gain: float = 1

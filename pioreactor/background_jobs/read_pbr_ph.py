@@ -5,6 +5,7 @@ import numpy as np
 import json
 
 from pioreactor import exc
+from pioreactor.exc import HardwareNotFoundError
 from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.hardware import PH_ADDR
 from pioreactor.structs import PH
@@ -12,6 +13,7 @@ from pioreactor.utils.temps import MCP9600
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
 from pioreactor.config import config
 from pioreactor.actions.led_intensity import led_intensity
+from pioreactor.utils.adcs import ADC101C02x
 import click
 
 
@@ -42,7 +44,14 @@ class ReadPBRPH(BackgroundJob):
 
     def initializeDrivers(self, i2c_addr):
         self.driver = None
-        # TODO implement pH probe drivers
+        self.driver = ADC101C02x(i2c_addr)
+        try:
+            if not self.driver.test_connection():
+                raise OSError("No response")
+        except OSError:
+            raise HardwareNotFoundError(
+                f"Unable to find ADC at 0x{i2c_addr:02X}. Is it plugged into the I2C bus?"
+            )
 
     def set_upper_warning_threshold(self, ph_thresh):
         self.upper_warning_threshold = ph_thresh
@@ -77,7 +86,7 @@ class ReadPBRPH(BackgroundJob):
         try:
             # check temp is fast, let's do it a few times to reduce variance.
             for i in range(6):
-                running_sum += random.uniform(-5, 20)#self.driver.read_pH  # TODO temproary placeholder, set this correctly
+                running_sum += self.driver.read_voltage()*4
                 running_count += 1
                 sleep(0.05)
 
