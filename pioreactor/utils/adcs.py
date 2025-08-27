@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # adc abstraction
-from __future__ import annotations
+# from __future__ import annotations
 
 from busio import I2C  # type: ignore
 
@@ -8,21 +8,16 @@ from pioreactor import exc
 from pioreactor import hardware
 from pioreactor import types as pt
 from pioreactor.version import hardware_version_info
-
-# -*- coding: utf-8 -*-
-# adcs.py
-from __future__ import annotations
+from pioreactor.exc import HardwareNotFoundError
+from pioreactor.logging import create_logger
 
 from typing import Optional
 import struct
 
 import busio  # type: ignore
 from adafruit_bus_device.i2c_device import I2CDevice
-from busio import I2C
+# from busio import I2C
 
-from pioreactor import hardware
-from pioreactor.exc import HardwareNotFoundError
-from pioreactor.logging import create_logger
 
 logger = create_logger("adcs.py", experiment="NONE", unit="NONE", pub_client=None)
 
