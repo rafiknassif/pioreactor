@@ -86,7 +86,7 @@ class ReadPBRPH(BackgroundJob):
         try:
             # check temp is fast, let's do it a few times to reduce variance.
             for i in range(6):
-                running_sum += self.driver.read_voltage()*4
+                running_sum += self.driver.read_raw()/80
                 running_count += 1
                 sleep(0.05)
 
