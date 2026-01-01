@@ -2,9 +2,9 @@ from contextlib import suppress
 from time import sleep
 from pioreactor import exc
 from pioreactor.background_jobs.base import BackgroundJob
-from pioreactor.hardware import Thermocouple_ADDR
+from pioreactor.hardware import NTC_Thermistor_ADDR
 from pioreactor.structs import Temperature
-from pioreactor.utils.temps import MCP9600
+from pioreactor.utils.temps import ADS1115_Thermistor
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
 from pioreactor.config import config
 from pioreactor.actions.led_intensity import led_intensity
@@ -22,7 +22,7 @@ class ReadPBRTemp(BackgroundJob):
 
     def __init__(self, unit, experiment, upper_warning_threshold=35, lower_warning_threshold=18):
         super().__init__(unit=unit, experiment=experiment)
-        self.initializeDrivers(Thermocouple_ADDR)
+        self.initializeDrivers(NTC_Thermistor_ADDR)
         self.set_upper_warning_threshold(upper_warning_threshold)
         self.set_lower_warning_threshold(lower_warning_threshold)
         self.PBR_temp = None  # initialize for mqtt broadcast
@@ -37,8 +37,11 @@ class ReadPBRTemp(BackgroundJob):
         ).start()
 
     def initializeDrivers(self, i2c_addr):
-        self.mcp9600_driver = MCP9600(i2c_addr)
-        self.mcp9600_driver.set_thermocouple_type('K')
+        self.ads1115_driver = ADS1115_Thermistor(
+            address=i2c_addr,
+            r_ref=10000.0,        # 10K reference resistor
+            use_steinhart=True    # Use Steinhart-Hart equation for accuracy
+        )
 
     def set_upper_warning_threshold(self, temp_thresh):
         self.upper_warning_threshold = temp_thresh
@@ -73,14 +76,14 @@ class ReadPBRTemp(BackgroundJob):
         try:
             # check temp is fast, let's do it a few times to reduce variance.
             for i in range(6):
-                running_sum += self.mcp9600_driver.get_hot_junction_temperature()
+                running_sum += self.ads1115_driver.get_temperature()
                 running_count += 1
                 sleep(0.05)
 
         except OSError as e:
             self.logger.debug(e, exc_info=True)
             raise exc.HardwareNotFoundError(
-                "Is the thermocouple connected to the I2C bus? Unable to find temperature sensor."
+                "Is the NTC thermistor connected to the I2C bus? Unable to find temperature sensor."
             )
 
         averaged_temp = running_sum / running_count
@@ -91,7 +94,7 @@ class ReadPBRTemp(BackgroundJob):
     def _check_if_exceeds_temp_range(self, temp: float) -> bool:
         if temp > self.upper_warning_threshold:
             self.logger.warning(
-                f"Temperature of thermocouple has exceeded {self.upper_warning_threshold}℃ - currently {temp}℃. LEDs will be powered off"
+                f"Temperature of thermistor has exceeded {self.upper_warning_threshold}℃ - currently {temp}℃. LEDs will be powered off"
             )
 
             channel = 'B'
@@ -106,7 +109,7 @@ class ReadPBRTemp(BackgroundJob):
                 self.logger.warning("lights were turned off due to high temp")
         elif temp < self.lower_warning_threshold:
             self.logger.warning(
-                f"Temperature of thermocouple has fallen below {self.lower_warning_threshold}℃ - currently {temp}℃. Some action will be taken maybe idk"
+                f"Temperature of thermistor has fallen below {self.lower_warning_threshold}℃ - currently {temp}℃. Some action will be taken maybe idk"
             )
             # TODO implement undertemperature correction action
 

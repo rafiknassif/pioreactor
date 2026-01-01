@@ -355,3 +355,376 @@ class MCP9600:
                           state=state,
                           mode=mode,
                           enable=1 if enable else 0)
+
+
+"""ADS1115 Driver for Ratiometric NTC Thermistor Measurement."""
+import time
+import math
+import struct
+from typing import Optional
+
+class ADS1115_Thermistor:
+    """
+    Driver for ADS1115 ADC with ratiometric NTC thermistor measurement.
+    
+    Designed for use with Adafruit ADS1115 breakout board.
+    See datasheet: https://www.ti.com/lit/ds/symlink/ads1115.pdf
+    
+    Hardware Configuration:
+    - A0: Connected to junction of reference resistor and thermistor
+    - A1: Connected to VDD (voltage reference) via jumper
+    - GND: Connected to thermistor ground
+    - VDD: Connected to reference resistor and A1 jumper
+    
+    Circuit:
+    VDD ---[R_ref = 10kΩ]--- A0 ---[NTC Thermistor]--- GND
+                              |
+                             A1 (measures VDD via jumper)
+    """
+    
+    # ADS1115 Register Addresses
+    REG_CONVERSION = 0x00
+    REG_CONFIG = 0x01
+    
+    # Configuration Register Bits
+    # Operational status/single-shot conversion start
+    OS_SINGLE = 0x8000
+    
+    # Input multiplexer configuration (differential and single-ended)
+    MUX_AIN0_GND = 0x4000  # A0 to GND
+    MUX_AIN1_GND = 0x5000  # A1 to GND
+    
+    # Programmable gain amplifier configuration
+    PGA_4_096V = 0x0200  # ±4.096V range
+    
+    # Device operating mode
+    MODE_SINGLE = 0x0100  # Single-shot mode
+    
+    # Data rate
+    DR_128SPS = 0x0080   # 128 samples per second
+    
+    # Comparator mode (not used, but set to default)
+    COMP_MODE_TRAD = 0x0000
+    COMP_POL_LOW = 0x0000
+    COMP_LAT_NONE = 0x0000
+    COMP_QUE_DISABLE = 0x0003
+    
+    # Steinhart-Hart coefficients for typical 10K NTC thermistor
+    # These are generic values - check your thermistor datasheet for accurate coefficients
+    STEINHART_A = 0.001129148
+    STEINHART_B = 0.000234125
+    STEINHART_C = 0.0000000876741
+    
+    # Alternative: Beta coefficient (simpler but less accurate)
+    BETA = 3950  # Typical value for 10K NTC, check your datasheet
+    T0 = 298.15  # Reference temperature (25°C in Kelvin)
+    R0 = 10000   # Resistance at T0 (10kΩ)
+    
+    def __init__(self, 
+                 address: int = 0x48,
+                 r_ref: float = 10000.0,
+                 use_steinhart: bool = True,
+                 pga_gain: int = PGA_4_096V,
+                 data_rate: int = DR_128SPS):
+        """
+        Initialize the ADS1115 thermistor driver.
+        
+        Args:
+            address: I2C address of ADS1115 (default 0x48)
+                    Can be 0x48, 0x49, 0x4A, or 0x4B via ADDR pin jumpers
+            r_ref: Reference resistor value in ohms (default 10000.0)
+            use_steinhart: Use Steinhart-Hart equation (True) or Beta equation (False)
+            pga_gain: PGA gain setting (default PGA_4_096V)
+            data_rate: Sample rate setting (default DR_128SPS)
+        """
+        from pioreactor.hardware import SCL, SDA
+        
+        self.address = address
+        self.r_ref = r_ref
+        self.use_steinhart = use_steinhart
+        self.pga_gain = pga_gain
+        self.data_rate = data_rate
+        self.connected = False
+        self.i2c = None
+        self.comm_port = None
+        
+        # Voltage range based on PGA setting (in volts)
+        self.pga_ranges = {
+            0x0000: 6.144,   # ±6.144V
+            0x0200: 4.096,   # ±4.096V
+            0x0400: 2.048,   # ±2.048V
+            0x0600: 1.024,   # ±1.024V
+            0x0800: 0.512,   # ±0.512V
+            0x0A00: 0.256,   # ±0.256V
+        }
+        self.voltage_range = self.pga_ranges.get(pga_gain, 4.096)
+        
+        try:
+            self.comm_port = I2C(SCL, SDA)
+            self.i2c = I2CDevice(self.comm_port, address, probe=True)
+            
+            # Test read to confirm connectivity
+            self._read_adc(self.MUX_AIN0_GND)
+            
+            self.connected = True
+        except (ValueError, OSError):
+            self.connected = False
+    
+    def _write_config(self, mux_config: int) -> None:
+        """
+        Write configuration to ADS1115.
+        
+        Args:
+            mux_config: Multiplexer configuration bits
+        """
+        if not self.connected or self.i2c is None:
+            raise OSError(f"ADS1115 at address 0x{self.address:02x} is not connected")
+        
+        # Build configuration word
+        config = (self.OS_SINGLE |      # Start single conversion
+                 mux_config |           # Input multiplexer config
+                 self.pga_gain |        # PGA gain
+                 self.MODE_SINGLE |     # Single-shot mode
+                 self.data_rate |       # Data rate
+                 self.COMP_MODE_TRAD |  # Comparator mode (traditional)
+                 self.COMP_POL_LOW |    # Comparator polarity (active low)
+                 self.COMP_LAT_NONE |   # Non-latching comparator
+                 self.COMP_QUE_DISABLE) # Disable comparator queue
+        
+        # Pack configuration as big-endian 16-bit value
+        config_bytes = struct.pack('>H', config)
+        
+        # Write to config register
+        write_buf = bytearray([self.REG_CONFIG]) + config_bytes
+        self.i2c.write(write_buf)
+    
+    def _read_adc(self, mux_config: int) -> int:
+        """
+        Read ADC value from specified input.
+        
+        Args:
+            mux_config: Multiplexer configuration (which input to read)
+            
+        Returns:
+            Raw 16-bit ADC value (signed)
+        """
+        if not self.connected or self.i2c is None:
+            raise OSError(f"ADS1115 at address 0x{self.address:02x} is not connected")
+        
+        try:
+            # Configure and start conversion
+            self._write_config(mux_config)
+            
+            # Wait for conversion to complete
+            # At 128 SPS, each conversion takes ~8ms. Add margin.
+            time.sleep(0.01)
+            
+            # Read conversion result
+            result_buf = bytearray(2)
+            self.i2c.write_then_readinto(bytearray([self.REG_CONVERSION]), result_buf)
+            
+            # Unpack as signed 16-bit big-endian
+            adc_value = struct.unpack('>h', result_buf)[0]
+            
+            return adc_value
+            
+        except (OSError, RuntimeError) as e:
+            self.connected = False
+            raise OSError(f"Error reading from ADS1115 at address 0x{self.address:02x}: {str(e)}")
+    
+    def _adc_to_voltage(self, adc_value: int) -> float:
+        """
+        Convert raw ADC value to voltage.
+        
+        Args:
+            adc_value: Raw 16-bit ADC value
+            
+        Returns:
+            Voltage in volts
+        """
+        # ADS1115 is 16-bit, ranging from -32768 to 32767
+        # Voltage = (ADC_value / 32768) * voltage_range
+        return (adc_value / 32768.0) * self.voltage_range
+    
+    def _read_voltages(self) -> tuple[float, float]:
+        """
+        Read voltages from both channels.
+        
+        Returns:
+            Tuple of (thermistor_voltage, reference_voltage)
+        """
+        # Read A0 (thermistor junction voltage)
+        adc0 = self._read_adc(self.MUX_AIN0_GND)
+        v_thermistor = self._adc_to_voltage(adc0)
+        
+        # Read A1 (reference voltage - VDD)
+        adc1 = self._read_adc(self.MUX_AIN1_GND)
+        v_ref = self._adc_to_voltage(adc1)
+        
+        return v_thermistor, v_ref
+    
+    def get_resistance(self) -> float:
+        """
+        Calculate the thermistor resistance using ratiometric measurement.
+        
+        Returns:
+            Resistance in ohms
+        """
+        v_thermistor, v_ref = self._read_voltages()
+        
+        # Validation
+        if v_thermistor <= 0 or v_ref <= 0:
+            raise ValueError(f"Invalid voltage readings: V_therm={v_thermistor:.3f}V, V_ref={v_ref:.3f}V")
+        
+        if v_thermistor >= v_ref:
+            raise ValueError(f"Thermistor voltage ({v_thermistor:.3f}V) >= reference voltage ({v_ref:.3f}V). Check wiring.")
+        
+        # Ratiometric calculation: R_thermistor = R_ref * (V_thermistor / (V_ref - V_thermistor))
+        voltage_ratio = v_thermistor / (v_ref - v_thermistor)
+        r_thermistor = self.r_ref * voltage_ratio
+        
+        return r_thermistor
+    
+    def _resistance_to_temperature_steinhart(self, resistance: float) -> float:
+        """
+        Convert resistance to temperature using Steinhart-Hart equation.
+        
+        Args:
+            resistance: Thermistor resistance in ohms
+            
+        Returns:
+            Temperature in Celsius
+        """
+        if resistance <= 0:
+            raise ValueError("Resistance must be positive")
+        
+        ln_r = math.log(resistance)
+        
+        # Steinhart-Hart equation: 1/T = A + B*ln(R) + C*ln(R)^3
+        temp_k = 1.0 / (self.STEINHART_A + 
+                        self.STEINHART_B * ln_r + 
+                        self.STEINHART_C * (ln_r ** 3))
+        
+        temp_c = temp_k - 273.15
+        return temp_c
+    
+    def _resistance_to_temperature_beta(self, resistance: float) -> float:
+        """
+        Convert resistance to temperature using Beta equation (simplified).
+        
+        Args:
+            resistance: Thermistor resistance in ohms
+            
+        Returns:
+            Temperature in Celsius
+        """
+        if resistance <= 0:
+            raise ValueError("Resistance must be positive")
+        
+        # Beta equation: 1/T = 1/T0 + (1/B)*ln(R/R0)
+        temp_k = 1.0 / (1.0/self.T0 + (1.0/self.BETA) * math.log(resistance/self.R0))
+        temp_c = temp_k - 273.15
+        
+        return temp_c
+    
+    def get_temperature(self, samples: int = 1) -> float:
+        """
+        Read temperature from the thermistor.
+        
+        Args:
+            samples: Number of samples to average (default 1)
+            
+        Returns:
+            Temperature in Celsius
+        """
+        if not self.connected:
+            raise OSError(f"ADS1115 at address 0x{self.address:02x} is not connected")
+        
+        temps = []
+        for _ in range(samples):
+            resistance = self.get_resistance()
+            
+            if self.use_steinhart:
+                temp = self._resistance_to_temperature_steinhart(resistance)
+            else:
+                temp = self._resistance_to_temperature_beta(resistance)
+            
+            temps.append(temp)
+            
+            if samples > 1:
+                time.sleep(0.01)
+        
+        return sum(temps) / len(temps)
+    
+    @property
+    def temperature(self) -> float:
+        """Alias for get_temperature()"""
+        return self.get_temperature()
+    
+    def set_thermistor_parameters(self, 
+                                   r0: Optional[float] = None,
+                                   t0: Optional[float] = None,
+                                   beta: Optional[float] = None,
+                                   steinhart_a: Optional[float] = None,
+                                   steinhart_b: Optional[float] = None,
+                                   steinhart_c: Optional[float] = None):
+        """
+        Update thermistor parameters for temperature calculation.
+        
+        Args:
+            r0: Resistance at reference temperature (ohms)
+            t0: Reference temperature (Kelvin)
+            beta: Beta coefficient
+            steinhart_a: Steinhart-Hart A coefficient
+            steinhart_b: Steinhart-Hart B coefficient
+            steinhart_c: Steinhart-Hart C coefficient
+        """
+        if r0 is not None:
+            self.R0 = r0
+        if t0 is not None:
+            self.T0 = t0
+        if beta is not None:
+            self.BETA = beta
+        if steinhart_a is not None:
+            self.STEINHART_A = steinhart_a
+        if steinhart_b is not None:
+            self.STEINHART_B = steinhart_b
+        if steinhart_c is not None:
+            self.STEINHART_C = steinhart_c
+    
+    def get_voltages(self) -> tuple[float, float]:
+        """
+        Get raw voltage readings for debugging.
+        
+        Returns:
+            Tuple of (thermistor_voltage, reference_voltage)
+        """
+        return self._read_voltages()
+
+
+# Example usage:
+if __name__ == "__main__":
+    try:
+        # Initialize the sensor
+        # Default I2C address is 0x48 (all ADDR jumpers open)
+        # Other addresses: 0x49 (ADDR->VDD), 0x4A (ADDR->SDA), 0x4B (ADDR->SCL)
+        sensor = ADS1115_Thermistor(
+            address=0x48,
+            r_ref=10000.0,           # 10K reference resistor
+            use_steinhart=True,      # Use Steinhart-Hart for better accuracy
+        )
+        
+        # Read temperature
+        temp = sensor.get_temperature(samples=10)  # Average 10 samples
+        print(f"Temperature: {temp:.2f}°C")
+        
+        # Read resistance
+        resistance = sensor.get_resistance()
+        print(f"Thermistor resistance: {resistance:.0f}Ω")
+        
+        # Debug: Check voltages
+        v_therm, v_ref = sensor.get_voltages()
+        print(f"Voltages - Thermistor: {v_therm:.3f}V, Reference: {v_ref:.3f}V")
+        
+    except (RuntimeError, OSError) as e:
+        print(f"Error: {e}")
