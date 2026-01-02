@@ -636,7 +636,7 @@ class ADS1115_Thermistor:
             samples: Number of samples to average (default 1)
             
         Returns:
-            Temperature in Celsius
+            Temperature in Celsius (rounded to 2 decimal places)
         """
         if not self.connected:
             raise OSError(f"ADS1115 at address 0x{self.address:02x} is not connected")
@@ -655,7 +655,7 @@ class ADS1115_Thermistor:
             if samples > 1:
                 time.sleep(0.01)
         
-        return sum(temps) / len(temps)
+        return round(sum(temps) / len(temps), 2)
     
     @property
     def temperature(self) -> float:

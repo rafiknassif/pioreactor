@@ -91,13 +91,17 @@ class TemperatureAutomationJob(AutomationJob):
         if whoami.is_testing_env():
             from pioreactor.utils.mock import MockTMP1075 as TMP1075
         else:
-            from pioreactor.utils.temps import MCP9600  # type: ignore
-            from pioreactor.hardware import Thermocouple_ADDR
+            from pioreactor.utils.temps import ADS1115_Thermistor
+            from pioreactor.hardware import NTC_Thermistor_ADDR
 
         self.heater_duty_cycle = 0.0
         self.pwm = self.setup_pwm()
 
-        self.heating_pcb_tmp_driver = MCP9600(Thermocouple_ADDR)
+        self.heating_pcb_tmp_driver = ADS1115_Thermistor(
+            address=NTC_Thermistor_ADDR,
+            r_ref=10000.0,
+            use_steinhart=True
+        )
 
         # Initialize liquid loss detection
         self.history = []
@@ -219,7 +223,7 @@ class TemperatureAutomationJob(AutomationJob):
         try:
             running_sum, running_count = 0.0, 0
             for _ in range(6):
-                running_sum += self.heating_pcb_tmp_driver.get_hot_junction_temperature()
+                running_sum += self.heating_pcb_tmp_driver.get_temperature()
                 running_count += 1
                 sleep(0.05)
             averaged_temp = running_sum / running_count
