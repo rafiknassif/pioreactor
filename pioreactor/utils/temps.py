@@ -411,14 +411,14 @@ class ADS1115_Thermistor:
     
     # Steinhart-Hart coefficients for typical 10K NTC thermistor
     # These are generic values - check your thermistor datasheet for accurate coefficients
-    STEINHART_A = 0.001129148
-    STEINHART_B = 0.000234125
-    STEINHART_C = 0.0000000876741
+    STEINHART_A = 0.0007904962
+    STEINHART_B = 0.0002849790
+    STEINHART_C = -7.4893966122e-08
     
     # Alternative: Beta coefficient (simpler but less accurate)
-    BETA = 3950  # Typical value for 10K NTC, check your datasheet
-    T0 = 298.15  # Reference temperature (25°C in Kelvin)
-    R0 = 10000   # Resistance at T0 (10kΩ)
+    BETA = 3781  # Typical value for 10K NTC, check your datasheet
+    T0 = 273.15  # Reference temperature (25°C in Kelvin)
+    R0 = 31740   # Resistance at T0 (10kΩ)
     
     def __init__(self, 
                  address: int = 0x48,
