@@ -702,30 +702,29 @@ class ADS1115_Thermistor:
         """
         return self._read_voltages()
 
-
-# Example usage:
-if __name__ == "__main__":
-    try:
-        # Initialize the sensor
-        # Default I2C address is 0x48 (all ADDR jumpers open)
-        # Other addresses: 0x49 (ADDR->VDD), 0x4A (ADDR->SDA), 0x4B (ADDR->SCL)
-        sensor = ADS1115_Thermistor(
-            address=0x48,
-            r_ref=10000.0,           # 10K reference resistor
-            use_steinhart=True,      # Use Steinhart-Hart for better accuracy
-        )
+# # Example usage:
+# if __name__ == "__main__":
+#     try:
+#         # Initialize the sensor
+#         # Default I2C address is 0x48 (all ADDR jumpers open)
+#         # Other addresses: 0x49 (ADDR->VDD), 0x4A (ADDR->SDA), 0x4B (ADDR->SCL)
+#         sensor = ADS1115_Thermistor(
+#             address=0x48,
+#             r_ref=10000.0,           # 10K reference resistor
+#             use_steinhart=True,      # Use Steinhart-Hart for better accuracy
+#         )
         
-        # Read temperature
-        temp = sensor.get_temperature(samples=10)  # Average 10 samples
-        print(f"Temperature: {temp:.2f}°C")
+#         # Read temperature
+#         temp = sensor.get_temperature(samples=10)  # Average 10 samples
+#         print(f"Temperature: {temp:.2f}°C")
         
-        # Read resistance
-        resistance = sensor.get_resistance()
-        print(f"Thermistor resistance: {resistance:.0f}Ω")
+#         # Read resistance
+#         resistance = sensor.get_resistance()
+#         print(f"Thermistor resistance: {resistance:.0f}Ω")
         
-        # Debug: Check voltages
-        v_therm, v_ref = sensor.get_voltages()
-        print(f"Voltages - Thermistor: {v_therm:.3f}V, Reference: {v_ref:.3f}V")
+#         # Debug: Check voltages
+#         v_therm, v_ref = sensor.get_voltages()
+#         print(f"Voltages - Thermistor: {v_therm:.3f}V, Reference: {v_ref:.3f}V")
         
-    except (RuntimeError, OSError) as e:
-        print(f"Error: {e}")
+#     except (RuntimeError, OSError) as e:
+#         print(f"Error: {e}")
