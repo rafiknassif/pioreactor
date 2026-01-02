@@ -463,8 +463,9 @@ class ADS1115_Thermistor:
             self.comm_port = I2C(SCL, SDA)
             self.i2c = I2CDevice(self.comm_port, address, probe=True)
             
-            # Test read to confirm connectivity
-            self._read_adc(self.MUX_AIN0_GND)
+            # Test read config register to confirm connectivity (doesn't require conversion)
+            test_buf = bytearray(2)
+            self.i2c.write_then_readinto(bytearray([self.REG_CONFIG]), test_buf)
             
             self.connected = True
         except (ValueError, OSError):
