@@ -2,7 +2,15 @@ from contextlib import suppress
 from time import sleep
 from pioreactor import exc
 from pioreactor.background_jobs.base import BackgroundJob
-from pioreactor.hardware import NTC_Thermistor_ADDR
+from pioreactor.hardware import (
+    NTC_Thermistor_ADDR,
+    WATER_TEMP_CHANNEL,
+    WATER_TEMP_REF_CHANNEL,
+    WATER_TEMP_R_REF,
+    WATER_TEMP_STEINHART_A,
+    WATER_TEMP_STEINHART_B,
+    WATER_TEMP_STEINHART_C
+)
 from pioreactor.structs import Temperature
 from pioreactor.utils.temps import ADS1115_Thermistor
 from pioreactor.utils.timing import RepeatedTimer, current_utc_datetime
@@ -22,7 +30,7 @@ class ReadPBRTemp(BackgroundJob):
 
     def __init__(self, unit, experiment, upper_warning_threshold=35, lower_warning_threshold=18):
         super().__init__(unit=unit, experiment=experiment)
-        self.initializeDrivers(NTC_Thermistor_ADDR)
+        self.initializeDrivers()
         self.set_upper_warning_threshold(upper_warning_threshold)
         self.set_lower_warning_threshold(lower_warning_threshold)
         self.PBR_temp = None  # initialize for mqtt broadcast
@@ -36,11 +44,17 @@ class ReadPBRTemp(BackgroundJob):
             run_immediately=False,
         ).start()
 
-    def initializeDrivers(self, i2c_addr):
+    def initializeDrivers(self):
         self.ads1115_driver = ADS1115_Thermistor(
-            address=i2c_addr,
-            r_ref=10000.0,        # 10K reference resistor
-            use_steinhart=True    # Use Steinhart-Hart equation for accuracy
+            address=NTC_Thermistor_ADDR,
+            thermistor_channel=WATER_TEMP_CHANNEL,
+            ref_channel=WATER_TEMP_REF_CHANNEL,
+            r_ref=WATER_TEMP_R_REF
+        )
+        self.ads1115_driver.set_thermistor_parameters(
+            steinhart_a=WATER_TEMP_STEINHART_A,
+            steinhart_b=WATER_TEMP_STEINHART_B,
+            steinhart_c=WATER_TEMP_STEINHART_C
         )
 
     def set_upper_warning_threshold(self, temp_thresh):
@@ -134,13 +148,20 @@ class ReadPBRTemp(BackgroundJob):
     is_flag=True,
     help="Run in calibration mode to measure resistance at different temperatures",
 )
-def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibration_mode):
+@click.option(
+    "--calibration-sensor",
+    default="water",
+    type=click.Choice(["water", "heater"], case_sensitive=False),
+    help="Which sensor to calibrate (water or heater)",
+)
+def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibration_mode, calibration_sensor):
     """
     CALIBRATION MODE INSTRUCTIONS:
     ==============================
     
     To calibrate your thermistor, run:
-        pio run read_pbr_temp --calibration-mode
+        pio run read_pbr_temp --calibration-mode --calibration-sensor water
+        pio run read_pbr_temp --calibration-mode --calibration-sensor heater
     
     This will continuously print resistance and voltage readings without saving to database.
     
@@ -157,16 +178,19 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
        d. Write down: Temperature (°C), Resistance (Ω)
     
     3. You should have three data points like:
-       0.0°C  → 32650 Ω
-       25.0°C → 10000 Ω
-       55.0°C → 3200 Ω
+       For 10K water sensor:
+         0.0°C  → ~32650 Ω
+         25.0°C → ~10000 Ω
+         55.0°C → ~3200 Ω
+       
+       For 100K heater sensor:
+         0.0°C  → ~326500 Ω
+         25.0°C → ~100000 Ω
+         55.0°C → ~32000 Ω
     
-    4. Calculate coefficients using Python:
+    4. Calculate Steinhart-Hart coefficients using Python:
     
-    For STEINHART-HART (most accurate):
-    -----------------------------------
     import numpy as np
-    import math
     
     # Replace with your measurements!
     measurements = [
@@ -186,26 +210,9 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
     print(f"STEINHART_B = {B:.10f}")
     print(f"STEINHART_C = {C:.10e}")
     
-    # Update these values in temps.py in the ADS1115_Thermistor class
-    
-    For BETA (simpler, less accurate):
-    ----------------------------------
-    import math
-    
-    # Use only 2 measurements (typically 25°C and one other)
-    T1 = 25.0 + 273.15  # Room temp in Kelvin
-    R1 = 10000          # Resistance at T1
-    
-    T2 = 55.0 + 273.15  # Hot water temp in Kelvin
-    R2 = 3200           # Resistance at T2
-    
-    BETA = math.log(R1/R2) / ((1/T1) - (1/T2))
-    
-    print(f"BETA = {BETA:.0f}")
-    print(f"T0 = {T1}")
-    print(f"R0 = {R1}")
-    
-    # Update these values in temps.py in the ADS1115_Thermistor class
+    5. Update the values in hardware.py:
+       - For water sensor: WATER_TEMP_STEINHART_A, _B, _C
+       - For heater sensor: HEATER_TEMP_STEINHART_A, _B, _C
     
     Press Ctrl+C to exit calibration mode.
     """
@@ -217,8 +224,33 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
         from pioreactor.utils.temps import ADS1115_Thermistor
         from time import sleep
         
+        # Determine which sensor to calibrate
+        if calibration_sensor.lower() == "water":
+            from pioreactor.hardware import (
+                WATER_TEMP_CHANNEL,
+                WATER_TEMP_REF_CHANNEL,
+                WATER_TEMP_R_REF
+            )
+            channel = WATER_TEMP_CHANNEL
+            ref_channel = WATER_TEMP_REF_CHANNEL
+            r_ref = WATER_TEMP_R_REF
+            sensor_name = "Water Temperature Sensor (10K NTC)"
+        else:  # heater
+            from pioreactor.hardware import (
+                HEATER_TEMP_CHANNEL,
+                HEATER_TEMP_REF_CHANNEL,
+                HEATER_TEMP_R_REF
+            )
+            channel = HEATER_TEMP_CHANNEL
+            ref_channel = HEATER_TEMP_REF_CHANNEL
+            r_ref = HEATER_TEMP_R_REF
+            sensor_name = "Heater Safety Sensor (100K NTC)"
+        
         print("\n" + "="*60)
         print("THERMISTOR CALIBRATION MODE")
+        print("="*60)
+        print(f"Calibrating: {sensor_name}")
+        print(f"Channel: A{channel}, Reference: A{ref_channel}, R_ref: {r_ref}Ω")
         print("="*60)
         print("Instructions:")
         print("1. Place thermistor in ice water (0°C)")
@@ -232,11 +264,14 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
         try:
             sensor = ADS1115_Thermistor(
                 address=NTC_Thermistor_ADDR,
-                r_ref=10000.0,
-                use_steinhart=True
+                thermistor_channel=channel,
+                ref_channel=ref_channel,
+                r_ref=r_ref
             )
             
             print("Sensor connected. Starting readings...\n")
+            print("Note: Temperature readings will show 'N/A' until Steinhart-Hart")
+            print("      coefficients are calibrated and set in hardware.py\n")
             
             while True:
                 try:
@@ -244,12 +279,16 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
                     v_therm, v_ref = sensor.get_voltages()
                     resistance = sensor.get_resistance()
                     
-                    # Also show what temperature it would calculate (may be wrong if not calibrated)
-                    temp = sensor.get_temperature()
+                    # Try to show temperature, but it may fail if not calibrated
+                    try:
+                        temp = sensor.get_temperature()
+                        temp_str = f"{temp:.2f}°C"
+                    except ValueError:
+                        temp_str = "N/A (not calibrated)"
                     
                     print(f"Resistance: {resistance:7.0f} Ω  |  "
                           f"Voltages: V_therm={v_therm:.3f}V V_ref={v_ref:.3f}V  |  "
-                          f"Current temp reading: {temp:.2f}°C (may be inaccurate)")
+                          f"Temp: {temp_str}")
                     
                     sleep(2)  # Read every 2 seconds
                     

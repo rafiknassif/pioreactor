@@ -363,6 +363,7 @@ import math
 import struct
 from typing import Optional
 
+
 class ADS1115_Thermistor:
     """
     Driver for ADS1115 ADC with ratiometric NTC thermistor measurement.
@@ -393,6 +394,8 @@ class ADS1115_Thermistor:
     # Input multiplexer configuration (differential and single-ended)
     MUX_AIN0_GND = 0x4000  # A0 to GND
     MUX_AIN1_GND = 0x5000  # A1 to GND
+    MUX_AIN2_GND = 0x6000  # A2 to GND
+    MUX_AIN3_GND = 0x7000  # A3 to GND
     
     # Programmable gain amplifier configuration
     PGA_4_096V = 0x0200  # ±4.096V range
@@ -409,21 +412,17 @@ class ADS1115_Thermistor:
     COMP_LAT_NONE = 0x0000
     COMP_QUE_DISABLE = 0x0003
     
-    # Steinhart-Hart coefficients for typical 10K NTC thermistor
-    # These are generic values - check your thermistor datasheet for accurate coefficients
-    STEINHART_A = 0.0007904962
-    STEINHART_B = 0.0002849790
-    STEINHART_C = -7.4893966122e-08
-    
-    # Alternative: Beta coefficient (simpler but less accurate)
-    BETA = 3781  # Typical value for 10K NTC, check your datasheet
-    T0 = 273.15  # Reference temperature (25°C in Kelvin)
-    R0 = 31740   # Resistance at T0 (10kΩ)
+    # Steinhart-Hart coefficients must be set via set_thermistor_parameters()
+    # after initialization for accurate temperature readings
+    STEINHART_A = None
+    STEINHART_B = None
+    STEINHART_C = None
     
     def __init__(self, 
                  address: int = 0x48,
+                 thermistor_channel: int = 0,
+                 ref_channel: int = 2,
                  r_ref: float = 10000.0,
-                 use_steinhart: bool = True,
                  pga_gain: int = PGA_4_096V,
                  data_rate: int = DR_128SPS):
         """
@@ -432,21 +431,38 @@ class ADS1115_Thermistor:
         Args:
             address: I2C address of ADS1115 (default 0x48)
                     Can be 0x48, 0x49, 0x4A, or 0x4B via ADDR pin jumpers
+            thermistor_channel: ADS1115 channel connected to thermistor (0-3, default 0)
+            ref_channel: ADS1115 channel connected to VDD reference (0-3, default 2)
             r_ref: Reference resistor value in ohms (default 10000.0)
-            use_steinhart: Use Steinhart-Hart equation (True) or Beta equation (False)
             pga_gain: PGA gain setting (default PGA_4_096V)
             data_rate: Sample rate setting (default DR_128SPS)
+            
+        Hardware Configuration:
+            Water sensor (10K NTC):  A0 (thermistor_channel=0), A2 (ref_channel=2, shared)
+            Heater sensor (100K NTC): A1 (thermistor_channel=1), A2 (ref_channel=2, shared)
+            
+        Note: After initialization, set the calibrated Steinhart-Hart coefficients using
+              set_thermistor_parameters() method for accurate temperature readings.
         """
         from pioreactor.hardware import SCL, SDA
         
         self.address = address
+        self.thermistor_channel = thermistor_channel
+        self.ref_channel = ref_channel
         self.r_ref = r_ref
-        self.use_steinhart = use_steinhart
         self.pga_gain = pga_gain
         self.data_rate = data_rate
         self.connected = False
         self.i2c = None
         self.comm_port = None
+        
+        # Map channel numbers to MUX config values
+        self.channel_mux_map = {
+            0: self.MUX_AIN0_GND,
+            1: self.MUX_AIN1_GND,
+            2: self.MUX_AIN2_GND,
+            3: self.MUX_AIN3_GND,
+        }
         
         # Voltage range based on PGA setting (in volts)
         self.pga_ranges = {
@@ -549,18 +565,20 @@ class ADS1115_Thermistor:
     
     def _read_voltages(self) -> tuple[float, float]:
         """
-        Read voltages from both channels.
+        Read voltages from thermistor and reference channels.
         
         Returns:
             Tuple of (thermistor_voltage, reference_voltage)
         """
-        # Read A0 (thermistor junction voltage)
-        adc0 = self._read_adc(self.MUX_AIN0_GND)
-        v_thermistor = self._adc_to_voltage(adc0)
+        # Read thermistor channel (A0 or A1)
+        mux_therm = self.channel_mux_map[self.thermistor_channel]
+        adc_therm = self._read_adc(mux_therm)
+        v_thermistor = self._adc_to_voltage(adc_therm)
         
-        # Read A1 (reference voltage - VDD)
-        adc1 = self._read_adc(self.MUX_AIN1_GND)
-        v_ref = self._adc_to_voltage(adc1)
+        # Read reference channel (A2, shared)
+        mux_ref = self.channel_mux_map[self.ref_channel]
+        adc_ref = self._read_adc(mux_ref)
+        v_ref = self._adc_to_voltage(adc_ref)
         
         return v_thermistor, v_ref
     
@@ -595,7 +613,16 @@ class ADS1115_Thermistor:
             
         Returns:
             Temperature in Celsius
+            
+        Raises:
+            ValueError: If Steinhart-Hart coefficients are not set or resistance is invalid
         """
+        if self.STEINHART_A is None or self.STEINHART_B is None or self.STEINHART_C is None:
+            raise ValueError(
+                "Steinhart-Hart coefficients not set. Call set_thermistor_parameters() "
+                "with steinhart_a, steinhart_b, and steinhart_c before reading temperature."
+            )
+        
         if resistance <= 0:
             raise ValueError("Resistance must be positive")
         
@@ -612,6 +639,8 @@ class ADS1115_Thermistor:
     def _resistance_to_temperature_beta(self, resistance: float) -> float:
         """
         Convert resistance to temperature using Beta equation (simplified).
+        DEPRECATED: Only Steinhart-Hart method is supported. This method is kept
+        for backward compatibility but should not be used.
         
         Args:
             resistance: Thermistor resistance in ohms
@@ -619,18 +648,11 @@ class ADS1115_Thermistor:
         Returns:
             Temperature in Celsius
         """
-        if resistance <= 0:
-            raise ValueError("Resistance must be positive")
-        
-        # Beta equation: 1/T = 1/T0 + (1/B)*ln(R/R0)
-        temp_k = 1.0 / (1.0/self.T0 + (1.0/self.BETA) * math.log(resistance/self.R0))
-        temp_c = temp_k - 273.15
-        
-        return temp_c
+        raise NotImplementedError("Beta equation not supported. Use Steinhart-Hart coefficients instead.")
     
     def get_temperature(self, samples: int = 1) -> float:
         """
-        Read temperature from the thermistor.
+        Read temperature from the thermistor using Steinhart-Hart equation.
         
         Args:
             samples: Number of samples to average (default 1)
@@ -644,12 +666,7 @@ class ADS1115_Thermistor:
         temps = []
         for _ in range(samples):
             resistance = self.get_resistance()
-            
-            if self.use_steinhart:
-                temp = self._resistance_to_temperature_steinhart(resistance)
-            else:
-                temp = self._resistance_to_temperature_beta(resistance)
-            
+            temp = self._resistance_to_temperature_steinhart(resistance)
             temps.append(temp)
             
             if samples > 1:
@@ -663,29 +680,26 @@ class ADS1115_Thermistor:
         return self.get_temperature()
     
     def set_thermistor_parameters(self, 
-                                   r0: Optional[float] = None,
-                                   t0: Optional[float] = None,
-                                   beta: Optional[float] = None,
                                    steinhart_a: Optional[float] = None,
                                    steinhart_b: Optional[float] = None,
                                    steinhart_c: Optional[float] = None):
         """
-        Update thermistor parameters for temperature calculation.
+        Update Steinhart-Hart coefficients for temperature calculation.
+        These should be determined through calibration for your specific thermistor.
         
         Args:
-            r0: Resistance at reference temperature (ohms)
-            t0: Reference temperature (Kelvin)
-            beta: Beta coefficient
             steinhart_a: Steinhart-Hart A coefficient
             steinhart_b: Steinhart-Hart B coefficient
             steinhart_c: Steinhart-Hart C coefficient
+            
+        Example:
+            # For 10K water sensor (calibrated values)
+            sensor.set_thermistor_parameters(
+                steinhart_a=0.0007904962,
+                steinhart_b=0.0002849790,
+                steinhart_c=-7.4893966122e-08
+            )
         """
-        if r0 is not None:
-            self.R0 = r0
-        if t0 is not None:
-            self.T0 = t0
-        if beta is not None:
-            self.BETA = beta
         if steinhart_a is not None:
             self.STEINHART_A = steinhart_a
         if steinhart_b is not None:
@@ -701,30 +715,3 @@ class ADS1115_Thermistor:
             Tuple of (thermistor_voltage, reference_voltage)
         """
         return self._read_voltages()
-
-# # Example usage:
-# if __name__ == "__main__":
-#     try:
-#         # Initialize the sensor
-#         # Default I2C address is 0x48 (all ADDR jumpers open)
-#         # Other addresses: 0x49 (ADDR->VDD), 0x4A (ADDR->SDA), 0x4B (ADDR->SCL)
-#         sensor = ADS1115_Thermistor(
-#             address=0x48,
-#             r_ref=10000.0,           # 10K reference resistor
-#             use_steinhart=True,      # Use Steinhart-Hart for better accuracy
-#         )
-        
-#         # Read temperature
-#         temp = sensor.get_temperature(samples=10)  # Average 10 samples
-#         print(f"Temperature: {temp:.2f}°C")
-        
-#         # Read resistance
-#         resistance = sensor.get_resistance()
-#         print(f"Thermistor resistance: {resistance:.0f}Ω")
-        
-#         # Debug: Check voltages
-#         v_therm, v_ref = sensor.get_voltages()
-#         print(f"Voltages - Thermistor: {v_therm:.3f}V, Reference: {v_ref:.3f}V")
-        
-#     except (RuntimeError, OSError) as e:
-#         print(f"Error: {e}")
