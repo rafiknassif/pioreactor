@@ -229,21 +229,33 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
             from pioreactor.hardware import (
                 WATER_TEMP_CHANNEL,
                 WATER_TEMP_REF_CHANNEL,
-                WATER_TEMP_R_REF
+                WATER_TEMP_R_REF,
+                WATER_TEMP_STEINHART_A,
+                WATER_TEMP_STEINHART_B,
+                WATER_TEMP_STEINHART_C
             )
             channel = WATER_TEMP_CHANNEL
             ref_channel = WATER_TEMP_REF_CHANNEL
             r_ref = WATER_TEMP_R_REF
+            steinhart_a = WATER_TEMP_STEINHART_A
+            steinhart_b = WATER_TEMP_STEINHART_B
+            steinhart_c = WATER_TEMP_STEINHART_C
             sensor_name = "Water Temperature Sensor (10K NTC)"
         else:  # heater
             from pioreactor.hardware import (
                 HEATER_TEMP_CHANNEL,
                 HEATER_TEMP_REF_CHANNEL,
-                HEATER_TEMP_R_REF
+                HEATER_TEMP_R_REF,
+                HEATER_TEMP_STEINHART_A,
+                HEATER_TEMP_STEINHART_B,
+                HEATER_TEMP_STEINHART_C
             )
             channel = HEATER_TEMP_CHANNEL
             ref_channel = HEATER_TEMP_REF_CHANNEL
             r_ref = HEATER_TEMP_R_REF
+            steinhart_a = HEATER_TEMP_STEINHART_A
+            steinhart_b = HEATER_TEMP_STEINHART_B
+            steinhart_c = HEATER_TEMP_STEINHART_C
             sensor_name = "Heater Safety Sensor (100K NTC)"
         
         print("\n" + "="*60)
@@ -269,9 +281,14 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
                 r_ref=r_ref
             )
             
+            # Load Steinhart-Hart coefficients from hardware.py
+            sensor.set_thermistor_parameters(
+                steinhart_a=steinhart_a,
+                steinhart_b=steinhart_b,
+                steinhart_c=steinhart_c
+            )
+            
             print("Sensor connected. Starting readings...\n")
-            print("Note: Temperature readings will show 'N/A' until Steinhart-Hart")
-            print("      coefficients are calibrated and set in hardware.py\n")
             
             while True:
                 try:
@@ -279,16 +296,12 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
                     v_therm, v_ref = sensor.get_voltages()
                     resistance = sensor.get_resistance()
                     
-                    # Try to show temperature, but it may fail if not calibrated
-                    try:
-                        temp = sensor.get_temperature()
-                        temp_str = f"{temp:.2f}°C"
-                    except ValueError:
-                        temp_str = "N/A (not calibrated)"
+                    # Show temperature (may be inaccurate if not properly calibrated)
+                    temp = sensor.get_temperature()
                     
                     print(f"Resistance: {resistance:7.0f} Ω  |  "
                           f"Voltages: V_therm={v_therm:.3f}V V_ref={v_ref:.3f}V  |  "
-                          f"Temp: {temp_str}")
+                          f"Current temp reading: {temp:.2f}°C (may be inaccurate)")
                     
                     sleep(2)  # Read every 2 seconds
                     
