@@ -48,8 +48,21 @@ class TemperatureAutomationJob(AutomationJob):
     MAX_TEMP_TO_REDUCE_HEATING = 63.0
     MAX_TEMP_TO_DISABLE_HEATING = 65.0
     MAX_TEMP_TO_SHUTDOWN = 66.0
+    
+    # Heater temperature limits for cascade control
+    MAX_HEATER_TEMP = 80.0              # Hard limit - reduce to 0% above this
+    HEATER_LIMIT_START = 75.0           # Start proportional reduction
+    EMERGENCY_SHUTDOWN_TEMP = 90.0      # Emergency shutdown regardless of other conditions
+    
+    # Safety thresholds
+    DRY_HEATER_DELTA = 40.0             # Heater-water temp difference indicating dry heater
+    RUNAWAY_TEMP_DELTA = 8.0            # Water temp above target indicating runaway
+    NO_RESPONSE_TIME = 60               # Seconds of high DC with no heating response
+    NO_RESPONSE_MIN_DC = 50             # Minimum DC to check for heater response
+    NO_RESPONSE_MIN_RISE = 5.0          # Minimum temperature rise expected
 
-    INFERENCE_EVERY_N_SECONDS: float = 30
+    INFERENCE_EVERY_N_SECONDS: float = 30   # Outer loop (water temp control)
+    HEATER_CHECK_EVERY_N_SECONDS: float = 5  # Inner loop (heater limiting)
     
     # Constants for liquid loss detection
 
@@ -87,24 +100,59 @@ class TemperatureAutomationJob(AutomationJob):
         self.add_to_published_settings(
             "heater_duty_cycle", {"datatype": "float", "settable": False, "unit": "%"}
         )
+        self.add_to_published_settings(
+            "heater_temperature", {"datatype": "float", "settable": False, "unit": "℃"}
+        )
 
         if whoami.is_testing_env():
             from pioreactor.utils.mock import MockTMP1075 as TMP1075
         else:
             from pioreactor.utils.temps import ADS1115_Thermistor
-            from pioreactor.hardware import NTC_Thermistor_ADDR
+            from pioreactor.hardware import (
+                NTC_Thermistor_ADDR,
+                WATER_TEMP_CHANNEL, WATER_TEMP_REF_CHANNEL, WATER_TEMP_R_REF,
+                WATER_TEMP_STEINHART_A, WATER_TEMP_STEINHART_B, WATER_TEMP_STEINHART_C,
+                HEATER_TEMP_CHANNEL, HEATER_TEMP_REF_CHANNEL, HEATER_TEMP_R_REF,
+                HEATER_TEMP_STEINHART_A, HEATER_TEMP_STEINHART_B, HEATER_TEMP_STEINHART_C
+            )
 
         self.heater_duty_cycle = 0.0
+        self.desired_duty_cycle = 0.0  # Output from outer loop (water PID)
         self.pwm = self.setup_pwm()
 
-        self.heating_pcb_tmp_driver = ADS1115_Thermistor(
+        # Initialize water temperature sensor (10K NTC on A0)
+        self.water_temp_driver = ADS1115_Thermistor(
             address=NTC_Thermistor_ADDR,
-            r_ref=10000.0,
-            use_steinhart=True
+            thermistor_channel=WATER_TEMP_CHANNEL,
+            ref_channel=WATER_TEMP_REF_CHANNEL,
+            r_ref=WATER_TEMP_R_REF
+        )
+        self.water_temp_driver.set_thermistor_parameters(
+            steinhart_a=WATER_TEMP_STEINHART_A,
+            steinhart_b=WATER_TEMP_STEINHART_B,
+            steinhart_c=WATER_TEMP_STEINHART_C
+        )
+        
+        # Initialize heater temperature sensor (100K NTC on A1)
+        self.heater_temp_driver = ADS1115_Thermistor(
+            address=NTC_Thermistor_ADDR,
+            thermistor_channel=HEATER_TEMP_CHANNEL,
+            ref_channel=HEATER_TEMP_REF_CHANNEL,
+            r_ref=HEATER_TEMP_R_REF
+        )
+        self.heater_temp_driver.set_thermistor_parameters(
+            steinhart_a=HEATER_TEMP_STEINHART_A,
+            steinhart_b=HEATER_TEMP_STEINHART_B,
+            steinhart_c=HEATER_TEMP_STEINHART_C
         )
 
         # Initialize liquid loss detection
         self.history = []
+        
+        # Heater safety tracking
+        self.heater_temperature = None
+        self.heater_high_dc_start_time = None  # Track when high DC started for no-response check
+        self.heater_temp_at_high_dc_start = None
 
         # Single timer triggers infer_temperature() at self.INFERENCE_EVERY_N_SECONDS
         self.temperature_timer = RepeatedTimer(
@@ -112,6 +160,14 @@ class TemperatureAutomationJob(AutomationJob):
             self.infer_temperature,
             job_name=self.job_name,
             run_immediately=True,
+        ).start()
+        
+        # Inner loop timer for heater temperature monitoring and limiting
+        self.heater_check_timer = RepeatedTimer(
+            int(self.HEATER_CHECK_EVERY_N_SECONDS),
+            self.check_and_limit_heater,
+            job_name=self.job_name,
+            run_immediately=False,  # Let outer loop start first
         ).start()
 
         # COMMENTED OUT: timestamps related to OD & growth rate
@@ -214,16 +270,133 @@ class TemperatureAutomationJob(AutomationJob):
             
         return False
 
+    def check_and_limit_heater(self) -> None:
+        """
+        Inner loop: Read heater temperature and apply limiting/safety checks.
+        This runs every HEATER_CHECK_EVERY_N_SECONDS (5s) and modulates the
+        duty cycle set by the outer water temperature control loop.
+        
+        Safety checks implemented:
+        1. Heater overheat protection (proportional limiting 75-80°C, hard limit >80°C)
+        2. Emergency shutdown (>90°C)
+        3. Dry heater detection (heater-water temp delta >40°C)
+        4. No response detection (high DC but no temperature rise)
+        5. Water runaway detection (water >8°C above target)
+        """
+        try:
+            # Read heater temperature
+            heater_temp = self._read_heater_temperature()
+            self.heater_temperature = heater_temp
+            
+            # Get current water temperature for safety checks
+            water_temp = self.latest_temperature if self.latest_temperature is not None else 25.0
+            
+            # Start with the desired duty cycle from outer loop
+            limited_dc = self.desired_duty_cycle
+            
+            # === SAFETY CHECK 1: Emergency Shutdown ===
+            if heater_temp > self.EMERGENCY_SHUTDOWN_TEMP:
+                self.logger.error(
+                    f"EMERGENCY: Heater temperature {heater_temp:.1f}°C exceeds {self.EMERGENCY_SHUTDOWN_TEMP}°C. "
+                    f"Shutting down immediately."
+                )
+                self._update_heater(0)
+                self.blink_error_code(error_codes.PCB_TEMPERATURE_TOO_HIGH)
+                self.set_state(self.DISCONNECTED)
+                return
+            
+            # === SAFETY CHECK 2: Heater Overheat Protection (Proportional Limiting) ===
+            if heater_temp > self.MAX_HEATER_TEMP:
+                # Above max: exponential reduction
+                overshoot = heater_temp - self.MAX_HEATER_TEMP
+                reduction_factor = max(0, 1.0 - (overshoot / 5.0))  # 0% at +5°C over limit
+                limited_dc = self.desired_duty_cycle * reduction_factor
+                self.logger.warning(
+                    f"Heater temp {heater_temp:.1f}°C exceeds {self.MAX_HEATER_TEMP}°C. "
+                    f"Limiting duty cycle from {self.desired_duty_cycle:.1f}% to {limited_dc:.1f}%"
+                )
+            elif heater_temp > self.HEATER_LIMIT_START:
+                # Approaching max: linear reduction
+                temp_margin = self.MAX_HEATER_TEMP - heater_temp
+                full_margin = self.MAX_HEATER_TEMP - self.HEATER_LIMIT_START
+                limit_factor = temp_margin / full_margin  # 1.0 at 75°C, 0.0 at 80°C
+                limited_dc = self.desired_duty_cycle * limit_factor
+                self.logger.debug(
+                    f"Heater temp {heater_temp:.1f}°C approaching limit. "
+                    f"Reducing duty cycle to {limited_dc:.1f}% (factor: {limit_factor:.2f})"
+                )
+            
+            # === SAFETY CHECK 3: Dry Heater Detection ===
+            temp_delta = heater_temp - water_temp
+            if temp_delta > self.DRY_HEATER_DELTA:
+                self.logger.error(
+                    f"Heater temp ({heater_temp:.1f}°C) is {temp_delta:.1f}°C above water temp ({water_temp:.1f}°C). "
+                    f"Heater may be out of water. Shutting down."
+                )
+                self._update_heater(0)
+                self.set_state(self.DISCONNECTED)
+                return
+            elif temp_delta > self.DRY_HEATER_DELTA * 0.7:  # Warning at 70% of threshold
+                self.logger.warning(
+                    f"Heater temp ({heater_temp:.1f}°C) is {temp_delta:.1f}°C above water temp ({water_temp:.1f}°C). "
+                    f"Monitor for potential dry heater condition."
+                )
+            
+            # === SAFETY CHECK 4: No Response Detection ===
+            if limited_dc > self.NO_RESPONSE_MIN_DC:
+                if self.heater_high_dc_start_time is None:
+                    # Start tracking
+                    self.heater_high_dc_start_time = current_utc_datetime()
+                    self.heater_temp_at_high_dc_start = heater_temp
+                else:
+                    # Check if enough time has passed
+                    time_elapsed = (current_utc_datetime() - self.heater_high_dc_start_time).total_seconds()
+                    if time_elapsed > self.NO_RESPONSE_TIME:
+                        temp_rise = heater_temp - self.heater_temp_at_high_dc_start
+                        if temp_rise < self.NO_RESPONSE_MIN_RISE:
+                            self.logger.error(
+                                f"Heater duty cycle >{self.NO_RESPONSE_MIN_DC}% for {time_elapsed:.0f}s "
+                                f"but temperature only rose {temp_rise:.1f}°C (expected >{self.NO_RESPONSE_MIN_RISE}°C). "
+                                f"Heater may be disconnected or sensor faulty. Shutting down."
+                            )
+                            self._update_heater(0)
+                            self.set_state(self.DISCONNECTED)
+                            return
+            else:
+                # Reset tracking when DC drops
+                self.heater_high_dc_start_time = None
+                self.heater_temp_at_high_dc_start = None
+            
+            # === SAFETY CHECK 5: Water Runaway Detection ===
+            if hasattr(self, 'target_temperature') and self.target_temperature is not None:
+                if water_temp > self.target_temperature + self.RUNAWAY_TEMP_DELTA:
+                    self.logger.error(
+                        f"Water temperature ({water_temp:.1f}°C) exceeds target ({self.target_temperature:.1f}°C) "
+                        f"by {water_temp - self.target_temperature:.1f}°C. Runaway condition detected. Shutting down."
+                    )
+                    self._update_heater(0)
+                    self.set_state(self.DISCONNECTED)
+                    return
+            
+            # Apply the limited duty cycle
+            if limited_dc != self.heater_duty_cycle:
+                self._update_heater(limited_dc)
+                self.logger.debug(f"Heater check: water={water_temp:.1f}°C, heater={heater_temp:.1f}°C, DC={limited_dc:.1f}%")
+                
+        except OSError as e:
+            self.logger.warning(f"Could not read heater temperature: {e}")
+            # Don't shut down on transient sensor errors, but log them
+
     ########## Private & internal methods
 
     def _read_external_temperature(self) -> float:
         """
-        Read the current temperature from our sensor, in Celsius
+        Read the current water temperature from 10K NTC sensor on A0
         """
         try:
             running_sum, running_count = 0.0, 0
             for _ in range(6):
-                running_sum += self.heating_pcb_tmp_driver.get_temperature()
+                running_sum += self.water_temp_driver.get_temperature()
                 running_count += 1
                 sleep(0.05)
             averaged_temp = running_sum / running_count
@@ -234,12 +407,29 @@ class TemperatureAutomationJob(AutomationJob):
         except OSError as e:
             self.logger.debug(e, exc_info=True)
             raise exc.HardwareNotFoundError("Water temperature sensor not found.")
+    
+    def _read_heater_temperature(self) -> float:
+        """
+        Read the heater element temperature from 100K NTC sensor on A1
+        """
+        try:
+            running_sum, running_count = 0.0, 0
+            for _ in range(3):  # Fewer samples since this runs more frequently
+                running_sum += self.heater_temp_driver.get_temperature()
+                running_count += 1
+                sleep(0.02)
+            averaged_temp = running_sum / running_count
+            with local_intermittent_storage("temperature_and_heating") as cache:
+                cache["heater_temperature"] = averaged_temp
+                cache["heater_temperature_at"] = current_utc_timestamp()
+            return averaged_temp
+        except OSError as e:
+            self.logger.debug(e, exc_info=True)
+            raise exc.HardwareNotFoundError("Heater temperature sensor not found.")
 
     def _update_heater(self, new_duty_cycle: float) -> bool:
-        # if new_duty_cycle < 5:  # lower duty cycle
-        #     new_duty_cycle = 0.0
-        # clamp to [required range], round to two decimals
-        self.heater_duty_cycle = clamp(0.0, round(float(new_duty_cycle), 3), MAX_HEATER_DUTY_CYCLE)  # last number upper duty cycle
+        # clamp to [required range], round to three decimals
+        self.heater_duty_cycle = clamp(0.0, round(float(new_duty_cycle), 3), MAX_HEATER_DUTY_CYCLE)
         self.pwm.change_duty_cycle(self.heater_duty_cycle)
 
         if self.heater_duty_cycle == 0.0:
@@ -276,16 +466,21 @@ class TemperatureAutomationJob(AutomationJob):
 
         with suppress(AttributeError):
             self.temperature_timer.cancel()
+        
+        with suppress(AttributeError):
+            self.heater_check_timer.cancel()
 
         with suppress(AttributeError):
             self.turn_off_heater()
 
     def on_sleeping(self) -> None:
         self.temperature_timer.pause()
+        self.heater_check_timer.pause()
         self._update_heater(0)
 
     def on_sleeping_to_ready(self) -> None:
         self.temperature_timer.unpause()
+        self.heater_check_timer.unpause()
 
     def setup_pwm(self) -> PWM:
         # technically this doesn't need to be high: it could even be 1hz. However, we want to smooth it's
