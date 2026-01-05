@@ -417,7 +417,11 @@ class ADS1115_Thermistor:
     STEINHART_A = None
     STEINHART_B = None
     STEINHART_C = None
-    
+
+    # Class-level lock shared across all instances to prevent concurrent ADC access
+    # This is critical because multiple sensor instances may share the same physical ADC chip
+    _adc_lock = threading.Lock()
+
     def __init__(self, 
                  address: int = 0x48,
                  thermistor_channel: int = 0,
@@ -534,7 +538,7 @@ class ADS1115_Thermistor:
             
             # Wait for conversion to complete
             # At 128 SPS, each conversion takes ~8ms. Add margin.
-            time.sleep(0.03)
+            time.sleep(0.01)
             
             # Read conversion result
             result_buf = bytearray(2)
@@ -566,21 +570,29 @@ class ADS1115_Thermistor:
     def _read_voltages(self) -> tuple[float, float]:
         """
         Read voltages from thermistor and reference channels.
-        
+
+        Uses a class-level lock to prevent concurrent ADC access when multiple
+        sensor instances share the same physical ADC chip. This is critical to
+        prevent race conditions where one sensor's channel switch corrupts
+        another sensor's reading.
+
         Returns:
             Tuple of (thermistor_voltage, reference_voltage)
         """
-        # Read thermistor channel (A0 or A1)
-        mux_therm = self.channel_mux_map[self.thermistor_channel]
-        adc_therm = self._read_adc(mux_therm)
-        v_thermistor = self._adc_to_voltage(adc_therm)
-        
-        # Read reference channel (A2, shared)
-        mux_ref = self.channel_mux_map[self.ref_channel]
-        adc_ref = self._read_adc(mux_ref)
-        v_ref = self._adc_to_voltage(adc_ref)
-        
-        return v_thermistor, v_ref
+        # Acquire lock to ensure atomic read of both channels
+        # This prevents another sensor from switching the mux mid-read
+        with self._adc_lock:
+            # Read thermistor channel (A0 or A1)
+            mux_therm = self.channel_mux_map[self.thermistor_channel]
+            adc_therm = self._read_adc(mux_therm)
+            v_thermistor = self._adc_to_voltage(adc_therm)
+
+            # Read reference channel (A2, shared)
+            mux_ref = self.channel_mux_map[self.ref_channel]
+            adc_ref = self._read_adc(mux_ref)
+            v_ref = self._adc_to_voltage(adc_ref)
+
+            return v_thermistor, v_ref
     
     def get_resistance(self) -> float:
         """
