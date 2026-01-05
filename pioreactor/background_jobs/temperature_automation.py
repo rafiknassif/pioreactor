@@ -45,9 +45,9 @@ class TemperatureAutomationJob(AutomationJob):
     `pioreactor/<unit>/<experiment>/temperature_automation/<setting>/set` value
     """
 
-    MAX_TEMP_TO_REDUCE_HEATING = 63.0
-    MAX_TEMP_TO_DISABLE_HEATING = 65.0
-    MAX_TEMP_TO_SHUTDOWN = 66.0
+    MAX_TEMP_TO_REDUCE_HEATING = 38.0
+    MAX_TEMP_TO_DISABLE_HEATING = 40.0
+    MAX_TEMP_TO_SHUTDOWN = 45.0
     
     # Heater temperature limits for cascade control
     MAX_HEATER_TEMP = 80.0              # Hard limit - reduce to 0% above this
@@ -57,12 +57,12 @@ class TemperatureAutomationJob(AutomationJob):
     # Safety thresholds
     DRY_HEATER_DELTA = 40.0             # Heater-water temp difference indicating dry heater
     RUNAWAY_TEMP_DELTA = 8.0            # Water temp above target indicating runaway
-    NO_RESPONSE_TIME = 60               # Seconds of high DC with no heating response
-    NO_RESPONSE_MIN_DC = 50             # Minimum DC to check for heater response
-    NO_RESPONSE_MIN_RISE = 5.0          # Minimum temperature rise expected
+    NO_RESPONSE_TIME = 15               # Seconds of high DC with no heating response
+    NO_RESPONSE_MIN_DC = 10             # Minimum DC to check for heater response
+    NO_RESPONSE_MIN_RISE = 3.0          # Minimum temperature rise expected
 
-    INFERENCE_EVERY_N_SECONDS: float = 30   # Outer loop (water temp control)
-    HEATER_CHECK_EVERY_N_SECONDS: float = 5  # Inner loop (heater limiting)
+    INFERENCE_EVERY_N_SECONDS: float = 10   # Outer loop (water temp control)
+    HEATER_CHECK_EVERY_N_SECONDS: float = 1  # Inner loop (heater limiting)
     
     # Constants for liquid loss detection
 
@@ -178,7 +178,6 @@ class TemperatureAutomationJob(AutomationJob):
         # self.kp = 1.2  # Starting Guesses for Kp/Ki
         # self.ki = 0.015
         # self.integral_error = 0.0
-
         self.latest_temperture_at: datetime = current_utc_datetime()
     
 
@@ -500,7 +499,6 @@ class TemperatureAutomationJob(AutomationJob):
         """
         # CHANGED: removed the logic that took multiple samples to do a regression.
         # CHANGED: instead, we are simply measuring once (while turning off the heater or not) and publishing.
-
         # CHANGED: We still lock the PWM so that nothing else changes it while we measure
         assert not self.pwm.is_locked(), "PWM is locked - it shouldn't be though!"
         with self.pwm.lock_temporarily():

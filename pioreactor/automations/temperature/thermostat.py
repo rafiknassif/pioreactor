@@ -7,7 +7,6 @@ from pioreactor.config import config
 from pioreactor.utils import clamp
 from pioreactor.utils import is_pio_job_running
 from pioreactor.utils.streaming_calculations import PID
-from pioreactor.whoami import get_pioreactor_version
 
 
 class Thermostat(TemperatureAutomationJob):
@@ -21,14 +20,14 @@ class Thermostat(TemperatureAutomationJob):
     ---------------------
     
     OUTER LOOP (30 seconds):
-        - Measures: Water temperature (NTC sensor on A0)
+        - Measures: Water temperature (10K NTC sensor on A0)
         - Setpoint: User-defined target temperature (e.g., 37°C)
         - Controller: PID (Kp, Ki, Kd from config)
         - Output: desired_duty_cycle (0-100%)
         - Purpose: Maintain water at target temperature
     
     INNER LOOP (5 seconds):
-        - Measures: Heater element temperature (NTC sensor on A2)
+        - Measures: Heater element temperature (100K NTC sensor on A1)
         - Input: desired_duty_cycle from outer loop
         - Controller: Proportional limiter based on heater temperature
         - Output: actual_duty_cycle (0-100%, limited if heater too hot)
@@ -87,10 +86,7 @@ class Thermostat(TemperatureAutomationJob):
     - target_temperature: User setpoint (°C, settable)
     """
 
-    if get_pioreactor_version() == (1, 0):
-        MAX_TARGET_TEMP = 50
-    else:
-        MAX_TARGET_TEMP = 70
+    MAX_TARGET_TEMP = 40
 
     automation_name = "thermostat"
     published_settings = {"target_temperature": {"datatype": "float", "unit": "℃", "settable": True}}
