@@ -361,6 +361,7 @@ class MCP9600:
 import time
 import math
 import struct
+import threading
 from typing import Optional
 
 
