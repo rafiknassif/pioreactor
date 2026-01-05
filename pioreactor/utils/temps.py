@@ -534,7 +534,7 @@ class ADS1115_Thermistor:
             
             # Wait for conversion to complete
             # At 128 SPS, each conversion takes ~8ms. Add margin.
-            time.sleep(0.01)
+            time.sleep(0.03)
             
             # Read conversion result
             result_buf = bytearray(2)
