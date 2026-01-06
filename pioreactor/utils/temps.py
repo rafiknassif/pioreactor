@@ -405,7 +405,8 @@ class ADS1115_Thermistor:
     MODE_SINGLE = 0x0100  # Single-shot mode
     
     # Data rate
-    DR_128SPS = 0x0080   # 128 samples per second
+    DR_16SPS = 0x0020    # 16 samples per second (~62.5ms per conversion)
+    DR_128SPS = 0x0080   # 128 samples per second (~7.8ms per conversion)
     
     # Comparator mode (not used, but set to default)
     COMP_MODE_TRAD = 0x0000
@@ -440,11 +441,14 @@ class ADS1115_Thermistor:
             ref_channel: ADS1115 channel connected to VDD reference (0-3, default 2)
             r_ref: Reference resistor value in ohms (default 10000.0)
             pga_gain: PGA gain setting (default PGA_4_096V)
-            data_rate: Sample rate setting (default DR_128SPS)
+            data_rate: Sample rate setting (default DR_128SPS for 10K sensors, 
+                      use DR_16SPS for 100K sensors with high source impedance)
             
         Hardware Configuration:
             Water sensor (10K NTC):  A0 (thermistor_channel=0), A2 (ref_channel=2, shared)
+                                     Use DR_128SPS (fast, low impedance)
             Heater sensor (100K NTC): A1 (thermistor_channel=1), A2 (ref_channel=2, shared)
+                                      Use DR_16SPS (slow, high impedance needs settling time)
             
         Note: After initialization, set the calibrated Steinhart-Hart coefficients using
               set_thermistor_parameters() method for accurate temperature readings.
@@ -480,6 +484,10 @@ class ADS1115_Thermistor:
         }
         self.voltage_range = self.pga_ranges.get(pga_gain, 4.096)
         
+        # Calculate appropriate sleep time based on data rate
+        # Add 20% margin for safety
+        self.conversion_time = self._calculate_conversion_time(data_rate)
+        
         try:
             self.comm_port = I2C(SCL, SDA)
             self.i2c = I2CDevice(self.comm_port, address, probe=True)
@@ -491,6 +499,32 @@ class ADS1115_Thermistor:
             self.connected = True
         except (ValueError, OSError):
             self.connected = False
+    
+    def _calculate_conversion_time(self, data_rate: int) -> float:
+        """
+        Calculate conversion time in seconds based on data rate setting.
+        
+        Args:
+            data_rate: Data rate configuration bits
+            
+        Returns:
+            Conversion time in seconds with 20% safety margin
+        """
+        # Data rate to SPS mapping
+        rate_map = {
+            0x0000: 8,      # 8 SPS
+            0x0020: 16,     # 16 SPS
+            0x0040: 32,     # 32 SPS
+            0x0060: 64,     # 64 SPS
+            0x0080: 128,    # 128 SPS
+            0x00A0: 250,    # 250 SPS
+            0x00C0: 475,    # 475 SPS
+            0x00E0: 860,    # 860 SPS
+        }
+        
+        sps = rate_map.get(data_rate, 128)
+        # Add 20% margin to base conversion time
+        return (1.0 / sps) * 1.2
     
     def _write_config(self, mux_config: int) -> None:
         """
@@ -507,7 +541,7 @@ class ADS1115_Thermistor:
                  mux_config |           # Input multiplexer config
                  self.pga_gain |        # PGA gain
                  self.MODE_SINGLE |     # Single-shot mode
-                 self.data_rate |       # Data rate
+                 self.data_rate |       # Data rate (now instance-specific)
                  self.COMP_MODE_TRAD |  # Comparator mode (traditional)
                  self.COMP_POL_LOW |    # Comparator polarity (active low)
                  self.COMP_LAT_NONE |   # Non-latching comparator
@@ -520,9 +554,32 @@ class ADS1115_Thermistor:
         write_buf = bytearray([self.REG_CONFIG]) + config_bytes
         self.i2c.write(write_buf)
     
+    def _read_conversion(self) -> int:
+        """
+        Read the conversion register value.
+        
+        Returns:
+            Raw 16-bit ADC value (signed)
+        """
+        if not self.connected or self.i2c is None:
+            raise OSError(f"ADS1115 at address 0x{self.address:02x} is not connected")
+        
+        result_buf = bytearray(2)
+        self.i2c.write_then_readinto(bytearray([self.REG_CONVERSION]), result_buf)
+        
+        # Unpack as signed 16-bit big-endian
+        adc_value = struct.unpack('>h', result_buf)[0]
+        
+        return adc_value
+    
     def _read_adc(self, mux_config: int) -> int:
         """
-        Read ADC value from specified input.
+        Read ADC value from specified input with proper settling.
+        
+        CRITICAL: After MUX channel change, the first conversion result may be 
+        invalid due to incomplete settling of the sampling capacitor, especially 
+        with high source impedance (e.g., 100kΩ dividers). This function performs 
+        a dummy read and discards it to ensure the returned value is accurate.
         
         Args:
             mux_config: Multiplexer configuration (which input to read)
@@ -534,19 +591,23 @@ class ADS1115_Thermistor:
             raise OSError(f"ADS1115 at address 0x{self.address:02x} is not connected")
         
         try:
-            # Configure and start conversion
+            # Configure and start first conversion
             self._write_config(mux_config)
             
-            # Wait for conversion to complete
-            # At 128 SPS, each conversion takes ~8ms. Add margin.
-            time.sleep(0.01)
+            # Wait for first conversion to complete
+            time.sleep(self.conversion_time)
             
-            # Read conversion result
-            result_buf = bytearray(2)
-            self.i2c.write_then_readinto(bytearray([self.REG_CONVERSION]), result_buf)
+            # DISCARD first reading (may contain stale data from previous channel)
+            self._read_conversion()
             
-            # Unpack as signed 16-bit big-endian
-            adc_value = struct.unpack('>h', result_buf)[0]
+            # Start second conversion (sampling cap now properly settled)
+            self._write_config(mux_config)
+            
+            # Wait for second conversion to complete
+            time.sleep(self.conversion_time)
+            
+            # Read and return the valid conversion result
+            adc_value = self._read_conversion()
             
             return adc_value
             
@@ -667,6 +728,11 @@ class ADS1115_Thermistor:
         """
         Read temperature from the thermistor using Steinhart-Hart equation.
         
+        For better accuracy, this method now averages resistance values before
+        converting to temperature, rather than averaging temperature values.
+        This is mathematically more correct because the Steinhart-Hart equation
+        is nonlinear (contains ln(R) and ln(R)³ terms).
+        
         Args:
             samples: Number of samples to average (default 1)
             
@@ -676,16 +742,22 @@ class ADS1115_Thermistor:
         if not self.connected:
             raise OSError(f"ADS1115 at address 0x{self.address:02x} is not connected")
         
-        temps = []
+        # Collect resistance samples
+        resistances = []
         for _ in range(samples):
             resistance = self.get_resistance()
-            temp = self._resistance_to_temperature_steinhart(resistance)
-            temps.append(temp)
+            resistances.append(resistance)
             
             if samples > 1:
                 time.sleep(0.01)
         
-        return round(sum(temps) / len(temps), 2)
+        # Average the resistances (more accurate than averaging temperatures)
+        r_avg = sum(resistances) / len(resistances)
+        
+        # Convert the averaged resistance to temperature
+        temp = self._resistance_to_temperature_steinhart(r_avg)
+        
+        return round(temp, 2)
     
     @property
     def temperature(self) -> float:

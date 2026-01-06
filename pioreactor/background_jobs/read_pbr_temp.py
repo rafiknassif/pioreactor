@@ -7,6 +7,7 @@ from pioreactor.hardware import (
     WATER_TEMP_CHANNEL,
     WATER_TEMP_REF_CHANNEL,
     WATER_TEMP_R_REF,
+    WATER_TEMP_DATA_RATE,
     WATER_TEMP_STEINHART_A,
     WATER_TEMP_STEINHART_B,
     WATER_TEMP_STEINHART_C
@@ -49,7 +50,8 @@ class ReadPBRTemp(BackgroundJob):
             address=NTC_Thermistor_ADDR,
             thermistor_channel=WATER_TEMP_CHANNEL,
             ref_channel=WATER_TEMP_REF_CHANNEL,
-            r_ref=WATER_TEMP_R_REF
+            r_ref=WATER_TEMP_R_REF,
+            data_rate=WATER_TEMP_DATA_RATE  # 128 SPS - fast
         )
         self.ads1115_driver.set_thermistor_parameters(
             steinhart_a=WATER_TEMP_STEINHART_A,
@@ -86,13 +88,10 @@ class ReadPBRTemp(BackgroundJob):
         """
         Read the current temperature from sensor, in Celsius
         """
-        running_sum, running_count = 0.0, 0
         try:
-            # check temp is fast, let's do it a few times to reduce variance.
-            for i in range(6):
-                running_sum += self.ads1115_driver.get_temperature()
-                running_count += 1
-                sleep(0.05)
+            # The driver now averages resistance before converting to temperature
+            # which is more accurate for the nonlinear Steinhart-Hart equation
+            averaged_temp = self.ads1115_driver.get_temperature(samples=6)
 
         except OSError as e:
             self.logger.debug(e, exc_info=True)
@@ -100,9 +99,7 @@ class ReadPBRTemp(BackgroundJob):
                 "Is the NTC thermistor connected to the I2C bus? Unable to find temperature sensor."
             )
 
-        averaged_temp = running_sum / running_count
         self._check_if_exceeds_temp_range(averaged_temp)
-
         return averaged_temp
 
     def _check_if_exceeds_temp_range(self, temp: float) -> bool:
@@ -128,7 +125,6 @@ class ReadPBRTemp(BackgroundJob):
             # TODO implement undertemperature correction action
 
         return temp > self.upper_warning_threshold and temp < self.lower_warning_threshold
-
 
 @click.command(name="read_pbr_temp")
 @click.option(
@@ -223,6 +219,7 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
         from pioreactor.hardware import NTC_Thermistor_ADDR
         from pioreactor.utils.temps import ADS1115_Thermistor
         from time import sleep
+        import statistics
         
         # Determine which sensor to calibrate
         if calibration_sensor.lower() == "water":
@@ -230,6 +227,7 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
                 WATER_TEMP_CHANNEL,
                 WATER_TEMP_REF_CHANNEL,
                 WATER_TEMP_R_REF,
+                WATER_TEMP_DATA_RATE,
                 WATER_TEMP_STEINHART_A,
                 WATER_TEMP_STEINHART_B,
                 WATER_TEMP_STEINHART_C
@@ -237,6 +235,7 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
             channel = WATER_TEMP_CHANNEL
             ref_channel = WATER_TEMP_REF_CHANNEL
             r_ref = WATER_TEMP_R_REF
+            data_rate = WATER_TEMP_DATA_RATE  # 128 SPS - fast
             steinhart_a = WATER_TEMP_STEINHART_A
             steinhart_b = WATER_TEMP_STEINHART_B
             steinhart_c = WATER_TEMP_STEINHART_C
@@ -246,6 +245,7 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
                 HEATER_TEMP_CHANNEL,
                 HEATER_TEMP_REF_CHANNEL,
                 HEATER_TEMP_R_REF,
+                HEATER_TEMP_DATA_RATE,
                 HEATER_TEMP_STEINHART_A,
                 HEATER_TEMP_STEINHART_B,
                 HEATER_TEMP_STEINHART_C
@@ -253,6 +253,7 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
             channel = HEATER_TEMP_CHANNEL
             ref_channel = HEATER_TEMP_REF_CHANNEL
             r_ref = HEATER_TEMP_R_REF
+            data_rate = HEATER_TEMP_DATA_RATE  # 16 SPS - slow for settling
             steinhart_a = HEATER_TEMP_STEINHART_A
             steinhart_b = HEATER_TEMP_STEINHART_B
             steinhart_c = HEATER_TEMP_STEINHART_C
@@ -278,7 +279,8 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
                 address=NTC_Thermistor_ADDR,
                 thermistor_channel=channel,
                 ref_channel=ref_channel,
-                r_ref=r_ref
+                r_ref=r_ref,
+                data_rate=data_rate
             )
             
             # Load Steinhart-Hart coefficients from hardware.py
@@ -289,19 +291,30 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
             )
             
             print("Sensor connected. Starting readings...\n")
+            print("Taking 5 samples per reading for accuracy...")
+            print("Std Dev shows measurement stability (lower is better)\n")
+            
+            # Number of samples to average for calibration
+            num_samples = 5
             
             while True:
                 try:
-                    # Read raw values
+                    # Collect multiple resistance readings for stability
+                    resistances = [sensor.get_resistance() for _ in range(num_samples)]
+                    
+                    # Calculate statistics
+                    r_avg = statistics.mean(resistances)
+                    r_stdev = statistics.stdev(resistances) if len(resistances) > 1 else 0
+                    
+                    # Get voltage readings (single sample for display)
                     v_therm, v_ref = sensor.get_voltages()
-                    resistance = sensor.get_resistance()
                     
                     # Show temperature (may be inaccurate if not properly calibrated)
-                    temp = sensor.get_temperature()
+                    temp = sensor.get_temperature(samples=num_samples)
                     
-                    print(f"Resistance: {resistance:7.0f} Ω  |  "
+                    print(f"Resistance: {r_avg:7.0f} Ω ± {r_stdev:4.0f} Ω  |  "
                           f"Voltages: V_therm={v_therm:.3f}V V_ref={v_ref:.3f}V  |  "
-                          f"Current temp reading: {temp:.2f}°C (may be inaccurate)")
+                          f"Temp: {temp:.2f}°C (may be inaccurate)")
                     
                     sleep(2)  # Read every 2 seconds
                     

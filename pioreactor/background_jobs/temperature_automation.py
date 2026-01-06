@@ -110,9 +110,9 @@ class TemperatureAutomationJob(AutomationJob):
             from pioreactor.utils.temps import ADS1115_Thermistor
             from pioreactor.hardware import (
                 NTC_Thermistor_ADDR,
-                WATER_TEMP_CHANNEL, WATER_TEMP_REF_CHANNEL, WATER_TEMP_R_REF,
+                WATER_TEMP_CHANNEL, WATER_TEMP_REF_CHANNEL, WATER_TEMP_R_REF, WATER_TEMP_DATA_RATE,
                 WATER_TEMP_STEINHART_A, WATER_TEMP_STEINHART_B, WATER_TEMP_STEINHART_C,
-                HEATER_TEMP_CHANNEL, HEATER_TEMP_REF_CHANNEL, HEATER_TEMP_R_REF,
+                HEATER_TEMP_CHANNEL, HEATER_TEMP_REF_CHANNEL, HEATER_TEMP_R_REF, HEATER_TEMP_DATA_RATE,
                 HEATER_TEMP_STEINHART_A, HEATER_TEMP_STEINHART_B, HEATER_TEMP_STEINHART_C
             )
 
@@ -125,20 +125,22 @@ class TemperatureAutomationJob(AutomationJob):
             address=NTC_Thermistor_ADDR,
             thermistor_channel=WATER_TEMP_CHANNEL,
             ref_channel=WATER_TEMP_REF_CHANNEL,
-            r_ref=WATER_TEMP_R_REF
+            r_ref=WATER_TEMP_R_REF,
+            data_rate=WATER_TEMP_DATA_RATE  # 128 SPS - fast
         )
         self.water_temp_driver.set_thermistor_parameters(
             steinhart_a=WATER_TEMP_STEINHART_A,
             steinhart_b=WATER_TEMP_STEINHART_B,
             steinhart_c=WATER_TEMP_STEINHART_C
         )
-        
+
         # Initialize heater temperature sensor (100K NTC on A1)
         self.heater_temp_driver = ADS1115_Thermistor(
             address=NTC_Thermistor_ADDR,
             thermistor_channel=HEATER_TEMP_CHANNEL,
             ref_channel=HEATER_TEMP_REF_CHANNEL,
-            r_ref=HEATER_TEMP_R_REF
+            r_ref=HEATER_TEMP_R_REF,
+            data_rate=HEATER_TEMP_DATA_RATE  # 16 SPS - slow for settling
         )
         self.heater_temp_driver.set_thermistor_parameters(
             steinhart_a=HEATER_TEMP_STEINHART_A,
@@ -393,39 +395,38 @@ class TemperatureAutomationJob(AutomationJob):
         Read the current water temperature from 10K NTC sensor on A0
         """
         try:
-            running_sum, running_count = 0.0, 0
-            for _ in range(6):
-                running_sum += self.water_temp_driver.get_temperature()
-                running_count += 1
-                sleep(0.05)
-            averaged_temp = running_sum / running_count
+            # Driver now averages resistance before converting (more accurate)
+            averaged_temp = self.water_temp_driver.get_temperature(samples=5)
+            
             with local_intermittent_storage("temperature_and_heating") as cache:
                 cache["water_temperature"] = averaged_temp
                 cache["water_temperature_at"] = current_utc_timestamp()
+            
             return self._check_if_exceeds_max_temp(averaged_temp)
+        
         except OSError as e:
             self.logger.debug(e, exc_info=True)
             raise exc.HardwareNotFoundError("Water temperature sensor not found.")
-    
+
     def _read_heater_temperature(self) -> float:
         """
         Read the heater element temperature from 100K NTC sensor on A1
         """
         try:
-            running_sum, running_count = 0.0, 0
-            for _ in range(3):  # Fewer samples since this runs more frequently
-                running_sum += self.heater_temp_driver.get_temperature()
-                running_count += 1
-                sleep(0.02)
-            averaged_temp = running_sum / running_count
+            # Fewer samples since this runs more frequently
+            # Driver averages resistance first for better accuracy
+            averaged_temp = self.heater_temp_driver.get_temperature(samples=5)
+            
             with local_intermittent_storage("temperature_and_heating") as cache:
                 cache["heater_temperature"] = averaged_temp
                 cache["heater_temperature_at"] = current_utc_timestamp()
+            
             return averaged_temp
+        
         except OSError as e:
             self.logger.debug(e, exc_info=True)
             raise exc.HardwareNotFoundError("Heater temperature sensor not found.")
-
+    
     def _update_heater(self, new_duty_cycle: float) -> bool:
         # clamp to [required range], round to three decimals
         self.heater_duty_cycle = clamp(0.0, round(float(new_duty_cycle), 3), MAX_HEATER_DUTY_CYCLE)
