@@ -454,6 +454,8 @@ class ADS1115_Thermistor:
               set_thermistor_parameters() method for accurate temperature readings.
         """
         from pioreactor.hardware import SCL, SDA
+        from busio import I2C
+        from adafruit_bus_device.i2c_device import I2CDevice
         
         self.address = address
         self.thermistor_channel = thermistor_channel
@@ -590,139 +592,37 @@ class ADS1115_Thermistor:
         if not self.connected or self.i2c is None:
             raise OSError(f"ADS1115 at address 0x{self.address:02x} is not connected")
         
-        try:
-            # Configure and start first conversion
+        # Configure and start first conversion
+        self._write_config(mux_config)
+        time.sleep(self.conversion_time)
+        self._read_conversion()  # discard
+        
+        # Start second conversion (sampling cap now properly settled)
+        self._write_config(mux_config)
+        time.sleep(self.conversion_time)
+        return self._read_conversion()
+    
+    # ============================
+    # NEW CODE (batched reads)
+    # ============================
+    def _read_adc_multiple(self, mux_config: int, samples: int) -> list[int]:
+        """
+        Read multiple ADC values from the same channel back-to-back without
+        switching the multiplexer between samples.
+        """
+        values = []
+        
+        # Initial conversion to settle the sampling capacitor
+        self._write_config(mux_config)
+        time.sleep(self.conversion_time)
+        self._read_conversion()  # discard
+        
+        for _ in range(samples):
             self._write_config(mux_config)
-            
-            # Wait for first conversion to complete
             time.sleep(self.conversion_time)
-            
-            # DISCARD first reading (may contain stale data from previous channel)
-            self._read_conversion()
-            
-            # Start second conversion (sampling cap now properly settled)
-            self._write_config(mux_config)
-            
-            # Wait for second conversion to complete
-            time.sleep(self.conversion_time)
-            
-            # Read and return the valid conversion result
-            adc_value = self._read_conversion()
-            
-            return adc_value
-            
-        except (OSError, RuntimeError) as e:
-            self.connected = False
-            raise OSError(f"Error reading from ADS1115 at address 0x{self.address:02x}: {str(e)}")
-    
-    def _adc_to_voltage(self, adc_value: int) -> float:
-        """
-        Convert raw ADC value to voltage.
+            values.append(self._read_conversion())
         
-        Args:
-            adc_value: Raw 16-bit ADC value
-            
-        Returns:
-            Voltage in volts
-        """
-        # ADS1115 is 16-bit, ranging from -32768 to 32767
-        # Voltage = (ADC_value / 32768) * voltage_range
-        return (adc_value / 32768.0) * self.voltage_range
-    
-    def _read_voltages(self) -> tuple[float, float]:
-        """
-        Read voltages from thermistor and reference channels.
-
-        Uses a class-level lock to prevent concurrent ADC access when multiple
-        sensor instances share the same physical ADC chip. This is critical to
-        prevent race conditions where one sensor's channel switch corrupts
-        another sensor's reading.
-
-        Returns:
-            Tuple of (thermistor_voltage, reference_voltage)
-        """
-        # Acquire lock to ensure atomic read of both channels
-        # This prevents another sensor from switching the mux mid-read
-        with self._adc_lock:
-            # Read thermistor channel (A0 or A1)
-            mux_therm = self.channel_mux_map[self.thermistor_channel]
-            adc_therm = self._read_adc(mux_therm)
-            v_thermistor = self._adc_to_voltage(adc_therm)
-
-            # Read reference channel (A2, shared)
-            mux_ref = self.channel_mux_map[self.ref_channel]
-            adc_ref = self._read_adc(mux_ref)
-            v_ref = self._adc_to_voltage(adc_ref)
-
-            return v_thermistor, v_ref
-    
-    def get_resistance(self) -> float:
-        """
-        Calculate the thermistor resistance using ratiometric measurement.
-        
-        Returns:
-            Resistance in ohms
-        """
-        v_thermistor, v_ref = self._read_voltages()
-        
-        # Validation
-        if v_thermistor <= 0 or v_ref <= 0:
-            raise ValueError(f"Invalid voltage readings: V_therm={v_thermistor:.3f}V, V_ref={v_ref:.3f}V")
-        
-        if v_thermistor >= v_ref:
-            raise ValueError(f"Thermistor voltage ({v_thermistor:.3f}V) >= reference voltage ({v_ref:.3f}V). Check wiring.")
-        
-        # Ratiometric calculation: R_thermistor = R_ref * (V_thermistor / (V_ref - V_thermistor))
-        voltage_ratio = v_thermistor / (v_ref - v_thermistor)
-        r_thermistor = self.r_ref * voltage_ratio
-        
-        return r_thermistor
-    
-    def _resistance_to_temperature_steinhart(self, resistance: float) -> float:
-        """
-        Convert resistance to temperature using Steinhart-Hart equation.
-        
-        Args:
-            resistance: Thermistor resistance in ohms
-            
-        Returns:
-            Temperature in Celsius
-            
-        Raises:
-            ValueError: If Steinhart-Hart coefficients are not set or resistance is invalid
-        """
-        if self.STEINHART_A is None or self.STEINHART_B is None or self.STEINHART_C is None:
-            raise ValueError(
-                "Steinhart-Hart coefficients not set. Call set_thermistor_parameters() "
-                "with steinhart_a, steinhart_b, and steinhart_c before reading temperature."
-            )
-        
-        if resistance <= 0:
-            raise ValueError("Resistance must be positive")
-        
-        ln_r = math.log(resistance)
-        
-        # Steinhart-Hart equation: 1/T = A + B*ln(R) + C*ln(R)^3
-        temp_k = 1.0 / (self.STEINHART_A + 
-                        self.STEINHART_B * ln_r + 
-                        self.STEINHART_C * (ln_r ** 3))
-        
-        temp_c = temp_k - 273.15
-        return temp_c
-    
-    def _resistance_to_temperature_beta(self, resistance: float) -> float:
-        """
-        Convert resistance to temperature using Beta equation (simplified).
-        DEPRECATED: Only Steinhart-Hart method is supported. This method is kept
-        for backward compatibility but should not be used.
-        
-        Args:
-            resistance: Thermistor resistance in ohms
-            
-        Returns:
-            Temperature in Celsius
-        """
-        raise NotImplementedError("Beta equation not supported. Use Steinhart-Hart coefficients instead.")
+        return values
     
     def get_temperature(self, samples: int = 1) -> float:
         """
@@ -742,14 +642,29 @@ class ADS1115_Thermistor:
         if not self.connected:
             raise OSError(f"ADS1115 at address 0x{self.address:02x} is not connected")
         
-        # Collect resistance samples
-        resistances = []
-        for _ in range(samples):
-            resistance = self.get_resistance()
-            resistances.append(resistance)
+        with self._adc_lock:
+            mux_therm = self.channel_mux_map[self.thermistor_channel]
+            mux_ref = self.channel_mux_map[self.ref_channel]
             
-            if samples > 1:
-                time.sleep(0.01)
+            # Take all thermistor samples back-to-back (no MUX switching)
+            adc_therms = self._read_adc_multiple(mux_therm, samples)
+            v_therms = [self._adc_to_voltage(adc) for adc in adc_therms]
+            
+            # Measure reference voltage once per temperature reading
+            adc_ref = self._read_adc(mux_ref)
+            v_ref = self._adc_to_voltage(adc_ref)
+        
+        resistances = []
+        for v_thermistor in v_therms:
+            if v_thermistor <= 0 or v_thermistor >= v_ref:
+                continue
+            
+            voltage_ratio = v_thermistor / (v_ref - v_thermistor)
+            r_thermistor = self.r_ref * voltage_ratio
+            resistances.append(r_thermistor)
+        
+        if not resistances:
+            raise ValueError("No valid thermistor readings")
         
         # Average the resistances (more accurate than averaging temperatures)
         r_avg = sum(resistances) / len(resistances)
@@ -759,31 +674,42 @@ class ADS1115_Thermistor:
         
         return round(temp, 2)
     
-    @property
-    def temperature(self) -> float:
-        """Alias for get_temperature()"""
-        return self.get_temperature()
+    def _adc_to_voltage(self, adc_value: int) -> float:
+        """
+        Convert raw ADC value to voltage.
+        
+        Args:
+            adc_value: Raw 16-bit ADC value
+            
+        Returns:
+            Voltage in volts
+        """
+        # ADS1115 is 16-bit, ranging from -32768 to 32767
+        # Voltage = (ADC_value / 32768) * voltage_range
+        return (adc_value / 32768.0) * self.voltage_range
     
-    def set_thermistor_parameters(self, 
+    def _resistance_to_temperature_steinhart(self, resistance: float) -> float:
+        """
+        Convert resistance to temperature using Steinhart-Hart equation.
+        
+        Args:
+            resistance: Thermistor resistance in ohms
+            
+        Returns:
+            Temperature in Celsius
+        """
+        ln_r = math.log(resistance)
+        temp_k = 1.0 / (self.STEINHART_A +
+                        self.STEINHART_B * ln_r +
+                        self.STEINHART_C * (ln_r ** 3))
+        return temp_k - 273.15
+    
+    def set_thermistor_parameters(self,
                                    steinhart_a: Optional[float] = None,
                                    steinhart_b: Optional[float] = None,
                                    steinhart_c: Optional[float] = None):
         """
         Update Steinhart-Hart coefficients for temperature calculation.
-        These should be determined through calibration for your specific thermistor.
-        
-        Args:
-            steinhart_a: Steinhart-Hart A coefficient
-            steinhart_b: Steinhart-Hart B coefficient
-            steinhart_c: Steinhart-Hart C coefficient
-            
-        Example:
-            # For 10K water sensor (calibrated values)
-            sensor.set_thermistor_parameters(
-                steinhart_a=0.0007904962,
-                steinhart_b=0.0002849790,
-                steinhart_c=-7.4893966122e-08
-            )
         """
         if steinhart_a is not None:
             self.STEINHART_A = steinhart_a
@@ -792,11 +718,7 @@ class ADS1115_Thermistor:
         if steinhart_c is not None:
             self.STEINHART_C = steinhart_c
     
-    def get_voltages(self) -> tuple[float, float]:
-        """
-        Get raw voltage readings for debugging.
-        
-        Returns:
-            Tuple of (thermistor_voltage, reference_voltage)
-        """
-        return self._read_voltages()
+    @property
+    def temperature(self) -> float:
+        """Alias for get_temperature()"""
+        return self.get_temperature()
