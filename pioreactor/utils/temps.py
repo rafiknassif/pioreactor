@@ -420,9 +420,10 @@ class ADS1115_Thermistor:
     STEINHART_B = None
     STEINHART_C = None
 
-    # Class-level lock shared across all instances to prevent concurrent ADC access
+    # Class-level reentrant lock shared across all instances to prevent concurrent ADC access
     # This is critical because multiple sensor instances may share the same physical ADC chip
-    _adc_lock = threading.Lock()
+    # RLock allows the same thread to acquire the lock multiple times (for nested calls)
+    _adc_lock = threading.RLock()
 
     def __init__(self, 
                  address: int = 0x48,
@@ -724,39 +725,93 @@ class ADS1115_Thermistor:
         """
         raise NotImplementedError("Beta equation not supported. Use Steinhart-Hart coefficients instead.")
     
+    def _read_thermistor_voltage_batch(self, count: int) -> list[float]:
+        """
+        Read multiple thermistor voltage samples without channel switching.
+
+        This is more efficient than calling _read_voltages() multiple times because
+        it stays on the thermistor channel and avoids repeated switching to the
+        reference channel.
+
+        Args:
+            count: Number of thermistor voltage samples to read
+
+        Returns:
+            List of thermistor voltages
+        """
+        mux_therm = self.channel_mux_map[self.thermistor_channel]
+        voltages = []
+
+        for i in range(count):
+            adc_value = self._read_adc(mux_therm)
+            v_thermistor = self._adc_to_voltage(adc_value)
+            voltages.append(v_thermistor)
+
+            # Small delay between samples (except for last one)
+            if i < count - 1:
+                time.sleep(0.01)
+
+        return voltages
+
     def get_temperature(self, samples: int = 1) -> float:
         """
         Read temperature from the thermistor using Steinhart-Hart equation.
-        
+
         For better accuracy, this method now averages resistance values before
         converting to temperature, rather than averaging temperature values.
         This is mathematically more correct because the Steinhart-Hart equation
         is nonlinear (contains ln(R) and ln(R)³ terms).
-        
+
+        OPTIMIZATION: When taking multiple samples, this method batches thermistor
+        voltage readings to minimize channel switching, then reads the reference
+        voltage separately. This significantly reduces ADC settling time.
+
         Args:
             samples: Number of samples to average (default 1)
-            
+
         Returns:
             Temperature in Celsius (rounded to 2 decimal places)
         """
         if not self.connected:
             raise OSError(f"ADS1115 at address 0x{self.address:02x} is not connected")
-        
-        # Collect resistance samples
+
+        # Acquire lock for the entire batch operation
+        with self._adc_lock:
+            if samples == 1:
+                # Fast path: single sample, use original method
+                resistance = self.get_resistance()
+                temp = self._resistance_to_temperature_steinhart(resistance)
+                return round(temp, 2)
+
+            # Batch read thermistor voltages (all samples, no channel switching)
+            v_thermistors = self._read_thermistor_voltage_batch(samples)
+
+            # Read reference voltage once (it's stable, doesn't need averaging)
+            mux_ref = self.channel_mux_map[self.ref_channel]
+            adc_ref = self._read_adc(mux_ref)
+            v_ref = self._adc_to_voltage(adc_ref)
+
+        # Calculate resistances from batched voltages
         resistances = []
-        for _ in range(samples):
-            resistance = self.get_resistance()
-            resistances.append(resistance)
-            
-            if samples > 1:
-                time.sleep(0.01)
-        
+        for v_thermistor in v_thermistors:
+            # Validation
+            if v_thermistor <= 0 or v_ref <= 0:
+                raise ValueError(f"Invalid voltage readings: V_therm={v_thermistor:.3f}V, V_ref={v_ref:.3f}V")
+
+            if v_thermistor >= v_ref:
+                raise ValueError(f"Thermistor voltage ({v_thermistor:.3f}V) >= reference voltage ({v_ref:.3f}V). Check wiring.")
+
+            # Ratiometric calculation: R_thermistor = R_ref * (V_thermistor / (V_ref - V_thermistor))
+            voltage_ratio = v_thermistor / (v_ref - v_thermistor)
+            r_thermistor = self.r_ref * voltage_ratio
+            resistances.append(r_thermistor)
+
         # Average the resistances (more accurate than averaging temperatures)
         r_avg = sum(resistances) / len(resistances)
-        
+
         # Convert the averaged resistance to temperature
         temp = self._resistance_to_temperature_steinhart(r_avg)
-        
+
         return round(temp, 2)
     
     @property
