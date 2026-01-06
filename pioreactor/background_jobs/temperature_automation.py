@@ -59,7 +59,7 @@ class TemperatureAutomationJob(AutomationJob):
     RUNAWAY_TEMP_DELTA = 8.0            # Water temp above target indicating runaway
     NO_RESPONSE_TIME = 15               # Seconds of high DC with no heating response
     NO_RESPONSE_MIN_DC = 10             # Minimum DC to check for heater response
-    NO_RESPONSE_MIN_RISE = 3.0          # Minimum temperature rise expected
+    NO_RESPONSE_MIN_RISE = 1.5          # Minimum temperature rise expected
 
     INFERENCE_EVERY_N_SECONDS: float = 10   # Outer loop (water temp control)
     HEATER_CHECK_EVERY_N_SECONDS: float = 1  # Inner loop (heater limiting)
@@ -396,7 +396,7 @@ class TemperatureAutomationJob(AutomationJob):
         """
         try:
             # Driver now averages resistance before converting (more accurate)
-            averaged_temp = self.water_temp_driver.get_temperature(samples=5)
+            averaged_temp = self.water_temp_driver.get_temperature(samples=3)
             
             with local_intermittent_storage("temperature_and_heating") as cache:
                 cache["water_temperature"] = averaged_temp
@@ -415,7 +415,7 @@ class TemperatureAutomationJob(AutomationJob):
         try:
             # Fewer samples since this runs more frequently
             # Driver averages resistance first for better accuracy
-            averaged_temp = self.heater_temp_driver.get_temperature(samples=5)
+            averaged_temp = self.heater_temp_driver.get_temperature(samples=2)
             
             with local_intermittent_storage("temperature_and_heating") as cache:
                 cache["heater_temperature"] = averaged_temp
@@ -505,7 +505,7 @@ class TemperatureAutomationJob(AutomationJob):
         with self.pwm.lock_temporarily():
             previous_heater_dc = self.heater_duty_cycle
             self._update_heater(0)  # turn off heater if you want a passive measurement
-            sleep(1)
+            # sleep(1)
             measured_temp = self.read_external_temperature()
             self._update_heater(previous_heater_dc)
 
