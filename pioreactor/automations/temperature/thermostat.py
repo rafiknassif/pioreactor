@@ -105,7 +105,7 @@ class Thermostat(TemperatureAutomationJob):
             experiment=self.experiment,
             job_name=self.job_name,
             target_name="temperature",
-            output_limits=(-25, 25),  # avoid whiplashing - max ±25% change per cycle
+            output_limits=(-15, 15),  # avoid whiplashing - max ±25% change per cycle
         )
 
         self.set_target_temperature(target_temperature)
