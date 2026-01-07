@@ -46,20 +46,19 @@ class TemperatureAutomationJob(AutomationJob):
     """
 
     # Water temperature safety limits (redundant with heater temp checks but provide independent failsafe)
-    MAX_TEMP_TO_REDUCE_HEATING = 38.0
-    MAX_TEMP_TO_DISABLE_HEATING = 40.0
-    MAX_TEMP_TO_SHUTDOWN = 45.0
+    MAX_TEMP_TO_REDUCE_HEATING = 36.0
+    MAX_TEMP_TO_DISABLE_HEATING = 37.0
+    MAX_TEMP_TO_SHUTDOWN = 38.0
 
     # Heater temperature limits for cascade control
-    EMERGENCY_SHUTDOWN_TEMP = 65.0      # Emergency shutdown regardless of other conditions
-    MAX_HEATER_TEMP = 60.0              # Hard limit - reduce to 0% above this
-    HEATER_LIMIT_START = 45.0           # Start proportional reduction
+    EMERGENCY_SHUTDOWN_TEMP = 65.0      # Emergency heater shutdown temp regardless of other conditions
+    MAX_HEATER_DELTA = 10.0             # Maximum °C heater can be above water temp (on/off limiting)
     
     # Safety thresholds
     DRY_HEATER_DELTA = 20.0             # Heater-water temp difference indicating dry heater
     RUNAWAY_TEMP_DELTA = 5.0            # Water temp above target indicating runaway
     NO_RESPONSE_TIME = 15               # Seconds of high DC with no heating response
-    NO_RESPONSE_MIN_DC = 10             # Minimum DC to check for heater response
+    NO_RESPONSE_MIN_DC = 50             # Minimum DC to check for heater response
     NO_RESPONSE_MIN_RISE = 1.5          # Minimum temperature rise expected
     MAX_TEMP_RATE_OF_CHANGE = 10.0       # Maximum °C/min rise before shutdown
                                         # Formula: Max_rate ≈ (Heater_watts × 60) / (Volume_L × 4184)
@@ -247,8 +246,8 @@ class TemperatureAutomationJob(AutomationJob):
 
         Safety checks implemented:
         1. Sensor plausibility checks
-        2. Heater overheat protection
-        3. Emergency shutdown
+        2. Emergency shutdown
+        3. Heater temperature limiting (on/off at water + delta)
         4. Dry heater detection
         5. No response detection
         6. Water runaway detection
@@ -271,9 +270,6 @@ class TemperatureAutomationJob(AutomationJob):
             # Get current water temperature for safety checks
             water_temp = self.latest_temperature if self.latest_temperature is not None else 25.0
 
-            # Start with the desired duty cycle from outer loop
-            limited_dc = self.desired_duty_cycle
-            
             # === SAFETY CHECK 1: Emergency Shutdown ===
             if heater_temp > self.EMERGENCY_SHUTDOWN_TEMP:
                 self.logger.error(
@@ -284,27 +280,21 @@ class TemperatureAutomationJob(AutomationJob):
                 self.blink_error_code(error_codes.PCB_TEMPERATURE_TOO_HIGH)
                 self.set_state(self.DISCONNECTED)
                 return
-            
-            # === SAFETY CHECK 2: Heater Overheat Protection (Proportional Limiting) ===
-            if heater_temp > self.MAX_HEATER_TEMP:
-                # Above max: exponential reduction
-                overshoot = heater_temp - self.MAX_HEATER_TEMP
-                reduction_factor = max(0, 1.0 - (overshoot / 5.0))  # 0% at +5°C over limit
-                limited_dc = self.desired_duty_cycle * reduction_factor
-                self.logger.warning(
-                    f"Heater temp {heater_temp:.1f}°C exceeds {self.MAX_HEATER_TEMP}°C. "
-                    f"Limiting duty cycle from {self.desired_duty_cycle:.1f}% to {limited_dc:.1f}%"
-                )
-            elif heater_temp > self.HEATER_LIMIT_START:
-                # Approaching max: linear reduction
-                temp_margin = self.MAX_HEATER_TEMP - heater_temp
-                full_margin = self.MAX_HEATER_TEMP - self.HEATER_LIMIT_START
-                limit_factor = temp_margin / full_margin  # 1.0 at 75°C, 0.0 at 80°C
-                limited_dc = self.desired_duty_cycle * limit_factor
+
+            # === SAFETY CHECK 2: Heater Temperature Limiting (On/Off) ===
+            # Dynamic limit based on water temperature
+            max_heater_temp = water_temp + self.MAX_HEATER_DELTA
+
+            if heater_temp > max_heater_temp:
+                # Heater too hot - turn off completely to allow cooling
+                limited_dc = 0
                 self.logger.debug(
-                    f"Heater temp {heater_temp:.1f}°C approaching limit. "
-                    f"Reducing duty cycle to {limited_dc:.1f}% (factor: {limit_factor:.2f})"
+                    f"Heater temp {heater_temp:.1f}°C exceeds limit {max_heater_temp:.1f}°C "
+                    f"(water {water_temp:.1f}°C + {self.MAX_HEATER_DELTA}°C). Turning off heater."
                 )
+            else:
+                # Heater within safe range - use PID-commanded duty cycle
+                limited_dc = self.desired_duty_cycle
             
             # === SAFETY CHECK 3: Dry Heater Detection ===
             temp_delta = heater_temp - water_temp
