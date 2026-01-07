@@ -32,7 +32,7 @@ from pioreactor.utils.timing import to_datetime
 from pioreactor.version import rpi_version_info
 
 
-MAX_HEATER_DUTY_CYCLE = 100.0
+MAX_HEATER_DUTY_CYCLE = 100.0 #not the true limit, true limit in thermostat.py automation and in config file
 
 class TemperatureAutomationJob(AutomationJob):
     """
@@ -67,6 +67,7 @@ class TemperatureAutomationJob(AutomationJob):
 
     INFERENCE_EVERY_N_SECONDS: float = 10   # Outer loop (water temp control)
     HEATER_CHECK_EVERY_N_SECONDS: float = 1  # Inner loop (heater limiting)
+    PUBLISH_EVERY_N_SECONDS: float = 30      # Database publishing frequency
 
     latest_temperature = None
 
@@ -83,6 +84,15 @@ class TemperatureAutomationJob(AutomationJob):
         ):
             available_temperature_automations[cls.automation_name] = cls
 
+    def __setattr__(self, name: str, value: t.Any) -> None:
+        """Override to prevent auto-publishing temperature on every measurement."""
+        if name == "temperature":
+            # Update property without triggering publish
+            super(_BackgroundJob, self).__setattr__(name, value)
+        else:
+            # Normal behavior for other published settings
+            super(TemperatureAutomationJob, self).__setattr__(name, value)
+
     def __init__(
         self,
         unit: str,
@@ -90,6 +100,14 @@ class TemperatureAutomationJob(AutomationJob):
         **kwargs,
     ) -> None:
         super(TemperatureAutomationJob, self).__init__(unit, experiment)
+
+        # Load publish interval from config (can be customized per deployment)
+        self.PUBLISH_EVERY_N_SECONDS = config.getfloat(
+            "temperature_automation.config",
+            "publish_interval",
+            fallback=30.0
+        )
+        self.logger.debug(f"Temperature publish interval: {self.PUBLISH_EVERY_N_SECONDS}s")
 
         # declare these to be published automatically
         self.add_to_published_settings(
@@ -170,6 +188,14 @@ class TemperatureAutomationJob(AutomationJob):
             self.check_and_limit_heater,
             job_name=self.job_name,
             run_immediately=False,  # Let outer loop start first
+        ).start()
+
+        # Separate timer for database publishing (decoupled from measurement frequency)
+        self.publish_timer = RepeatedTimer(
+            int(self.PUBLISH_EVERY_N_SECONDS),
+            self._publish_temperature_data,
+            job_name=self.job_name,
+            run_immediately=False,  # Wait for first measurement
         ).start()
 
         # COMMENTED OUT: timestamps related to OD & growth rate
@@ -449,16 +475,21 @@ class TemperatureAutomationJob(AutomationJob):
             self.heater_check_timer.cancel()
 
         with suppress(AttributeError):
+            self.publish_timer.cancel()
+
+        with suppress(AttributeError):
             self.turn_off_heater()
 
     def on_sleeping(self) -> None:
         self.temperature_timer.pause()
         self.heater_check_timer.pause()
+        self.publish_timer.pause()
         self._update_heater(0)
 
     def on_sleeping_to_ready(self) -> None:
         self.temperature_timer.unpause()
         self.heater_check_timer.unpause()
+        self.publish_timer.unpause()
 
     def setup_pwm(self) -> PWM:
         # technically this doesn't need to be high: it could even be 1hz. However, we want to smooth it's
@@ -526,6 +557,15 @@ class TemperatureAutomationJob(AutomationJob):
             self.latest_event = self.execute()
 
         return
+
+    def _publish_temperature_data(self) -> None:
+        """
+        Publish current temperature to MQTT/database.
+        Called by publish_timer at PUBLISH_EVERY_N_SECONDS interval.
+        Measurement happens at faster INFERENCE_EVERY_N_SECONDS rate.
+        """
+        if self.temperature is not None:
+            self._publish_setting("temperature")
 
 class TemperatureAutomationJobContrib(TemperatureAutomationJob):
     automation_name: str
