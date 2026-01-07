@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from time import sleep
 from typing import Any
 from typing import cast
@@ -45,30 +45,29 @@ class TemperatureAutomationJob(AutomationJob):
     `pioreactor/<unit>/<experiment>/temperature_automation/<setting>/set` value
     """
 
+    # Water temperature safety limits (redundant with heater temp checks but provide independent failsafe)
     MAX_TEMP_TO_REDUCE_HEATING = 38.0
     MAX_TEMP_TO_DISABLE_HEATING = 40.0
     MAX_TEMP_TO_SHUTDOWN = 45.0
-    
+
     # Heater temperature limits for cascade control
-    MAX_HEATER_TEMP = 80.0              # Hard limit - reduce to 0% above this
-    HEATER_LIMIT_START = 75.0           # Start proportional reduction
-    EMERGENCY_SHUTDOWN_TEMP = 90.0      # Emergency shutdown regardless of other conditions
+    EMERGENCY_SHUTDOWN_TEMP = 65.0      # Emergency shutdown regardless of other conditions
+    MAX_HEATER_TEMP = 60.0              # Hard limit - reduce to 0% above this
+    HEATER_LIMIT_START = 45.0           # Start proportional reduction
     
     # Safety thresholds
-    DRY_HEATER_DELTA = 40.0             # Heater-water temp difference indicating dry heater
-    RUNAWAY_TEMP_DELTA = 8.0            # Water temp above target indicating runaway
+    DRY_HEATER_DELTA = 20.0             # Heater-water temp difference indicating dry heater
+    RUNAWAY_TEMP_DELTA = 5.0            # Water temp above target indicating runaway
     NO_RESPONSE_TIME = 15               # Seconds of high DC with no heating response
     NO_RESPONSE_MIN_DC = 10             # Minimum DC to check for heater response
     NO_RESPONSE_MIN_RISE = 1.5          # Minimum temperature rise expected
+    MAX_TEMP_RATE_OF_CHANGE = 10.0       # Maximum °C/min rise before shutdown
+                                        # Formula: Max_rate ≈ (Heater_watts × 60) / (Volume_L × 4184)
+                                        # Example: 50W heater, 0.5L water → 1.4°C/min theoretical max
+                                        # Set threshold 3-4× theoretical max for safety margin
 
     INFERENCE_EVERY_N_SECONDS: float = 10   # Outer loop (water temp control)
     HEATER_CHECK_EVERY_N_SECONDS: float = 1  # Inner loop (heater limiting)
-    
-    # Constants for liquid loss detection
-
-    PLATEAU_WINDOW_SECONDS = 60*30  # Time to declare plateau with <=0 positive slope
-    PLATEAU_TEMP_CHANGE_THRESHOLD: float = 0.05  # °C change considered a plateau
-    PLATEAU_MIN_DUTY_CYCLE: float = 65  # Minimum duty cycle to consider plateau detection
 
     latest_temperature = None
 
@@ -148,13 +147,15 @@ class TemperatureAutomationJob(AutomationJob):
             steinhart_c=HEATER_TEMP_STEINHART_C
         )
 
-        # Initialize liquid loss detection
-        self.history = []
-        
         # Heater safety tracking
         self.heater_temperature = None
         self.heater_high_dc_start_time = None  # Track when high DC started for no-response check
         self.heater_temp_at_high_dc_start = None
+
+        # Rate of change tracking (for thermal runaway detection)
+        self.last_water_temp_check_time = None
+        self.last_water_temp_check_value = None
+        self.temperature_rate_of_change = 0.0  # °C/min, updated every outer loop
 
         # Single timer triggers infer_temperature() at self.INFERENCE_EVERY_N_SECONDS
         self.temperature_timer = RepeatedTimer(
@@ -238,60 +239,38 @@ class TemperatureAutomationJob(AutomationJob):
         """
         return self.pwm.is_locked()
 
-    def detect_temp_plateau(self) -> bool:
-        """
-        Detect suspicious temperature plateaus during heating which may indicate liquid loss.
-        Simply checks if temperature change between last two readings is below threshold.
-        
-        Returns:
-            bool: True if a plateau is detected (potential liquid loss), False otherwise
-        """
-        # Need both temperature readings and significant heating to detect a plateau
-        if self.current_temp is None or self.previous_temp is None or self.heater_duty_cycle < self.PLATEAU_MIN_DUTY_CYCLE:
-            return False
-        
-        # Calculate temperature change between current and previous reading
-        temp_change = self.current_temp - self.previous_temp
-        
-        self.logger.debug(f"Temp change: {temp_change:.3f}°C")
-        
-        # If heater is on significantly but temperature is barely rising, this is suspicious
-        if (self.heater_duty_cycle >= self.PLATEAU_MIN_DUTY_CYCLE and 
-            temp_change < self.PLATEAU_TEMP_CHANGE_THRESHOLD):
-            
-            self.plateau_count += 1
-            self.logger.debug(f"Temperature plateau detected ({self.plateau_count}/{self.PLATEAU_CONSECUTIVE_COUNT}). "
-                            f"Duty cycle: {self.heater_duty_cycle}%, "
-                            f"Temp change: {temp_change:.3f}°C")
-            
-            if self.plateau_count >= self.PLATEAU_CONSECUTIVE_COUNT:
-                return True
-        else:
-            self.plateau_count = 0
-            
-        return False
-
     def check_and_limit_heater(self) -> None:
         """
         Inner loop: Read heater temperature and apply limiting/safety checks.
         This runs every HEATER_CHECK_EVERY_N_SECONDS (5s) and modulates the
         duty cycle set by the outer water temperature control loop.
-        
+
         Safety checks implemented:
-        1. Heater overheat protection (proportional limiting 75-80°C, hard limit >80°C)
-        2. Emergency shutdown (>90°C)
-        3. Dry heater detection (heater-water temp delta >40°C)
-        4. No response detection (high DC but no temperature rise)
-        5. Water runaway detection (water >8°C above target)
+        1. Sensor plausibility checks
+        2. Heater overheat protection
+        3. Emergency shutdown
+        4. Dry heater detection
+        5. No response detection
+        6. Water runaway detection
         """
         try:
             # Read heater temperature
             heater_temp = self._read_heater_temperature()
             self.heater_temperature = heater_temp
-            
+
+            # === SAFETY CHECK 0: Heater Sensor Plausibility ===
+            if heater_temp < 10 or heater_temp > 100:
+                self.logger.error(
+                    f"Heater sensor reading implausible: {heater_temp:.1f}°C. "
+                    f"Sensor may be faulty. Shutting down for safety."
+                )
+                self._update_heater(0)
+                self.set_state(self.DISCONNECTED)
+                return
+
             # Get current water temperature for safety checks
             water_temp = self.latest_temperature if self.latest_temperature is not None else 25.0
-            
+
             # Start with the desired duty cycle from outer loop
             limited_dc = self.desired_duty_cycle
             
@@ -397,11 +376,20 @@ class TemperatureAutomationJob(AutomationJob):
         try:
             # Driver now averages resistance before converting (more accurate)
             averaged_temp = self.water_temp_driver.get_temperature(samples=3)
-            
+
+            # Sensor plausibility check
+            if averaged_temp < 10 or averaged_temp > 50:
+                self.logger.error(
+                    f"Water sensor reading implausible: {averaged_temp:.1f}°C. "
+                    f"Sensor may be faulty. Shutting down for safety."
+                )
+                self._update_heater(0)
+                raise exc.HardwareNotFoundError("Water temperature sensor reading out of range.")
+
             with local_intermittent_storage("temperature_and_heating") as cache:
                 cache["water_temperature"] = averaged_temp
                 cache["water_temperature_at"] = current_utc_timestamp()
-            
+
             return self._check_if_exceeds_max_temp(averaged_temp)
         
         except OSError as e:
@@ -514,44 +502,29 @@ class TemperatureAutomationJob(AutomationJob):
             temperature=round(measured_temp, 2),
             timestamp=current_utc_datetime(),
         )
-        
-        #check for liquid losses
-        timestamp = current_utc_timestamp()
-        self.history.append((timestamp, self.temperature, self.heater_duty_cycle))
-        now = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-        window_start = now - timedelta(seconds=600)
-        self.history = [
-            entry for entry in self.history
-            if datetime.fromisoformat(entry[0].replace("Z", "+00:00")) >= window_start
-        ]
-        self.check_for_liquid_loss()
-        self._set_latest_temperature(self.temperature)
 
-    def check_for_liquid_loss(self):
-        now = current_utc_datetime()  # Use datetime object
-        window_start = now - timedelta(seconds=self.PLATEAU_WINDOW_SECONDS)
-        recent_history = [
-            entry for entry in self.history
-            if datetime.fromisoformat(entry[0].replace("Z", "+00:00")) >= window_start
-        ]
-        if len(recent_history) < 2:
-            return
-        start_time_str, start_temp, _ = recent_history[0]
-        end_time_str, end_temp, _ = recent_history[-1]
-        start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
-        end_time = datetime.fromisoformat(end_time_str.replace("Z", "+00:00"))
-        time_span = (end_time - start_time).total_seconds()
-        if time_span < self.PLATEAU_WINDOW_SECONDS * 0.8:
-            return
-        temp_change = end_temp.temperature - start_temp.temperature
-        duty_cycles = [entry[2] for entry in recent_history]
-        avg_duty_cycle = sum(duty_cycles) / len(duty_cycles) if duty_cycles else 0
-        if avg_duty_cycle > self.PLATEAU_MIN_DUTY_CYCLE and temp_change < self.PLATEAU_TEMP_CHANGE_THRESHOLD:
-            self.logger.debug(
-                f"Avg duty cycle: {avg_duty_cycle:.2f}%, Temp change: {temp_change:.2f}°C over {time_span:.1f}s"
-            )
-            self.logger.error("Heater may be out of water. Disabling heating.")
-            self.set_state(self.DISCONNECTED)
+        # Rate of change safety check (runs in outer loop)
+        if self.last_water_temp_check_time is not None:
+            time_delta = (current_utc_datetime() - self.last_water_temp_check_time).total_seconds()
+            if time_delta > 0:  # Avoid division by zero
+                temp_delta = measured_temp - self.last_water_temp_check_value
+                rate_of_change = temp_delta / (time_delta / 60.0)  # °C per minute
+                self.temperature_rate_of_change = rate_of_change  # Store for logging
+
+                if rate_of_change > self.MAX_TEMP_RATE_OF_CHANGE:
+                    self.logger.error(
+                        f"Water temperature rising too fast: {rate_of_change:.1f}°C/min (max: {self.MAX_TEMP_RATE_OF_CHANGE}°C/min). "
+                        f"Possible thermal runaway. Shutting down."
+                    )
+                    self._update_heater(0)
+                    self.set_state(self.DISCONNECTED)
+                    return
+
+        # Update rate of change tracking for next cycle
+        self.last_water_temp_check_time = current_utc_datetime()
+        self.last_water_temp_check_value = measured_temp
+
+        self._set_latest_temperature(self.temperature)
 
     def _set_latest_temperature(self, temperature: structs.Temperature) -> None:
         # Note: this doesn't use MQTT data (previously it use to)

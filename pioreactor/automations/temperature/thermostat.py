@@ -147,7 +147,8 @@ class Thermostat(TemperatureAutomationJob):
             f"Outer loop: water={self.latest_temperature:.1f}°C, "
             f"target={self.target_temperature:.1f}°C, "
             f"PID_output={output:.1f}%, "
-            f"desired_dc={self.desired_duty_cycle:.1f}%"
+            f"desired_dc={self.desired_duty_cycle:.1f}%, "
+            f"rate={self.temperature_rate_of_change:.2f}°C/min"
         )
 
         return UpdatedHeaterDC(
