@@ -88,7 +88,7 @@ class TemperatureAutomationJob(AutomationJob):
         """Override to prevent auto-publishing temperature on every measurement."""
         if name == "temperature":
             # Update property without triggering publish
-            super(_BackgroundJob, self).__setattr__(name, value)
+            object.__setattr__(self, name, value)
         else:
             # Normal behavior for other published settings
             super(TemperatureAutomationJob, self).__setattr__(name, value)
