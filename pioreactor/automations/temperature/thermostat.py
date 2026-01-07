@@ -96,6 +96,7 @@ class Thermostat(TemperatureAutomationJob):
         super().__init__(**kwargs)
         assert target_temperature is not None, "target_temperature must be set"
 
+        self.max_duty_cycle = config.getfloat("temperature_automation.thermostat", "max_duty_cycle", fallback=self.MAX_DUTY_CYCLE)
         # Outer loop PID controller for water temperature
         self.pid = PID(
             Kp=config.getfloat("temperature_automation.thermostat", "Kp"),
@@ -110,6 +111,12 @@ class Thermostat(TemperatureAutomationJob):
         )
 
         self.set_target_temperature(target_temperature)
+        
+        self.logger.info(
+            f"Thermostat initialized: target={self.target_temperature:.1f}°C, "
+            f"Kp={self.pid.Kp:.2f}, Ki={self.pid.Ki:.3f}, Kd={self.pid.Kd:.2f}, "
+            f"max_DC={self.max_duty_cycle:.1f}%"
+        )
 
     def on_init_to_ready(self):
         super().on_init_to_ready()
