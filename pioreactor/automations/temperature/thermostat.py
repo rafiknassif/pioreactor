@@ -87,6 +87,7 @@ class Thermostat(TemperatureAutomationJob):
     """
 
     MAX_TARGET_TEMP = 40
+    MAX_DUTY_CYCLE = 100.0
 
     automation_name = "thermostat"
     published_settings = {"target_temperature": {"datatype": "float", "unit": "℃", "settable": True}}
@@ -105,7 +106,7 @@ class Thermostat(TemperatureAutomationJob):
             experiment=self.experiment,
             job_name=self.job_name,
             target_name="temperature",
-            output_limits=(-15, 15),  # avoid whiplashing - max ±25% change per cycle
+            output_limits=(0, self.MAX_DUTY_CYCLE),  #DC range
         )
 
         self.set_target_temperature(target_temperature)
@@ -141,12 +142,12 @@ class Thermostat(TemperatureAutomationJob):
         
         # Update desired duty cycle (outer loop output)
         # Inner loop will apply heater temperature limiting to this value
-        self.desired_duty_cycle = clamp(0.0, self.heater_duty_cycle + output, 100.0)
+        self.desired_duty_cycle = clamp(0.0, output, self.MAX_DUTY_CYCLE)
         
         self.logger.debug(
             f"Outer loop: water={self.latest_temperature:.1f}°C, "
             f"target={self.target_temperature:.1f}°C, "
-            f"PID_output={output:.1f}%, "
+            f"PID_output(absolute)={output:.1f}%, "
             f"desired_dc={self.desired_duty_cycle:.1f}%, "
             f"rate={self.temperature_rate_of_change:.2f}°C/min"
         )
