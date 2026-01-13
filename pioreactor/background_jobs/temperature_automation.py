@@ -113,12 +113,12 @@ class TemperatureAutomationJob(AutomationJob):
         self.add_to_published_settings(
             "temperature", {"datatype": "Temperature", "settable": False, "unit": "℃"}
         )
-        self.add_to_published_settings(
-            "heater_duty_cycle", {"datatype": "float", "settable": False, "unit": "%"}
-        )
-        self.add_to_published_settings(
-            "heater_temperature", {"datatype": "float", "settable": False, "unit": "℃"}
-        )
+        # self.add_to_published_settings(
+        #     "heater_duty_cycle", {"datatype": "float", "settable": False, "unit": "%"}
+        # )
+        # self.add_to_published_settings(
+        #     "heater_temperature", {"datatype": "float", "settable": False, "unit": "℃"}
+        # )
 
         if whoami.is_testing_env():
             from pioreactor.utils.mock import MockTMP1075 as TMP1075
@@ -375,7 +375,7 @@ class TemperatureAutomationJob(AutomationJob):
                     return
             
             # Apply the limited duty cycle
-            if limited_dc != self.heater_duty_cycle:
+            if round(limited_dc, 3) != self.heater_duty_cycle:
                 self._update_heater(limited_dc)
                 self.logger.debug(f"Heater check: water={water_temp:.1f}°C, heater={heater_temp:.1f}°C, DC={limited_dc:.1f}%")
                 
@@ -513,10 +513,10 @@ class TemperatureAutomationJob(AutomationJob):
         assert not self.pwm.is_locked(), "PWM is locked - it shouldn't be though!"
         with self.pwm.lock_temporarily():
             previous_heater_dc = self.heater_duty_cycle
-            self._update_heater(0)  # turn off heater if you want a passive measurement
+            # self._update_heater(0)  # turn off heater if you want a passive measurement
             # sleep(1)
             measured_temp = self.read_external_temperature()
-            self._update_heater(previous_heater_dc)
+            # self._update_heater(previous_heater_dc)
 
         # Update temperature record
         self.temperature = Temperature(

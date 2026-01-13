@@ -151,13 +151,13 @@ class Thermostat(TemperatureAutomationJob):
         # Inner loop will apply heater temperature limiting to this value
         self.desired_duty_cycle = clamp(0.0, output, self.max_duty_cycle)
         
-        self.logger.debug(
-            f"Outer loop: water={self.latest_temperature:.1f}°C, "
-            f"target={self.target_temperature:.1f}°C, "
-            f"PID_output(absolute)={output:.1f}%, "
-            f"desired_dc={self.desired_duty_cycle:.1f}%, "
-            f"rate={self.temperature_rate_of_change:.2f}°C/min"
-        )
+        # self.logger.debug(
+        #     f"Outer loop: water={self.latest_temperature:.1f}°C, "
+        #     f"target={self.target_temperature:.1f}°C, "
+        #     f"PID_output(absolute)={output:.1f}%, "
+        #     f"desired_dc={self.desired_duty_cycle:.1f}%, "
+        #     f"rate={self.temperature_rate_of_change:.2f}°C/min"
+        # )
 
         return UpdatedHeaterDC(
             f"delta_dc={output}",
