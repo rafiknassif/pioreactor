@@ -377,7 +377,8 @@ class TemperatureAutomationJob(AutomationJob):
             # Apply the limited duty cycle
             if round(limited_dc, 3) != self.heater_duty_cycle:
                 self._update_heater(limited_dc)
-                self.logger.debug(f"Heater check: water={water_temp:.1f}°C, heater={heater_temp:.1f}°C, DC={limited_dc:.1f}%")
+            
+            self.logger.debug(f"Heater check: water={water_temp:.1f}°C, heater={heater_temp:.1f}°C, DC={limited_dc:.1f}%")
                 
         except OSError as e:
             self.logger.warning(f"Could not read heater temperature: {e}")
