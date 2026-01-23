@@ -153,6 +153,10 @@ class PHAutomationJob(AutomationJob):
         """
         Read the current pH from sensor, averaging multiple samples to reduce noise.
         """
+        # Discard first read to allow sampling capacitor to settle
+        self.driver.read_raw()
+        sleep(0.05)
+
         running_sum, running_count = 0.0, 0
         try:
             for _ in range(6):

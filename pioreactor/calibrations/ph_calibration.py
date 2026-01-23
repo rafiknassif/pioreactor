@@ -94,6 +94,10 @@ def get_name_from_user() -> str:
 
 def read_voltage_mv(driver: ADC101C02x, n_samples: int = 10) -> float:
     """Read average voltage in millivolts from the ADC, printing each sample."""
+    # Discard first read to allow sampling capacitor to settle
+    driver.read_raw()
+    sleep(0.05)
+
     readings = []
     echo(f"\n  {'Sample':<8} {'Voltage (mV)':<12}")
     echo(f"  {'-'*8} {'-'*12}")
