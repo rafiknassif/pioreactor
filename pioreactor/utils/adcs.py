@@ -48,6 +48,8 @@ class ADC101C02x:
         comm = I2C(hardware.SCL, hardware.SDA)
         self._dev = I2CDevice(comm, i2c_address)
         self.address = i2c_address
+        # Configure automatic conversion mode for stable readings
+        self.set_cycle(self.CYCLE_x2048)
 
     # --- low-level ---
     def _write8(self, reg: int, val: int) -> None:

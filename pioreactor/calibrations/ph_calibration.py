@@ -103,7 +103,7 @@ def read_voltage_mv(driver: ADC101C02x, n_samples: int = 10) -> float:
         voltage_mv = raw * (ADC_REFERENCE_VOLTAGE / ADC_MAX_VALUE)
         readings.append(voltage_mv)
         echo(f"  {i+1:<8} {voltage_mv:<12.1f}")
-        sleep(0.1)
+        sleep(0.5)  # Allow settling time for high-impedance pH signal
 
     avg = sum(readings) / len(readings)
     variance = sum((x - avg) ** 2 for x in readings) / len(readings)
