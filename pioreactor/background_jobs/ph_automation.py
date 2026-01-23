@@ -7,11 +7,13 @@ from time import sleep
 from typing import Optional
 
 import click
+import numpy as np
 
 from pioreactor import exc
 from pioreactor import structs
 from pioreactor import types as pt
 from pioreactor.automations.base import AutomationJob
+from pioreactor.calibrations import load_active_calibration
 from pioreactor.config import config
 from pioreactor.exc import HardwareNotFoundError
 from pioreactor.hardware import PH_ADDR
@@ -23,11 +25,9 @@ from pioreactor.utils.timing import current_utc_datetime
 from pioreactor.utils.timing import RepeatedTimer
 
 
-# Calibration constants for pH sensor
-NEUTRAL_PH = 7
-BASIC_PH = 10
-NEUTRAL_PH_ADC = 500  # raw ADC reading at neutral pH
-BASIC_PH_ADC = 200    # raw ADC reading at basic pH
+# ADC conversion constants
+ADC_REFERENCE_VOLTAGE = 3300.0  # 3.3V reference in mV
+ADC_MAX_VALUE = 1023.0  # 10-bit ADC
 
 
 class PHAutomationJob(AutomationJob):
@@ -73,6 +73,11 @@ class PHAutomationJob(AutomationJob):
         self.upper_warning_threshold = upper_warning_threshold
         self.lower_warning_threshold = lower_warning_threshold
 
+        # Load pH calibration
+        self.calibration = load_active_calibration("ph")
+        if self.calibration is None:
+            self.logger.warning("No pH calibration found. Run 'pio calibration run --device ph' first. Using fallback calculation.")
+
         # Declare published settings
         self.add_to_published_settings(
             "pH", {"datatype": "PH", "settable": False, "unit": "pH"}
@@ -83,11 +88,15 @@ class PHAutomationJob(AutomationJob):
         self.add_to_published_settings(
             "lower_warning_threshold", {"datatype": "float", "settable": True, "unit": "pH"}
         )
+        self.add_to_published_settings(
+            "voltage_mv", {"datatype": "float", "settable": False, "unit": "mV"}
+        )
 
         # Initialize ADC driver
         self._initialize_driver(PH_ADDR)
 
         self.pH: PH | None = None
+        self.voltage_mv: float = 0.0
 
         # Get sample interval from config
         dt = 1 / config.getfloat("ph_automation.config", "samples_per_second", fallback=0.033)
@@ -161,14 +170,21 @@ class PHAutomationJob(AutomationJob):
         return averaged_pH
 
     def _read_pH(self) -> float:
-        """Convert raw ADC reading to pH value using linear calibration."""
+        """Convert raw ADC reading to pH value using calibration curve."""
         raw = self.driver.read_raw()
 
-        # Linear calibration: map ADC values to pH
-        # TODO: The 1500/3 transformation needs documentation
-        slope = (NEUTRAL_PH - BASIC_PH) / ((NEUTRAL_PH_ADC - 1500.0) / 3.0 - (BASIC_PH_ADC - 1500.0) / 3.0)
-        intercept = NEUTRAL_PH - slope * (NEUTRAL_PH_ADC - 1500.0) / 3.0
-        pH_value = slope * (raw - 1500.0) / 3.0 + intercept
+        # Convert raw ADC to millivolts
+        voltage_mv = raw * (ADC_REFERENCE_VOLTAGE / ADC_MAX_VALUE)
+        self.voltage_mv = voltage_mv
+
+        if self.calibration is None:
+            # Fallback: assume linear with rough defaults
+            # Typical pH probe: neutral ~1500mV = pH 7, acid ~2032mV = pH 4
+            # This gives roughly -3 pH per 532 mV increase
+            pH_value = 7.0 + (voltage_mv - 1500.0) * (-3.0 / 532.0)
+        else:
+            # Use polynomial calibration curve
+            pH_value = np.polyval(self.calibration.curve_data_, voltage_mv)
 
         return pH_value
 

@@ -85,6 +85,16 @@ class DCBasedStirringProtocol(CalibrationProtocol):
         )
 
 
+class PHCalibrationProtocol(CalibrationProtocol):
+    target_device = "ph"
+    protocol_name = "three_point"
+
+    def run(self, target_device: str, **kwargs) -> structs.PHCalibration:
+        from pioreactor.calibrations.ph_calibration import run_ph_calibration
+
+        return run_ph_calibration()
+
+
 @overload
 def load_active_calibration(device: Literal["od"]) -> structs.ODCalibration | None:
     pass
@@ -99,6 +109,11 @@ def load_active_calibration(
 
 @overload
 def load_active_calibration(device: Literal["stirring"]) -> structs.SimpleStirringCalibration | None:
+    pass
+
+
+@overload
+def load_active_calibration(device: Literal["ph"]) -> structs.PHCalibration | None:
     pass
 
 

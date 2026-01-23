@@ -87,6 +87,7 @@ def run_calibration(ctx, device: str, protocol_name: str | None, y: bool) -> Non
         "alt_media_pump": "duration_based",
         "waste_pump": "duration_based",
         "stirring": "dc_based",
+        "ph": "three_point",
     }
 
     # Dispatch to the assistant function for that device

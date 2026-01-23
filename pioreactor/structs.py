@@ -312,8 +312,17 @@ class SimpleStirringCalibration(CalibrationBase, kw_only=True, tag="simple_stirr
     y: str = "RPM"
 
 
+class PHCalibration(CalibrationBase, kw_only=True, tag="ph"):
+    """
+    Calibration for pH sensor using 3-point polynomial fit.
+    Maps voltage (mV) to pH value.
+    """
+    x: str = "Voltage (mV)"
+    y: str = "pH"
+
+
 AnyCalibration = t.Union[
-    SimpleStirringCalibration, SimplePeristalticPumpCalibration, ODCalibration, CalibrationBase
+    SimpleStirringCalibration, SimplePeristalticPumpCalibration, ODCalibration, PHCalibration, CalibrationBase
 ]
 
 
