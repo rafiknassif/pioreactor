@@ -18,6 +18,7 @@ from pioreactor.actions.self_test import click_self_test
 from pioreactor.automations.dosing import *  # noqa: F403, F401
 from pioreactor.automations.led import *  # noqa: F403, F401
 from pioreactor.automations.temperature import *  # noqa: F403, F401
+from pioreactor.automations.ph import *  # noqa: F403, F401
 from pioreactor.background_jobs.dosing_automation import click_dosing_automation
 from pioreactor.background_jobs.growth_rate_calculating import click_growth_rate_calculating
 from pioreactor.background_jobs.leader.mqtt_to_db_streaming import click_mqtt_to_db_streaming
@@ -32,7 +33,7 @@ from pioreactor.whoami import am_I_leader
 
 from pioreactor.background_jobs.read_lightrod_temps import click_read_lightrod_temps
 from pioreactor.background_jobs.read_pbr_temp import  click_read_pbr_temp
-from pioreactor.background_jobs.read_pbr_ph import  click_read_pbr_ph
+from pioreactor.background_jobs.ph_automation import click_ph_automation
 # required to "discover" automations
 
 
@@ -64,7 +65,7 @@ run.add_command(click_self_test)
 
 run.add_command(click_read_lightrod_temps)
 run.add_command(click_read_pbr_temp)
-run.add_command(click_read_pbr_ph)
+run.add_command(click_ph_automation)
 run.add_command(click_air_bubbler)
 
 # TODO: this only adds to `pio run` - what if users want to add a high level command? Examples?
