@@ -190,7 +190,8 @@ class PHAutomationJob(AutomationJob):
             pH_value = 7.0 + (voltage_mv - 1500.0) * (-3.0 / 532.0)
         else:
             # Use polynomial calibration curve
-            pH_value = np.polyval(self.calibration.curve_data_, voltage_mv)
+            # Convert to Python float to avoid numpy.float64 serialization issues
+            pH_value = float(np.polyval(self.calibration.curve_data_, voltage_mv))
 
         return pH_value
 
