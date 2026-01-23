@@ -158,7 +158,7 @@ class PHAutomationJob(AutomationJob):
             for _ in range(6):
                 running_sum += self._read_pH()
                 running_count += 1
-                sleep(0.15)  # Allow settling time for high-impedance pH signal
+                sleep(0.05)
 
         except OSError as e:
             self.logger.debug(e, exc_info=True)
