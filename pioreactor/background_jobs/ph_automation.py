@@ -39,6 +39,8 @@ class PHAutomationJob(AutomationJob):
     To change setting over MQTT:
 
     `pioreactor/<unit>/<experiment>/ph_automation/<setting>/set` value
+    to run calibration use: pio calibrations run --device ph --protocol-name three_point
+
     """
 
     automation_name = "ph_automation_base"

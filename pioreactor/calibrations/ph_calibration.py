@@ -93,14 +93,28 @@ def get_name_from_user() -> str:
 
 
 def read_voltage_mv(driver: ADC101C02x, n_samples: int = 10) -> float:
-    """Read average voltage in millivolts from the ADC."""
+    """Read average voltage in millivolts from the ADC, printing each sample."""
     readings = []
-    for _ in range(n_samples):
+    echo(f"\n  {'Sample':<8} {'Voltage (mV)':<12}")
+    echo(f"  {'-'*8} {'-'*12}")
+
+    for i in range(n_samples):
         raw = driver.read_raw()
         voltage_mv = raw * (ADC_REFERENCE_VOLTAGE / ADC_MAX_VALUE)
         readings.append(voltage_mv)
+        echo(f"  {i+1:<8} {voltage_mv:<12.1f}")
         sleep(0.1)
-    return sum(readings) / len(readings)
+
+    avg = sum(readings) / len(readings)
+    variance = sum((x - avg) ** 2 for x in readings) / len(readings)
+    std_dev = variance ** 0.5
+
+    echo(f"  {'-'*8} {'-'*12}")
+    echo(f"  {'Avg:':<8} {avg:<12.1f}")
+    echo(f"  {'Std Dev:':<8} {std_dev:<12.2f}")
+    echo(f"  {'Variance:':<8} {variance:<12.2f}")
+
+    return avg
 
 
 def calibrate_single_point(driver: ADC101C02x, ph_value: float, point_num: int) -> float:
@@ -115,14 +129,10 @@ def calibrate_single_point(driver: ADC101C02x, ph_value: float, point_num: int) 
     while not confirm(green("\nIs the probe in the buffer solution and stable?"), default=True):
         pass
 
-    echo("\nReading voltage...")
-    for i in range(3):
-        echo(".", nl=False)
-        sleep(1)
-
+    echo("\nReading voltage samples...")
     voltage_mv = read_voltage_mv(driver)
 
-    echo(f"\nVoltage at pH {ph_value}: {voltage_mv:.1f} mV")
+    echo(f"\n  >> Average voltage at pH {ph_value}: {voltage_mv:.1f} mV")
 
     if confirm(green("Accept this reading?"), default=True):
         return voltage_mv
