@@ -105,19 +105,31 @@
 -- CREATE INDEX IF NOT EXISTS specific_dilution_rates_ix
 -- ON specific_dilution_rates (experiment, pioreactor_unit, timestamp);
 
-DROP TABLE IF EXISTS driver_intensity;
+-- DROP TABLE IF EXISTS driver_intensity;
 
-CREATE TABLE IF NOT EXISTS driver_intensity (
-    experiment TEXT NOT NULL,
-    pioreactor_unit TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    driver_intensity REAL,
-    FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
-);
+-- CREATE TABLE IF NOT EXISTS driver_intensity (
+--     experiment TEXT NOT NULL,
+--     pioreactor_unit TEXT NOT NULL,
+--     timestamp TEXT NOT NULL,
+--     driver_intensity REAL,
+--     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+-- );
 
-CREATE INDEX IF NOT EXISTS driver_intensity_ix
-ON driver_intensity (experiment, pioreactor_unit, timestamp);
+-- CREATE INDEX IF NOT EXISTS driver_intensity_ix
+-- ON driver_intensity (experiment, pioreactor_unit, timestamp);
 
+-- DROP TABLE IF EXISTS pbr_ph;
+
+-- CREATE TABLE IF NOT EXISTS pbr_ph (
+--     experiment TEXT NOT NULL,
+--     pioreactor_unit TEXT NOT NULL,
+--     timestamp TEXT NOT NULL,
+--     pbr_ph_ph REAL,
+--     FOREIGN KEY (experiment) REFERENCES experiments (experiment) ON DELETE CASCADE
+-- );
+
+-- CREATE INDEX IF NOT EXISTS pbr_ph_ix
+-- ON pbr_ph (experiment, pioreactor_unit, timestamp);
 
 
 DROP TABLE IF EXISTS pioreactor_unit_activity_data;
@@ -172,6 +184,7 @@ CREATE TABLE IF NOT EXISTS pioreactor_unit_activity_data (
     absolute_growth_rate Real,
     sdr Real,
     driver_intensity REAL,
+    pbr_ph_ph REAL,
 
     FOREIGN KEY (experiment) REFERENCES experiments (
         experiment

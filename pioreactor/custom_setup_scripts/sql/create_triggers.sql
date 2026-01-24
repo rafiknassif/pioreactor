@@ -8,105 +8,105 @@
 -- chmod +x install-db.sh
 -- ./install-db.sh
 -- '''
-DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_lightrod_temperatures;
+-- DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_lightrod_temperatures;
 
-CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_lightrod_temperatures AFTER INSERT ON lightrod_temperatures
-BEGIN
-    INSERT INTO pioreactor_unit_activity_data(
-        pioreactor_unit,
-        experiment,
-        timestamp,
-        LR_A_top_temp,
-        LR_A_middle_temp,
-        LR_A_bottom_temp,
-        LR_A_timestamp,
-        LR_B_top_temp,
-        LR_B_middle_temp,
-        LR_B_bottom_temp,
-        LR_B_timestamp,
-        LR_C_top_temp,
-        LR_C_middle_temp,
-        LR_C_bottom_temp,
-        LR_C_timestamp,
-        LR_D_top_temp,
-        LR_D_middle_temp,
-        LR_D_bottom_temp,
-        LR_D_timestamp,
-        LR_E_top_temp,
-        LR_E_middle_temp,
-        LR_E_bottom_temp,
-        LR_E_timestamp,
-        LR_F_top_temp,
-        LR_F_middle_temp,
-        LR_F_bottom_temp,
-        LR_F_timestamp,
-        LR_G_top_temp,
-        LR_G_middle_temp,
-        LR_G_bottom_temp,
-        LR_G_timestamp
-    ) VALUES (
-        new.pioreactor_unit,
-        new.experiment,
-        new.timestamp,
-        new.LR_A_top_temp,
-        new.LR_A_middle_temp,
-        new.LR_A_bottom_temp,
-        new.LR_A_timestamp,
-        new.LR_B_top_temp,
-        new.LR_B_middle_temp,
-        new.LR_B_bottom_temp,
-        new.LR_B_timestamp,
-        new.LR_C_top_temp,
-        new.LR_C_middle_temp,
-        new.LR_C_bottom_temp,
-        new.LR_C_timestamp,
-        new.LR_D_top_temp,
-        new.LR_D_middle_temp,
-        new.LR_D_bottom_temp,
-        new.LR_D_timestamp,
-        new.LR_E_top_temp,
-        new.LR_E_middle_temp,
-        new.LR_E_bottom_temp,
-        new.LR_E_timestamp,
-        new.LR_F_top_temp,
-        new.LR_F_middle_temp,
-        new.LR_F_bottom_temp,
-        new.LR_F_timestamp,
-        new.LR_G_top_temp,
-        new.LR_G_middle_temp,
-        new.LR_G_bottom_temp,
-        new.LR_G_timestamp
-    )
-    ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
-        LR_A_top_temp=excluded.LR_A_top_temp,
-        LR_A_middle_temp=excluded.LR_A_middle_temp,
-        LR_A_bottom_temp=excluded.LR_A_bottom_temp,
-        LR_A_timestamp=excluded.LR_A_timestamp,
-        LR_B_top_temp=excluded.LR_B_top_temp,
-        LR_B_middle_temp=excluded.LR_B_middle_temp,
-        LR_B_bottom_temp=excluded.LR_B_bottom_temp,
-        LR_B_timestamp=excluded.LR_B_timestamp,
-        LR_C_top_temp=excluded.LR_C_top_temp,
-        LR_C_middle_temp=excluded.LR_C_middle_temp,
-        LR_C_bottom_temp=excluded.LR_C_bottom_temp,
-        LR_C_timestamp=excluded.LR_C_timestamp,
-        LR_D_top_temp=excluded.LR_D_top_temp,
-        LR_D_middle_temp=excluded.LR_D_middle_temp,
-        LR_D_bottom_temp=excluded.LR_D_bottom_temp,
-        LR_D_timestamp=excluded.LR_D_timestamp,
-        LR_E_top_temp=excluded.LR_E_top_temp,
-        LR_E_middle_temp=excluded.LR_E_middle_temp,
-        LR_E_bottom_temp=excluded.LR_E_bottom_temp,
-        LR_E_timestamp=excluded.LR_E_timestamp,
-        LR_F_top_temp=excluded.LR_F_top_temp,
-        LR_F_middle_temp=excluded.LR_F_middle_temp,
-        LR_F_bottom_temp=excluded.LR_F_bottom_temp,
-        LR_F_timestamp=excluded.LR_F_timestamp,
-        LR_G_top_temp=excluded.LR_G_top_temp,
-        LR_G_middle_temp=excluded.LR_G_middle_temp,
-        LR_G_bottom_temp=excluded.LR_G_bottom_temp,
-        LR_G_timestamp=excluded.LR_G_timestamp;
-END;
+-- CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_lightrod_temperatures AFTER INSERT ON lightrod_temperatures
+-- BEGIN
+--     INSERT INTO pioreactor_unit_activity_data(
+--         pioreactor_unit,
+--         experiment,
+--         timestamp,
+--         LR_A_top_temp,
+--         LR_A_middle_temp,
+--         LR_A_bottom_temp,
+--         LR_A_timestamp,
+--         LR_B_top_temp,
+--         LR_B_middle_temp,
+--         LR_B_bottom_temp,
+--         LR_B_timestamp,
+--         LR_C_top_temp,
+--         LR_C_middle_temp,
+--         LR_C_bottom_temp,
+--         LR_C_timestamp,
+--         LR_D_top_temp,
+--         LR_D_middle_temp,
+--         LR_D_bottom_temp,
+--         LR_D_timestamp,
+--         LR_E_top_temp,
+--         LR_E_middle_temp,
+--         LR_E_bottom_temp,
+--         LR_E_timestamp,
+--         LR_F_top_temp,
+--         LR_F_middle_temp,
+--         LR_F_bottom_temp,
+--         LR_F_timestamp,
+--         LR_G_top_temp,
+--         LR_G_middle_temp,
+--         LR_G_bottom_temp,
+--         LR_G_timestamp
+--     ) VALUES (
+--         new.pioreactor_unit,
+--         new.experiment,
+--         new.timestamp,
+--         new.LR_A_top_temp,
+--         new.LR_A_middle_temp,
+--         new.LR_A_bottom_temp,
+--         new.LR_A_timestamp,
+--         new.LR_B_top_temp,
+--         new.LR_B_middle_temp,
+--         new.LR_B_bottom_temp,
+--         new.LR_B_timestamp,
+--         new.LR_C_top_temp,
+--         new.LR_C_middle_temp,
+--         new.LR_C_bottom_temp,
+--         new.LR_C_timestamp,
+--         new.LR_D_top_temp,
+--         new.LR_D_middle_temp,
+--         new.LR_D_bottom_temp,
+--         new.LR_D_timestamp,
+--         new.LR_E_top_temp,
+--         new.LR_E_middle_temp,
+--         new.LR_E_bottom_temp,
+--         new.LR_E_timestamp,
+--         new.LR_F_top_temp,
+--         new.LR_F_middle_temp,
+--         new.LR_F_bottom_temp,
+--         new.LR_F_timestamp,
+--         new.LR_G_top_temp,
+--         new.LR_G_middle_temp,
+--         new.LR_G_bottom_temp,
+--         new.LR_G_timestamp
+--     )
+--     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+--         LR_A_top_temp=excluded.LR_A_top_temp,
+--         LR_A_middle_temp=excluded.LR_A_middle_temp,
+--         LR_A_bottom_temp=excluded.LR_A_bottom_temp,
+--         LR_A_timestamp=excluded.LR_A_timestamp,
+--         LR_B_top_temp=excluded.LR_B_top_temp,
+--         LR_B_middle_temp=excluded.LR_B_middle_temp,
+--         LR_B_bottom_temp=excluded.LR_B_bottom_temp,
+--         LR_B_timestamp=excluded.LR_B_timestamp,
+--         LR_C_top_temp=excluded.LR_C_top_temp,
+--         LR_C_middle_temp=excluded.LR_C_middle_temp,
+--         LR_C_bottom_temp=excluded.LR_C_bottom_temp,
+--         LR_C_timestamp=excluded.LR_C_timestamp,
+--         LR_D_top_temp=excluded.LR_D_top_temp,
+--         LR_D_middle_temp=excluded.LR_D_middle_temp,
+--         LR_D_bottom_temp=excluded.LR_D_bottom_temp,
+--         LR_D_timestamp=excluded.LR_D_timestamp,
+--         LR_E_top_temp=excluded.LR_E_top_temp,
+--         LR_E_middle_temp=excluded.LR_E_middle_temp,
+--         LR_E_bottom_temp=excluded.LR_E_bottom_temp,
+--         LR_E_timestamp=excluded.LR_E_timestamp,
+--         LR_F_top_temp=excluded.LR_F_top_temp,
+--         LR_F_middle_temp=excluded.LR_F_middle_temp,
+--         LR_F_bottom_temp=excluded.LR_F_bottom_temp,
+--         LR_F_timestamp=excluded.LR_F_timestamp,
+--         LR_G_top_temp=excluded.LR_G_top_temp,
+--         LR_G_middle_temp=excluded.LR_G_middle_temp,
+--         LR_G_bottom_temp=excluded.LR_G_bottom_temp,
+--         LR_G_timestamp=excluded.LR_G_timestamp;
+-- END;
 
 
 -- DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_pbr_temperature;
@@ -207,21 +207,40 @@ END;
 --         sdr=excluded.sdr;
 -- END;
 
-DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_driver_intensity;
+-- DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_driver_intensity;
 
-CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_driver_intensity AFTER INSERT ON driver_intensity
-BEGIN
-    INSERT INTO pioreactor_unit_activity_data(
-        pioreactor_unit,
-        experiment,
-        timestamp,
-        driver_intensity
-    ) VALUES (
-        new.pioreactor_unit,
-        new.experiment,
-        new.timestamp,
-        new.driver_intensity
-    )
-    ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
-        driver_intensity=excluded.driver_intensity;
-END;
+-- CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_driver_intensity AFTER INSERT ON driver_intensity
+-- BEGIN
+--     INSERT INTO pioreactor_unit_activity_data(
+--         pioreactor_unit,
+--         experiment,
+--         timestamp,
+--         driver_intensity
+--     ) VALUES (
+--         new.pioreactor_unit,
+--         new.experiment,
+--         new.timestamp,
+--         new.driver_intensity
+--     )
+--     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+--         driver_intensity=excluded.driver_intensity;
+-- END;
+
+-- DROP TRIGGER IF EXISTS update_pioreactor_unit_activity_data_from_pbr_ph;
+
+-- CREATE TRIGGER IF NOT EXISTS update_pioreactor_unit_activity_data_from_pbr_ph AFTER INSERT ON pbr_ph
+-- BEGIN
+--     INSERT INTO pioreactor_unit_activity_data(
+--         pioreactor_unit,
+--         experiment,
+--         timestamp,
+--         pbr_ph_ph
+--     ) VALUES (
+--         new.pioreactor_unit,
+--         new.experiment,
+--         new.timestamp,
+--         new.pbr_ph_ph
+--     )
+--     ON CONFLICT(experiment, pioreactor_unit, timestamp) DO UPDATE SET
+--         pbr_ph_ph=excluded.pbr_ph_ph;
+-- END;
