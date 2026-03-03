@@ -18,52 +18,81 @@ class TMP1075:
     TEMP_REGISTER = bytearray([0x00])
     # CONFIG_REGISTER = bytearray([0x01])
 
-    def __init__(self, address: int = 0x4F):
+    def __init__(self, address: int = 0x4F, mux_channel: int | None = None):
         """Initialize the TMP1075 driver.
-        
+
         This version doesn't raise an exception if the device is not connected.
         Instead, it sets a flag that's checked during temperature readings.
+
+        Args:
+            address: I2C address of TMP1075
+            mux_channel: PCA9546 mux channel this device is behind (None if on main bus)
         """
         from pioreactor.hardware import SCL, SDA
-        
+
         self.address = address
+        self.mux_channel = mux_channel
         self.connected = False
         self.i2c = None
         self.comm_port = None
-        
+        self.mux_device = None
+
         try:
             self.comm_port = I2C(SCL, SDA)
+
+            # If behind a PCA9546 mux, select the channel before probing
+            if self.mux_channel is not None:
+                from pioreactor.hardware import PCA9546_ADDR
+                self.mux_device = I2CDevice(self.comm_port, PCA9546_ADDR)
+                self.mux_device.write(bytes([1 << self.mux_channel]))
+
             # Check if the device is present before trying to create a device
             self.i2c = I2CDevice(self.comm_port, address, probe=True)
-            
+
             # Try an actual read to confirm connectivity
             test_buf = bytearray(2)
             self.i2c.write_then_readinto(self.TEMP_REGISTER, test_buf)
-            
+
             self.connected = True
+
+            # Deselect mux after init probe
+            self._deselect_mux()
         except (ValueError, OSError):
             # Device not found or error reading - will return None for temperature readings
             self.connected = False
             # Don't raise an exception here, just mark as disconnected
             pass
 
+    def _select_mux(self):
+        """Select the PCA9546 mux channel for this device."""
+        if self.mux_channel is not None:
+            self.mux_device.write(bytes([1 << self.mux_channel]))
+
+    def _deselect_mux(self):
+        """Disable all PCA9546 mux channels to avoid bus collisions."""
+        if self.mux_channel is not None:
+            self.mux_device.write(bytes([0x00]))
+
     def get_temperature(self) -> float:
         """Read temperature from the sensor.
-        
+
         If the sensor is not connected, raises OSError.
         """
         if not self.connected or self.i2c is None:
             raise OSError(f"Temperature sensor at address 0x{self.address:02x} is not connected")
-            
+
         b = bytearray(2)
-        # try:
-        self.i2c.write_then_readinto(self.TEMP_REGISTER, b)
+        if self.mux_channel is not None:
+            from pioreactor.hardware import _pca9546_lock
+            with _pca9546_lock:
+                self._select_mux()
+                try:
+                    self.i2c.write_then_readinto(self.TEMP_REGISTER, b)
+                finally:
+                    self._deselect_mux()
+        else:
+            self.i2c.write_then_readinto(self.TEMP_REGISTER, b)
         return ((b[0] << 4) + (b[1] >> 4)) * 0.0625
-        # except OSError as e:
-            # # If we get an error during reading, mark the device as disconnected
-            # self.connected = False
-            # asyncio.run_coroutine_threadsafe(self.__init__(self.address), self.)  #TODO schedule reconnection
-            # raise OSError(f"Error reading from temperature sensor at address 0x{self.address:02x}: {str(e)}")
             
 
     @property
@@ -511,6 +540,9 @@ class ADS1115_Thermistor:
             self.i2c.write_then_readinto(bytearray([self.REG_CONFIG]), test_buf)
 
             self.connected = True
+
+            # Deselect mux after init probe to avoid bus collisions
+            self._deselect_mux()
         except (ValueError, OSError):
             self.connected = False
     
@@ -541,9 +573,14 @@ class ADS1115_Thermistor:
         return (1.0 / sps) * 1.2
 
     def _select_mux(self):
-        """Re-select the PCA9546 mux channel for this device."""
+        """Select the PCA9546 mux channel for this device."""
         if self.mux_channel is not None:
             self.mux_device.write(bytes([1 << self.mux_channel]))
+
+    def _deselect_mux(self):
+        """Disable all PCA9546 mux channels to avoid bus collisions."""
+        if self.mux_channel is not None:
+            self.mux_device.write(bytes([0x00]))
 
     def _write_config(self, mux_config: int) -> None:
         """
@@ -653,31 +690,38 @@ class ADS1115_Thermistor:
         Read voltages from thermistor and reference channels.
 
         Uses a class-level lock to prevent concurrent ADC access when multiple
-        sensor instances share the same physical ADC chip. This is critical to
-        prevent race conditions where one sensor's channel switch corrupts
-        another sensor's reading.
+        sensor instances share the same physical ADC chip. Also acquires the
+        global PCA9546 mux lock when behind a mux to prevent bus collisions
+        with other mux users (e.g. LR TMP1075 sensors).
 
         Returns:
             Tuple of (thermistor_voltage, reference_voltage)
         """
-        # Acquire lock to ensure atomic read of both channels
-        # This prevents another sensor from switching the mux mid-read
         with self._adc_lock:
-            # Select PCA9546 mux channel if this device is behind a mux
             if self.mux_channel is not None:
-                self._select_mux()
+                from pioreactor.hardware import _pca9546_lock
+                with _pca9546_lock:
+                    self._select_mux()
+                    try:
+                        return self._read_both_channels()
+                    finally:
+                        self._deselect_mux()
+            else:
+                return self._read_both_channels()
 
-            # Read thermistor channel (A0 or A1)
-            mux_therm = self.channel_mux_map[self.thermistor_channel]
-            adc_therm = self._read_adc(mux_therm)
-            v_thermistor = self._adc_to_voltage(adc_therm)
+    def _read_both_channels(self) -> tuple[float, float]:
+        """Read thermistor and reference channels (no locking)."""
+        # Read thermistor channel (A0 or A1)
+        mux_therm = self.channel_mux_map[self.thermistor_channel]
+        adc_therm = self._read_adc(mux_therm)
+        v_thermistor = self._adc_to_voltage(adc_therm)
 
-            # Read reference channel (A2, shared)
-            mux_ref = self.channel_mux_map[self.ref_channel]
-            adc_ref = self._read_adc(mux_ref)
-            v_ref = self._adc_to_voltage(adc_ref)
+        # Read reference channel (A2, shared)
+        mux_ref = self.channel_mux_map[self.ref_channel]
+        adc_ref = self._read_adc(mux_ref)
+        v_ref = self._adc_to_voltage(adc_ref)
 
-            return v_thermistor, v_ref
+        return v_thermistor, v_ref
     
     def get_resistance(self) -> float:
         """
@@ -797,25 +841,30 @@ class ADS1115_Thermistor:
         if not self.connected:
             raise OSError(f"ADS1115 at address 0x{self.address:02x} is not connected")
 
-        # Acquire lock for the entire batch operation
+        if samples == 1:
+            # Fast path: single sample — _read_voltages() handles mux internally
+            resistance = self.get_resistance()
+            temp = self._resistance_to_temperature_steinhart(resistance)
+            return round(temp, 2)
+
+        # Multi-sample: batch read under both ADC and mux locks
         with self._adc_lock:
-            # Select PCA9546 mux channel if this device is behind a mux
             if self.mux_channel is not None:
-                self._select_mux()
-
-            if samples == 1:
-                # Fast path: single sample, use original method
-                resistance = self.get_resistance()
-                temp = self._resistance_to_temperature_steinhart(resistance)
-                return round(temp, 2)
-
-            # Batch read thermistor voltages (all samples, no channel switching)
-            v_thermistors = self._read_thermistor_voltage_batch(samples)
-
-            # Read reference voltage once (it's stable, doesn't need averaging)
-            mux_ref = self.channel_mux_map[self.ref_channel]
-            adc_ref = self._read_adc(mux_ref)
-            v_ref = self._adc_to_voltage(adc_ref)
+                from pioreactor.hardware import _pca9546_lock
+                with _pca9546_lock:
+                    self._select_mux()
+                    try:
+                        v_thermistors = self._read_thermistor_voltage_batch(samples)
+                        mux_ref = self.channel_mux_map[self.ref_channel]
+                        adc_ref = self._read_adc(mux_ref)
+                        v_ref = self._adc_to_voltage(adc_ref)
+                    finally:
+                        self._deselect_mux()
+            else:
+                v_thermistors = self._read_thermistor_voltage_batch(samples)
+                mux_ref = self.channel_mux_map[self.ref_channel]
+                adc_ref = self._read_adc(mux_ref)
+                v_ref = self._adc_to_voltage(adc_ref)
 
         # Calculate resistances from batched voltages
         resistances = []

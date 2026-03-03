@@ -5,7 +5,7 @@ import json
 
 from pioreactor import exc
 from pioreactor.background_jobs.base import BackgroundJob
-from pioreactor.hardware import LightRodTemp_ADDR
+from pioreactor.hardware import LightRodTemp_ADDR, PCA9546_CH_LR
 from pioreactor.structs import LightRodTemperature
 from pioreactor.structs import LightRodTemperatures
 from pioreactor.structs import PlotLightRodTemperatures, LEDDriverIntensity
@@ -55,7 +55,7 @@ class ReadLightRodTemps(BackgroundJob):
 
     def initializeDrivers(self, addr_map):
         self.tmp_driver_map = {
-            LightRod: [TMP1075(address=addr) for addr in addresses]
+            LightRod: [TMP1075(address=addr, mux_channel=PCA9546_CH_LR) for addr in addresses]
             for LightRod, addresses in addr_map.items()
         }
         # Check which lightrods are actually connected
