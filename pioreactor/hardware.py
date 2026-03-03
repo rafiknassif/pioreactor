@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import threading
+import fcntl
+from contextlib import contextmanager
 from os import environ
 
 from pioreactor.types import AdcChannel
@@ -85,9 +86,23 @@ PCA9546_ADDR = 0x70
 PCA9546_CH_NTC = 0  # CH0: NTC Thermistor ADS1115
 PCA9546_CH_LR = 1   # CH1: LightRod TMP1075 sensors
 
-# Shared lock for PCA9546 mux channel selection — prevents concurrent
-# channel switches between NTC (ADS1115) and LR (TMP1075) reads
-_pca9546_lock = threading.Lock()
+PCA9546_LOCKFILE = "/tmp/pca9546.lock"
+
+@contextmanager
+def pca9546_lock():
+    """Cross-process lock for PCA9546 mux channel selection.
+
+    Uses fcntl.flock() so multiple processes (e.g. read_lightrod_temps
+    and temperature_automation) don't stomp each other's mux channel.
+    Blocking: waits for the lock if another process holds it.
+    """
+    f = open(PCA9546_LOCKFILE, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(f, fcntl.LOCK_UN)
+        f.close()
 
 # Water Temperature Sensor (10K NTC on A0)
 WATER_TEMP_CHANNEL = 0

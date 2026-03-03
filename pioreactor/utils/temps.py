@@ -41,9 +41,9 @@ class TMP1075:
             self.comm_port = I2C(SCL, SDA)
 
             if self.mux_channel is not None:
-                from pioreactor.hardware import PCA9546_ADDR, _pca9546_lock
+                from pioreactor.hardware import PCA9546_ADDR, pca9546_lock
                 self.mux_device = I2CDevice(self.comm_port, PCA9546_ADDR)
-                with _pca9546_lock:
+                with pca9546_lock():
                     self.mux_device.write(bytes([1 << self.mux_channel]))
                     self.i2c = I2CDevice(self.comm_port, address, probe=True)
                     test_buf = bytearray(2)
@@ -78,8 +78,8 @@ class TMP1075:
 
         b = bytearray(2)
         if self.mux_channel is not None:
-            from pioreactor.hardware import _pca9546_lock
-            with _pca9546_lock:
+            from pioreactor.hardware import pca9546_lock
+            with pca9546_lock():
                 self._select_mux()
                 try:
                     self.i2c.write_then_readinto(self.TEMP_REGISTER, b)
@@ -520,9 +520,9 @@ class ADS1115_Thermistor:
             self.comm_port = I2C(SCL, SDA)
 
             if self.mux_channel is not None:
-                from pioreactor.hardware import PCA9546_ADDR, _pca9546_lock
+                from pioreactor.hardware import PCA9546_ADDR, pca9546_lock
                 self.mux_device = I2CDevice(self.comm_port, PCA9546_ADDR)
-                with _pca9546_lock:
+                with pca9546_lock():
                     self.mux_device.write(bytes([1 << self.mux_channel]))
                     self.i2c = I2CDevice(self.comm_port, address, probe=True)
                     test_buf = bytearray(2)
@@ -691,8 +691,8 @@ class ADS1115_Thermistor:
         """
         with self._adc_lock:
             if self.mux_channel is not None:
-                from pioreactor.hardware import _pca9546_lock
-                with _pca9546_lock:
+                from pioreactor.hardware import pca9546_lock
+                with pca9546_lock():
                     self._select_mux()
                     try:
                         return self._read_both_channels()
@@ -842,8 +842,8 @@ class ADS1115_Thermistor:
         # Multi-sample: batch read under both ADC and mux locks
         with self._adc_lock:
             if self.mux_channel is not None:
-                from pioreactor.hardware import _pca9546_lock
-                with _pca9546_lock:
+                from pioreactor.hardware import pca9546_lock
+                with pca9546_lock():
                     self._select_mux()
                     try:
                         v_thermistors = self._read_thermistor_voltage_batch(samples)
