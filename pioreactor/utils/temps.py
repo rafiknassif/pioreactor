@@ -40,28 +40,23 @@ class TMP1075:
         try:
             self.comm_port = I2C(SCL, SDA)
 
-            # If behind a PCA9546 mux, select the channel before probing
             if self.mux_channel is not None:
-                from pioreactor.hardware import PCA9546_ADDR
+                from pioreactor.hardware import PCA9546_ADDR, _pca9546_lock
                 self.mux_device = I2CDevice(self.comm_port, PCA9546_ADDR)
-                self.mux_device.write(bytes([1 << self.mux_channel]))
-
-            # Check if the device is present before trying to create a device
-            self.i2c = I2CDevice(self.comm_port, address, probe=True)
-
-            # Try an actual read to confirm connectivity
-            test_buf = bytearray(2)
-            self.i2c.write_then_readinto(self.TEMP_REGISTER, test_buf)
-
-            self.connected = True
-
-            # Deselect mux after init probe
-            self._deselect_mux()
+                with _pca9546_lock:
+                    self.mux_device.write(bytes([1 << self.mux_channel]))
+                    self.i2c = I2CDevice(self.comm_port, address, probe=True)
+                    test_buf = bytearray(2)
+                    self.i2c.write_then_readinto(self.TEMP_REGISTER, test_buf)
+                    self.connected = True
+                    self._deselect_mux()
+            else:
+                self.i2c = I2CDevice(self.comm_port, address, probe=True)
+                test_buf = bytearray(2)
+                self.i2c.write_then_readinto(self.TEMP_REGISTER, test_buf)
+                self.connected = True
         except (ValueError, OSError):
-            # Device not found or error reading - will return None for temperature readings
             self.connected = False
-            # Don't raise an exception here, just mark as disconnected
-            pass
 
     def _select_mux(self):
         """Select the PCA9546 mux channel for this device."""
@@ -524,25 +519,22 @@ class ADS1115_Thermistor:
         try:
             self.comm_port = I2C(SCL, SDA)
 
-            # If behind a PCA9546 mux, create a device for the mux and select the channel
             if self.mux_channel is not None:
-                from pioreactor.hardware import PCA9546_ADDR
+                from pioreactor.hardware import PCA9546_ADDR, _pca9546_lock
                 self.mux_device = I2CDevice(self.comm_port, PCA9546_ADDR)
-                self.mux_device.write(bytes([1 << self.mux_channel]))
+                with _pca9546_lock:
+                    self.mux_device.write(bytes([1 << self.mux_channel]))
+                    self.i2c = I2CDevice(self.comm_port, address, probe=True)
+                    test_buf = bytearray(2)
+                    self.i2c.write_then_readinto(bytearray([self.REG_CONFIG]), test_buf)
+                    self.connected = True
+                    self._deselect_mux()
             else:
                 self.mux_device = None
-
-            # Now probe the ADS1115 (reachable because mux channel is already selected)
-            self.i2c = I2CDevice(self.comm_port, address, probe=True)
-
-            # Test read config register to confirm connectivity (doesn't require conversion)
-            test_buf = bytearray(2)
-            self.i2c.write_then_readinto(bytearray([self.REG_CONFIG]), test_buf)
-
-            self.connected = True
-
-            # Deselect mux after init probe to avoid bus collisions
-            self._deselect_mux()
+                self.i2c = I2CDevice(self.comm_port, address, probe=True)
+                test_buf = bytearray(2)
+                self.i2c.write_then_readinto(bytearray([self.REG_CONFIG]), test_buf)
+                self.connected = True
         except (ValueError, OSError):
             self.connected = False
     
