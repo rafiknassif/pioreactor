@@ -4,6 +4,7 @@ from pioreactor import exc
 from pioreactor.background_jobs.base import BackgroundJob
 from pioreactor.hardware import (
     NTC_Thermistor_ADDR,
+    PCA9546_CH_NTC,
     WATER_TEMP_CHANNEL,
     WATER_TEMP_REF_CHANNEL,
     WATER_TEMP_R_REF,
@@ -51,7 +52,8 @@ class ReadPBRTemp(BackgroundJob):
             thermistor_channel=WATER_TEMP_CHANNEL,
             ref_channel=WATER_TEMP_REF_CHANNEL,
             r_ref=WATER_TEMP_R_REF,
-            data_rate=WATER_TEMP_DATA_RATE  # 128 SPS - fast
+            data_rate=WATER_TEMP_DATA_RATE,  # 128 SPS - fast
+            mux_channel=PCA9546_CH_NTC,
         )
         self.ads1115_driver.set_thermistor_parameters(
             steinhart_a=WATER_TEMP_STEINHART_A,
@@ -275,12 +277,14 @@ def click_read_pbr_temp(upper_warning_threshold, lower_warning_threshold, calibr
         print("="*60 + "\n")
         
         try:
+            from pioreactor.hardware import PCA9546_CH_NTC as cal_mux_ch
             sensor = ADS1115_Thermistor(
                 address=NTC_Thermistor_ADDR,
                 thermistor_channel=channel,
                 ref_channel=ref_channel,
                 r_ref=r_ref,
-                data_rate=data_rate
+                data_rate=data_rate,
+                mux_channel=cal_mux_ch,
             )
             
             # Load Steinhart-Hart coefficients from hardware.py

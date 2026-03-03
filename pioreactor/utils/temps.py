@@ -425,16 +425,17 @@ class ADS1115_Thermistor:
     # RLock allows the same thread to acquire the lock multiple times (for nested calls)
     _adc_lock = threading.RLock()
 
-    def __init__(self, 
+    def __init__(self,
                  address: int = 0x48,
                  thermistor_channel: int = 0,
                  ref_channel: int = 2,
                  r_ref: float = 10000.0,
                  pga_gain: int = PGA_4_096V,
-                 data_rate: int = DR_128SPS):
+                 data_rate: int = DR_128SPS,
+                 mux_channel: int | None = None):
         """
         Initialize the ADS1115 thermistor driver.
-        
+
         Args:
             address: I2C address of ADS1115 (default 0x48)
                     Can be 0x48, 0x49, 0x4A, or 0x4B via ADDR pin jumpers
@@ -442,26 +443,28 @@ class ADS1115_Thermistor:
             ref_channel: ADS1115 channel connected to VDD reference (0-3, default 2)
             r_ref: Reference resistor value in ohms (default 10000.0)
             pga_gain: PGA gain setting (default PGA_4_096V)
-            data_rate: Sample rate setting (default DR_128SPS for 10K sensors, 
+            data_rate: Sample rate setting (default DR_128SPS for 10K sensors,
                       use DR_16SPS for 100K sensors with high source impedance)
-            
+            mux_channel: PCA9546 mux channel this device is behind (None if on main bus)
+
         Hardware Configuration:
             Water sensor (10K NTC):  A0 (thermistor_channel=0), A2 (ref_channel=2, shared)
                                      Use DR_128SPS (fast, low impedance)
             Heater sensor (100K NTC): A1 (thermistor_channel=1), A2 (ref_channel=2, shared)
                                       Use DR_16SPS (slow, high impedance needs settling time)
-            
+
         Note: After initialization, set the calibrated Steinhart-Hart coefficients using
               set_thermistor_parameters() method for accurate temperature readings.
         """
         from pioreactor.hardware import SCL, SDA
-        
+
         self.address = address
         self.thermistor_channel = thermistor_channel
         self.ref_channel = ref_channel
         self.r_ref = r_ref
         self.pga_gain = pga_gain
         self.data_rate = data_rate
+        self.mux_channel = mux_channel
         self.connected = False
         self.i2c = None
         self.comm_port = None
@@ -490,13 +493,18 @@ class ADS1115_Thermistor:
         self.conversion_time = self._calculate_conversion_time(data_rate)
         
         try:
+            # If behind a PCA9546 mux, select the channel before probing
+            if self.mux_channel is not None:
+                from pioreactor.hardware import select_mux_channel
+                select_mux_channel(self.mux_channel)
+
             self.comm_port = I2C(SCL, SDA)
             self.i2c = I2CDevice(self.comm_port, address, probe=True)
-            
+
             # Test read config register to confirm connectivity (doesn't require conversion)
             test_buf = bytearray(2)
             self.i2c.write_then_readinto(bytearray([self.REG_CONFIG]), test_buf)
-            
+
             self.connected = True
         except (ValueError, OSError):
             self.connected = False
@@ -645,6 +653,11 @@ class ADS1115_Thermistor:
         # Acquire lock to ensure atomic read of both channels
         # This prevents another sensor from switching the mux mid-read
         with self._adc_lock:
+            # Select PCA9546 mux channel if this device is behind a mux
+            if self.mux_channel is not None:
+                from pioreactor.hardware import select_mux_channel
+                select_mux_channel(self.mux_channel)
+
             # Read thermistor channel (A0 or A1)
             mux_therm = self.channel_mux_map[self.thermistor_channel]
             adc_therm = self._read_adc(mux_therm)
@@ -777,6 +790,11 @@ class ADS1115_Thermistor:
 
         # Acquire lock for the entire batch operation
         with self._adc_lock:
+            # Select PCA9546 mux channel if this device is behind a mux
+            if self.mux_channel is not None:
+                from pioreactor.hardware import select_mux_channel
+                select_mux_channel(self.mux_channel)
+
             if samples == 1:
                 # Fast path: single sample, use original method
                 resistance = self.get_resistance()

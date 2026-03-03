@@ -125,7 +125,7 @@ class TemperatureAutomationJob(AutomationJob):
         else:
             from pioreactor.utils.temps import ADS1115_Thermistor
             from pioreactor.hardware import (
-                NTC_Thermistor_ADDR,
+                NTC_Thermistor_ADDR, PCA9546_CH_NTC,
                 WATER_TEMP_CHANNEL, WATER_TEMP_REF_CHANNEL, WATER_TEMP_R_REF, WATER_TEMP_DATA_RATE,
                 WATER_TEMP_STEINHART_A, WATER_TEMP_STEINHART_B, WATER_TEMP_STEINHART_C,
                 HEATER_TEMP_CHANNEL, HEATER_TEMP_REF_CHANNEL, HEATER_TEMP_R_REF, HEATER_TEMP_DATA_RATE,
@@ -142,7 +142,8 @@ class TemperatureAutomationJob(AutomationJob):
             thermistor_channel=WATER_TEMP_CHANNEL,
             ref_channel=WATER_TEMP_REF_CHANNEL,
             r_ref=WATER_TEMP_R_REF,
-            data_rate=WATER_TEMP_DATA_RATE  # 128 SPS - fast
+            data_rate=WATER_TEMP_DATA_RATE,  # 128 SPS - fast
+            mux_channel=PCA9546_CH_NTC,
         )
         self.water_temp_driver.set_thermistor_parameters(
             steinhart_a=WATER_TEMP_STEINHART_A,
@@ -156,7 +157,8 @@ class TemperatureAutomationJob(AutomationJob):
             thermistor_channel=HEATER_TEMP_CHANNEL,
             ref_channel=HEATER_TEMP_REF_CHANNEL,
             r_ref=HEATER_TEMP_R_REF,
-            data_rate=HEATER_TEMP_DATA_RATE  # 16 SPS - slow for settling
+            data_rate=HEATER_TEMP_DATA_RATE,  # 16 SPS - slow for settling
+            mux_channel=PCA9546_CH_NTC,
         )
         self.heater_temp_driver.set_thermistor_parameters(
             steinhart_a=HEATER_TEMP_STEINHART_A,
