@@ -493,12 +493,17 @@ class ADS1115_Thermistor:
         self.conversion_time = self._calculate_conversion_time(data_rate)
         
         try:
-            # If behind a PCA9546 mux, select the channel before probing
-            if self.mux_channel is not None:
-                from pioreactor.hardware import select_mux_channel
-                select_mux_channel(self.mux_channel)
-
             self.comm_port = I2C(SCL, SDA)
+
+            # If behind a PCA9546 mux, create a device for the mux and select the channel
+            if self.mux_channel is not None:
+                from pioreactor.hardware import PCA9546_ADDR
+                self.mux_device = I2CDevice(self.comm_port, PCA9546_ADDR)
+                self.mux_device.write(bytes([1 << self.mux_channel]))
+            else:
+                self.mux_device = None
+
+            # Now probe the ADS1115 (reachable because mux channel is already selected)
             self.i2c = I2CDevice(self.comm_port, address, probe=True)
 
             # Test read config register to confirm connectivity (doesn't require conversion)
@@ -534,7 +539,12 @@ class ADS1115_Thermistor:
         sps = rate_map.get(data_rate, 128)
         # Add 20% margin to base conversion time
         return (1.0 / sps) * 1.2
-    
+
+    def _select_mux(self):
+        """Re-select the PCA9546 mux channel for this device."""
+        if self.mux_channel is not None:
+            self.mux_device.write(bytes([1 << self.mux_channel]))
+
     def _write_config(self, mux_config: int) -> None:
         """
         Write configuration to ADS1115.
@@ -655,8 +665,7 @@ class ADS1115_Thermistor:
         with self._adc_lock:
             # Select PCA9546 mux channel if this device is behind a mux
             if self.mux_channel is not None:
-                from pioreactor.hardware import select_mux_channel
-                select_mux_channel(self.mux_channel)
+                self._select_mux()
 
             # Read thermistor channel (A0 or A1)
             mux_therm = self.channel_mux_map[self.thermistor_channel]
@@ -792,8 +801,7 @@ class ADS1115_Thermistor:
         with self._adc_lock:
             # Select PCA9546 mux channel if this device is behind a mux
             if self.mux_channel is not None:
-                from pioreactor.hardware import select_mux_channel
-                select_mux_channel(self.mux_channel)
+                self._select_mux()
 
             if samples == 1:
                 # Fast path: single sample, use original method

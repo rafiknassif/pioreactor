@@ -139,24 +139,6 @@ def is_i2c_device_present(channel: int) -> bool:
             return False
 
 
-def select_mux_channel(channel: int) -> None:
-    """
-    Select a channel on the PCA9546 I2C multiplexer.
-    Writes a bitmask (1 << channel) to enable the specified channel.
-    Callers should hold their own lock to ensure atomicity with the
-    subsequent device read/write.
-    """
-    if is_testing_env():
-        return
-
-    from busio import I2C  # type: ignore
-    from adafruit_bus_device.i2c_device import I2CDevice  # type: ignore
-
-    with I2C(SCL, SDA) as i2c:
-        mux = I2CDevice(i2c, PCA9546_ADDR)
-        with mux:
-            mux.write(bytes([1 << channel]))
-
 
 def is_DAC_present() -> bool:
     return is_i2c_device_present(DAC)
