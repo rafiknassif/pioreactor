@@ -173,6 +173,13 @@ def is_heating_pcb_present() -> bool:
     return is_i2c_device_present(TEMP)
 
 
+ODSENSORV2_ADDR = 0x69
+
+
+def is_ODSensorV2_present() -> bool:
+    return is_i2c_device_present(ODSENSORV2_ADDR)
+
+
 def is_HAT_present() -> bool:
     if is_testing_env() or (environ.get("HAT_PRESENT", "0") == "1"):
         return True
