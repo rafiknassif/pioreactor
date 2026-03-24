@@ -67,13 +67,15 @@ class ODSensorV2:
             return False
 
     def read_float_register(self, reg: int) -> float:
-        """Write register address, then read 5 bytes: [status][4 LE float bytes]."""
+        """Write register address, then read 5 bytes: [status][4 LE float bytes].
+
+        Uses repeated START (write_then_readinto) to keep the bus held between
+        the register address write and the data read — matching the Arduino
+        Wire.endTransmission(false) + Wire.requestFrom() pattern.
+        """
         out = bytearray(5)
         with self._dev as i2c:
-            i2c.write(bytes([reg]))
-        sleep(0.002)  # allow slave to prepare response
-        with self._dev as i2c:
-            i2c.readinto(out)
+            i2c.write_then_readinto(bytes([reg]), out)
         status = out[0]
         if status != 0x00:
             raise IOError(f"ODSensorV2 register 0x{reg:02X} returned error status 0x{status:02X}")
@@ -83,20 +85,14 @@ class ODSensorV2:
         """Read the status byte from register 0x20."""
         out = bytearray(2)
         with self._dev as i2c:
-            i2c.write(bytes([REG_STATUS]))
-        sleep(0.002)
-        with self._dev as i2c:
-            i2c.readinto(out)
+            i2c.write_then_readinto(bytes([REG_STATUS]), out)
         return out[1]
 
     def read_reading_number(self) -> int:
         """Read the reading counter from register 0x30."""
         out = bytearray(5)
         with self._dev as i2c:
-            i2c.write(bytes([REG_READING_NUMBER]))
-        sleep(0.002)
-        with self._dev as i2c:
-            i2c.readinto(out)
+            i2c.write_then_readinto(bytes([REG_READING_NUMBER]), out)
         return struct.unpack("<I", out[1:5])[0]
 
     def send_command(self, cmd: int) -> None:
