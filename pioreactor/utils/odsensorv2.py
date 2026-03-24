@@ -111,9 +111,12 @@ class ODSensorV2:
         elapsed = 0.0
         interval = 0.3
         while elapsed < timeout_s:
-            status = self.read_status()
-            if status & bit_mask:
-                return True
+            try:
+                status = self.read_status()
+                if status & bit_mask:
+                    return True
+            except (OSError, IOError):
+                pass  # sensor busy processing command, try again
             sleep(interval)
             elapsed += interval
         return False
