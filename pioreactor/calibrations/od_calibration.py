@@ -202,22 +202,19 @@ def start_recording_and_diluting(
     echo("Warming up OD...")
 
     with start_od_reading(
-        cast(pt.PdAngleOrREF, config.get("od_config.photodiode_channel", "1")),
-        cast(pt.PdAngleOrREF, config.get("od_config.photodiode_channel", "2")),
         interval=None,
         unit=get_unit_name(),
-        fake_data=is_testing_env(),
         experiment=get_testing_experiment_name(),
     ) as od_reader:
 
         def get_voltage_from_adc() -> pt.Voltage:
-            od_readings1 = od_reader.record_from_adc()
-            od_readings2 = od_reader.record_from_adc()
+            od_readings1 = od_reader.record_from_sensor()
+            od_readings2 = od_reader.record_from_sensor()
             return 0.5 * (od_readings1.ods[pd_channel].od + od_readings2.ods[pd_channel].od)
 
         for _ in range(4):
             # warm up
-            od_reader.record_from_adc()
+            od_reader.record_from_sensor()
 
         while inferred_od600 > minimum_od600:
             while True:

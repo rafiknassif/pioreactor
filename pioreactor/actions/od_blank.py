@@ -176,13 +176,9 @@ def od_blank(
         try:
             with temporary_config_change(config, "stirring.config", "enable_dodging_od", "False"):
                 with start_od_reading(
-                    od_angle_channel1,
-                    od_angle_channel2,
                     unit=unit,
                     interval=1.5,
-                    experiment=testing_experiment,  # use testing experiment to not pollute the database (and they would show up in the UI)
-                    fake_data=whoami.is_testing_env(),
-                    calibration=True,
+                    experiment=testing_experiment,
                 ) as od_stream:
                     # warm up OD reader
                     for count, _ in enumerate(od_stream, start=0):
