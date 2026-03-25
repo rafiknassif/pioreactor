@@ -94,68 +94,75 @@ class GrowthRateCalculator(BackgroundJob):
             self.logger.debug(f"Decode error in `{message.payload.decode()}` to structs.ODReadings")
 
     def _update_from_sensor(self, od_readings: structs.ODReadings) -> None:
-        """Read KF outputs from sensor registers and publish them."""
+        """Read KF outputs from sensor registers and publish them.
+
+        NaN values (e.g. calibration-dependent registers when no LUT is loaded,
+        or UKF registers when UKF is disabled) are skipped — not published.
+        """
         timestamp = od_readings.timestamp
 
         # Read filtered reflectance → od_filtered
         try:
             filtered_refl = self.sensor.read_filtered_reflectance()
-            if math.isnan(filtered_refl):
-                filtered_refl = 0.0
         except Exception as e:
             self.logger.debug(f"Error reading filtered_reflectance: {e}")
-            filtered_refl = 0.0
+            filtered_refl = float("nan")
 
         # Read growth rate
         try:
             gr = self.sensor.read_growth_rate()
-            if math.isnan(gr):
-                gr = 0.0
         except Exception as e:
             self.logger.debug(f"Error reading growth_rate: {e}")
-            gr = 0.0
+            gr = float("nan")
 
         # Read filtered calibrated density
         try:
             dens = self.sensor.read_filtered_calibrated_density()
-            if math.isnan(dens):
-                dens = 0.0
         except Exception as e:
             self.logger.debug(f"Error reading filtered_calibrated_density: {e}")
-            dens = 0.0
+            dens = float("nan")
 
         # Read filtered calibrated growth rate → absolute_growth_rate
         try:
             abs_gr = self.sensor.read_filtered_calibrated_growth_rate()
-            if math.isnan(abs_gr):
-                abs_gr = 0.0
         except Exception as e:
             self.logger.debug(f"Error reading filtered_calibrated_growth_rate: {e}")
-            abs_gr = 0.0
+            abs_gr = float("nan")
 
-        self.od_filtered = structs.ODFiltered(
-            od_filtered=filtered_refl,
-            timestamp=timestamp,
-        )
-        self.growth_rate = structs.GrowthRate(
-            growth_rate=gr,
-            timestamp=timestamp,
-        )
-        self.density = structs.Density(
-            density=dens,
-            timestamp=timestamp,
-        )
-        self.absolute_growth_rate = structs.AbsoluteGrowthRate(
-            absolute_growth_rate=abs_gr,
-            timestamp=timestamp,
-        )
+        if not math.isnan(filtered_refl):
+            self.od_filtered = structs.ODFiltered(
+                od_filtered=filtered_refl,
+                timestamp=timestamp,
+            )
+
+        if not math.isnan(gr):
+            self.growth_rate = structs.GrowthRate(
+                growth_rate=gr,
+                timestamp=timestamp,
+            )
+
+        if not math.isnan(dens):
+            self.density = structs.Density(
+                density=dens,
+                timestamp=timestamp,
+            )
+
+        if not math.isnan(abs_gr):
+            self.absolute_growth_rate = structs.AbsoluteGrowthRate(
+                absolute_growth_rate=abs_gr,
+                timestamp=timestamp,
+            )
+
         self.specific_dilution_rate = structs.SpecificDilutionRate(
             specific_dilution_rate=self.latest_sdr,
             timestamp=timestamp,
         )
-        # KalmanFilterOutput — sensor doesn't expose covariance, publish placeholder
+
+        # KalmanFilterOutput — publish with available values, use 0.0 for NaN
         self.kalman_filter_outputs = structs.KalmanFilterOutput(
-            state=[filtered_refl, gr, 0.0],
+            state=[0.0 if math.isnan(filtered_refl) else filtered_refl,
+                   0.0 if math.isnan(gr) else gr,
+                   0.0],
             covariance_matrix=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             timestamp=timestamp,
         )

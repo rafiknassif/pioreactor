@@ -158,12 +158,9 @@ class ODReader(BackgroundJob):
         if math.isnan(od_value):
             od_value = 0.0
 
-        # Staleness check
+        # Track reading number (for diagnostics, no log — polling is often faster than sensor rate)
         try:
-            reading_number = self.sensor.read_reading_number()
-            if self._last_reading_number is not None and reading_number == self._last_reading_number:
-                self.logger.debug("ODSensorV2 reading_number unchanged — possible stale data.")
-            self._last_reading_number = reading_number
+            self._last_reading_number = self.sensor.read_reading_number()
         except Exception:
             pass
 
