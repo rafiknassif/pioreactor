@@ -152,17 +152,18 @@ class ODReader(BackgroundJob):
             od_value = self.sensor.read_measured_reflectance()
         except Exception as e:
             self.logger.debug(f"Error reading from ODSensorV2: {e}", exc_info=True)
-            od_value = 0.0
-
-        # NaN check
-        if math.isnan(od_value):
-            od_value = 0.0
+            od_value = float("nan")
 
         # Track reading number (for diagnostics, no log — polling is often faster than sensor rate)
         try:
             self._last_reading_number = self.sensor.read_reading_number()
         except Exception:
             pass
+
+        # Skip publishing NaN values (sensor still initializing or read failed)
+        if math.isnan(od_value):
+            self._set_for_iterating.set()
+            return getattr(self, "ods", structs.ODReadings(timestamp=timestamp_of_readings, ods={}))
 
         od_readings = structs.ODReadings(
             timestamp=timestamp_of_readings,
