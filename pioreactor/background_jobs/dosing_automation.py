@@ -806,7 +806,7 @@ def click_dosing_automation(ctx, automation_name, duration, volume, sdr, skip_fi
         volume=float(volume),
         sdr=float(sdr),
         skip_first_run=bool(skip_first_run),
-        # **{ctx.args[i][2:].replace("-", "_"): ctx.args[i + 1] for i in range(0, len(ctx.args), 2)},
+        **{ctx.args[i][2:].replace("-", "_"): ctx.args[i + 1] for i in range(0, len(ctx.args), 2)},
     )
 
     la.block_until_disconnected()

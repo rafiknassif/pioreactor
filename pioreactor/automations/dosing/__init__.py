@@ -7,6 +7,7 @@ based on signals from sensors, or simply based on time.
 from __future__ import annotations
 
 from .specific_dilution_rate import SDR
+from .sdr_od_stop import SDRODStop
 from .chemostat import Chemostat
 from .fed_batch import FedBatch
 from .pid_morbidostat import PIDMorbidostat
