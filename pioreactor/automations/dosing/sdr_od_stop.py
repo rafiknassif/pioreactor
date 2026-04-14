@@ -148,7 +148,7 @@ class SDRODStop(DosingAutomationJob):
     def execute(self) -> Optional[events.DilutionEvent]:
         if not self._primed:
             max_volume_ml = config.getfloat("bioreactor", "max_volume_ml", fallback=14)
-            prime_volume = max_volume_ml * 0.1 + 5.0
+            prime_volume = 5.0
             self.logger.info(
                 f"Priming: running waste pump for ~{prime_volume:.1f}mL of overshoot "
                 f"to ensure liquid level is at outflow tube height (max_volume_ml={max_volume_ml})."
@@ -177,7 +177,15 @@ class SDRODStop(DosingAutomationJob):
             estimated_minutes = estimated_hours * 60
             self.logger.info(
                 f"Estimated dilution time: {estimated_hours:.1f} hours ({estimated_minutes:.0f} minutes) "
-                f"to reach {self.target_density:.4f} g/L at SDR={self.sdr} 1/h"
+                f"to reach {self.target_density:.4f} g/L at SDR={self.sdr} 1/h "
+                f"[t = -ln(relative_density) / SDR]"
+            )
+            working_volume_ml = config.getfloat("bioreactor", "max_volume_ml", fallback=14)
+            estimated_media_ml = -working_volume_ml * math.log(self.relative_density)
+            self.logger.info(
+                f"Estimated media required: {estimated_media_ml:.1f} mL "
+                f"(working volume = {working_volume_ml:.1f} mL, relative_density = {self.relative_density}) "
+                f"[V_total = -V_working * ln(relative_density)]"
             )
 
         if current_density > self.target_density:
