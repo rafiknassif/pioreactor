@@ -14,6 +14,7 @@ from pioreactor.automations.dosing.base import DosingAutomationJob
 from pioreactor.calibrations import load_active_calibration
 from pioreactor.config import config
 from pioreactor.exc import CalibrationError
+from pioreactor.pubsub import publish
 from pioreactor.utils import local_persistent_storage
 from pioreactor.utils.timing import current_utc_datetime
 
@@ -187,10 +188,20 @@ class SDRODStop(DosingAutomationJob):
                 f"(working volume = {working_volume_ml:.1f} mL, relative_density = {self.relative_density}) "
                 f"[V_total = -V_working * ln(relative_density)]"
             )
+            cycle_interval = self.volume / ((self.sdr / 3600) * working_volume_ml)
+            self.logger.info(
+                f"Dosing cycle interval: {cycle_interval:.1f} seconds "
+                f"(volume = {self.volume:.1f} mL per cycle) "
+                f"[interval = volume / (SDR/3600 * V_working)]"
+            )
 
         if current_density > self.target_density:
             volume_actually_cycled = self.execute_io_action(
                 media_ml=self.volume, waste_ml=self.volume
+            )
+            publish(
+                f"pioreactor/{self.unit}/{self.experiment}/dosing_automation/specific_dilution_rate",
+                str(self.sdr),
             )
             return events.DilutionEvent(
                 f"density={current_density:.4f} > target={self.target_density:.4f} g/L; "
@@ -202,12 +213,15 @@ class SDRODStop(DosingAutomationJob):
                 },
             )
         else:
-            if not self._dosing_complete:
-                self.logger.info(
-                    f"Target density reached: density={current_density:.4f} <= "
-                    f"target={self.target_density:.4f} g/L. Stopping dosing."
-                )
-                self._dosing_complete = True
+            self.logger.info(
+                f"Target density reached: density={current_density:.4f} <= "
+                f"target={self.target_density:.4f} g/L. Dosing complete — ending job."
+            )
+            publish(
+                f"pioreactor/{self.unit}/{self.experiment}/dosing_automation/specific_dilution_rate",
+                "0",
+            )
+            self.clean_up()
             return events.NoEvent(
-                f"density={current_density:.4f} <= target={self.target_density:.4f} g/L; no dosing"
+                f"density={current_density:.4f} <= target={self.target_density:.4f} g/L; dosing complete"
             )
