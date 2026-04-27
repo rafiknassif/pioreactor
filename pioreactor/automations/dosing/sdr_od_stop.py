@@ -205,7 +205,7 @@ class SDRODStop(DosingAutomationJob):
             )
             return events.DilutionEvent(
                 f"density={current_density:.4f} > target={self.target_density:.4f} g/L; "
-                f"exchanged {volume_actually_cycled['waste_ml']:.2f}mL",
+                f"exchanged {volume_actually_cycled['media_ml']:.2f}mL",
                 data={
                     "current_density": current_density,
                     "target_density": self.target_density,

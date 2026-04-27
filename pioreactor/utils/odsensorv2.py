@@ -41,7 +41,8 @@ CMD_START    = 0x01
 CMD_STOP     = 0x02
 CMD_BLANK    = 0x03
 CMD_CAL      = 0x04
-CMD_STOP_PI  = 0x05
+CMD_STOP_PI        = 0x05
+CMD_ERASE_INITIAL  = 0x06
 
 # Status byte bit masks
 STATUS_JOB_RUNNING        = 1 << 0

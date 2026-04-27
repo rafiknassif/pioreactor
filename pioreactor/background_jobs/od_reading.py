@@ -36,6 +36,7 @@ from pioreactor.utils.odsensorv2 import (
     ODSensorV2,
     CMD_START,
     CMD_STOP,
+    CMD_ERASE_INITIAL,
     STATUS_JOB_RUNNING,
 )
 
@@ -100,6 +101,12 @@ class ODReader(BackgroundJob):
             self.clean_up()
             raise exc.HardwareNotFoundError("ODSensorV2 not found at I2C address 0x69.")
 
+        # Erase previous initial reference so the sensor takes a fresh
+        # baseline when the OD job starts for this experiment.
+        self.sensor.send_command(CMD_ERASE_INITIAL)
+        sleep(0.2)  # allow SPIFFS write to complete
+        self.logger.info("Previous initial reference erased.")
+
         # Start the OD job on the sensor
         self.sensor.send_command(CMD_START)
         if not self.sensor.wait_for_status_bit(STATUS_JOB_RUNNING, timeout_s=5.0):
@@ -147,9 +154,9 @@ class ODReader(BackgroundJob):
 
         timestamp_of_readings = timing.current_utc_datetime()
 
-        # Read measured reflectance from sensor
+        # Read normalized (unfiltered) reflectance from sensor
         try:
-            od_value = self.sensor.read_measured_reflectance()
+            od_value = self.sensor.read_normalized_reflectance()
         except Exception as e:
             self.logger.debug(f"Error reading from ODSensorV2: {e}", exc_info=True)
             od_value = float("nan")
