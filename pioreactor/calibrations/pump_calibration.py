@@ -328,7 +328,7 @@ def save_results(
 
 
 def run_pump_calibration(
-    pump_device, min_duration: float = 10, max_duration: float = 200
+    pump_device, min_duration: float = 1, max_duration: float = 10
 ) -> structs.SimplePeristalticPumpCalibration:
     unit = get_unit_name()
     experiment = get_assigned_experiment_name(unit)
