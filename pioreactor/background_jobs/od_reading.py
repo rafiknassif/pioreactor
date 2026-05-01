@@ -154,9 +154,13 @@ class ODReader(BackgroundJob):
 
         timestamp_of_readings = timing.current_utc_datetime()
 
-        # Read normalized (unfiltered) reflectance from sensor
+        # Read un-filtered calibrated density from sensor (Phase A/A2 firmware
+        # port: was read_normalized_reflectance() — a reflectance ratio. Now
+        # in g/L. Maps to reg 0x12 (calibrated_density), the un-filtered density
+        # observation that mirrors the UKF input. The companion filtered series
+        # is published by growth_rate_calculating from reg 0x16.).
         try:
-            od_value = self.sensor.read_normalized_reflectance()
+            od_value = self.sensor.read_calibrated_density()
         except Exception as e:
             self.logger.debug(f"Error reading from ODSensorV2: {e}", exc_info=True)
             od_value = float("nan")

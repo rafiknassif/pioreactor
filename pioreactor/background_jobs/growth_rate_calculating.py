@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Reads growth rate and filtered OD data from the ODSensorV2 sensor's internal
-Kalman filter, triggered by incoming OD readings from MQTT.
+Reads growth rate and filtered density data from the ODSensorV2 sensor's
+internal Unscented Kalman Filter, triggered by incoming OD readings from MQTT.
+
+Phase A/A2 ODSensor firmware port: filter operates in density basis. The
+od_filtered topic now carries UKF-filtered density (g/L), sourced from the
+same register (0x16) as the density topic — they hold identical values, but
+are kept as separate topics for backwards-compat with downstream consumers.
+Reg 0x15 (legacy filtered_reflectance) is deleted in this firmware version.
 
 Topics published:
     pioreactor/<unit>/<experiment>/growth_rate_calculating/growth_rate
@@ -101,21 +107,18 @@ class GrowthRateCalculator(BackgroundJob):
         """
         timestamp = od_readings.timestamp
 
-        # Read filtered reflectance → od_filtered
-        try:
-            filtered_refl = self.sensor.read_filtered_reflectance()
-        except Exception as e:
-            self.logger.debug(f"Error reading filtered_reflectance: {e}")
-            filtered_refl = float("nan")
-
-        # Read growth rate
+        # Read growth rate (UKF μ, 1/h on density post-A2)
         try:
             gr = self.sensor.read_growth_rate()
         except Exception as e:
             self.logger.debug(f"Error reading growth_rate: {e}")
             gr = float("nan")
 
-        # Read filtered calibrated density
+        # Read UKF-filtered density (reg 0x16). Feeds both od_filtered and
+        # density topics — Phase A/A2 port: legacy filtered_reflectance (reg
+        # 0x15) is deleted, so od_filtered now carries the same density-basis
+        # value as the density topic. Same on-wire bytes, two topic names
+        # preserved for downstream compat.
         try:
             dens = self.sensor.read_filtered_calibrated_density()
         except Exception as e:
@@ -129,12 +132,6 @@ class GrowthRateCalculator(BackgroundJob):
             self.logger.debug(f"Error reading filtered_calibrated_growth_rate: {e}")
             abs_gr = float("nan")
 
-        if not math.isnan(filtered_refl):
-            self.od_filtered = structs.ODFiltered(
-                od_filtered=filtered_refl,
-                timestamp=timestamp,
-            )
-
         if not math.isnan(gr):
             self.growth_rate = structs.GrowthRate(
                 growth_rate=gr,
@@ -142,6 +139,10 @@ class GrowthRateCalculator(BackgroundJob):
             )
 
         if not math.isnan(dens):
+            self.od_filtered = structs.ODFiltered(
+                od_filtered=dens,
+                timestamp=timestamp,
+            )
             self.density = structs.Density(
                 density=dens,
                 timestamp=timestamp,
@@ -158,9 +159,11 @@ class GrowthRateCalculator(BackgroundJob):
             timestamp=timestamp,
         )
 
-        # KalmanFilterOutput — publish with available values, use 0.0 for NaN
+        # KalmanFilterOutput — publish with available values, use 0.0 for NaN.
+        # state[0] = filtered density (g/L), state[1] = μ (1/h on density),
+        # state[2] = unused (reserved for legacy 3-state UKF compatibility).
         self.kalman_filter_outputs = structs.KalmanFilterOutput(
-            state=[0.0 if math.isnan(filtered_refl) else filtered_refl,
+            state=[0.0 if math.isnan(dens) else dens,
                    0.0 if math.isnan(gr) else gr,
                    0.0],
             covariance_matrix=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],

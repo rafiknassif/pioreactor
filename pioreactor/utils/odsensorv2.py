@@ -20,13 +20,21 @@ logger = create_logger("odsensorv2", experiment="NONE", unit="NONE", pub_client=
 ODSENSORV2_ADDR = 0x69
 
 # Read registers (5-byte response: [status][4 LE float])
+#
+# Phase A/A2 ODSensor firmware port: the UKF was migrated from reflectance basis
+# to density basis. Two consequences for this driver:
+#   - Reg 0x15 (was REG_FILTERED_REFLECTANCE) is deleted; reads return error
+#     byte 0x01. Use REG_FILTERED_CALIBRATED_DENSITY (0x16) for the UKF density
+#     output and REG_CALIBRATED_DENSITY (0x12) for the un-filtered density
+#     observation.
+#   - Reg 0x13 (REG_GROWTH_RATE) units shift from "1/h on reflectance" to
+#     "1/h on density" — magnitude differs from legacy logs by ~k≈0.82×.
 REG_MEASURED_REFLECTANCE            = 0x10
 REG_NORMALIZED_REFLECTANCE          = 0x11
-REG_CALIBRATED_DENSITY              = 0x12
-REG_GROWTH_RATE                     = 0x13
+REG_CALIBRATED_DENSITY              = 0x12  # un-filtered density observation (g/L)
+REG_GROWTH_RATE                     = 0x13  # UKF μ (1/h on density, post-A2)
 REG_LASER_POWER_MW                  = 0x14
-REG_FILTERED_REFLECTANCE            = 0x15
-REG_FILTERED_CALIBRATED_DENSITY     = 0x16
+REG_FILTERED_CALIBRATED_DENSITY     = 0x16  # UKF-filtered density (g/L)
 REG_FILTERED_CALIBRATED_GROWTH_RATE = 0x17
 REG_CALIBRATED_ABSOLUTE_GROWTH_RATE = 0x18
 REG_STATUS                          = 0x20
@@ -138,9 +146,6 @@ class ODSensorV2:
 
     def read_laser_power_mw(self) -> float:
         return self.read_float_register(REG_LASER_POWER_MW)
-
-    def read_filtered_reflectance(self) -> float:
-        return self.read_float_register(REG_FILTERED_REFLECTANCE)
 
     def read_filtered_calibrated_density(self) -> float:
         return self.read_float_register(REG_FILTERED_CALIBRATED_DENSITY)
