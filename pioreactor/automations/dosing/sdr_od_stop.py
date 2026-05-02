@@ -215,6 +215,19 @@ class SDRODStop(DosingAutomationJob):
         )
 
     def execute(self) -> Optional[events.DilutionEvent]:
+        # Anchor guard: nothing happens (no priming, no dose) until the on-device
+        # UKF has published a filtered density we can anchor target_density on.
+        # Peek the raw attribute to avoid the latest_density property's blocking
+        # wait + RuntimeError path.
+        if self.starting_density is None and (
+            self._latest_density is None or not math.isfinite(self._latest_density)
+        ):
+            self.logger.warning(
+                "Waiting for UKF filtered density on growth_rate_calculating/density "
+                "before priming/dosing — start the UKF jobs first."
+            )
+            return None
+
         if not self._primed:
             max_volume_ml = config.getfloat("bioreactor", "max_volume_ml", fallback=14)
             prime_volume = 5.0
@@ -238,12 +251,12 @@ class SDRODStop(DosingAutomationJob):
             self._stop_signal_source = signal_source
 
         if self.starting_density is None:
-            self.starting_density = current_density
+            self.starting_density = self._latest_density
             self.target_density = self.relative_density * self.starting_density
             self.logger.info(
                 f"Captured starting density: {self.starting_density:.4f} g/L, "
                 f"target density: {self.target_density:.4f} g/L "
-                f"(relative_density={self.relative_density}, signal={signal_source})"
+                f"(relative_density={self.relative_density}, signal=filtered_density)"
             )
             estimated_hours = -math.log(self.relative_density) / self.sdr
             estimated_minutes = estimated_hours * 60
