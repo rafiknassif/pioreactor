@@ -77,6 +77,8 @@ class GrowthRateCalculator(BackgroundJob):
         super(GrowthRateCalculator, self).__init__(unit=unit, experiment=experiment)
         self.source_obs_from_mqtt = source_obs_from_mqtt
         self.latest_sdr = 0.0
+        self._last_dens = 0.0
+        self._last_gr = 0.0
         self.sensor = ODSensorV2()
 
         if not self.sensor.test_connection():
@@ -133,12 +135,14 @@ class GrowthRateCalculator(BackgroundJob):
             abs_gr = float("nan")
 
         if not math.isnan(gr):
+            self._last_gr = gr
             self.growth_rate = structs.GrowthRate(
                 growth_rate=gr,
                 timestamp=timestamp,
             )
 
         if not math.isnan(dens):
+            self._last_dens = dens
             self.od_filtered = structs.ODFiltered(
                 od_filtered=dens,
                 timestamp=timestamp,
@@ -163,8 +167,8 @@ class GrowthRateCalculator(BackgroundJob):
         # state[0] = filtered density (g/L), state[1] = μ (1/h on density),
         # state[2] = unused (reserved for legacy 3-state UKF compatibility).
         self.kalman_filter_outputs = structs.KalmanFilterOutput(
-            state=[0.0 if math.isnan(dens) else dens,
-                   0.0 if math.isnan(gr) else gr,
+            state=[dens if not math.isnan(dens) else self._last_dens,
+                   gr   if not math.isnan(gr)   else self._last_gr,
                    0.0],
             covariance_matrix=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             timestamp=timestamp,

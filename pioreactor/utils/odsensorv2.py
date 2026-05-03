@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import struct
 from time import sleep
 
@@ -88,7 +89,12 @@ class ODSensorV2:
         status = out[0]
         if status != 0x00:
             raise IOError(f"ODSensorV2 register 0x{reg:02X} returned error status 0x{status:02X}")
-        return struct.unpack("<f", out[1:5])[0]
+        value = struct.unpack("<f", out[1:5])[0]
+        # Reject implausible floats from torn/short I2C reads. NaN passes
+        # through (firmware uses it to signal "value unavailable").
+        if math.isinf(value) or (0.0 < abs(value) < 1e-30):
+            raise IOError(f"ODSensorV2 register 0x{reg:02X} returned implausible float {value!r}")
+        return value
 
     def read_status(self) -> int:
         """Read the status byte from register 0x20."""
