@@ -67,24 +67,27 @@ class SDRODStop(DosingAutomationJob):
         self.target_density: Optional[float] = None
         self._latest_density: Optional[float] = None
         self._latest_density_at = current_utc_datetime()
-        self._latest_raw_density: Optional[float] = None
-        self._latest_raw_density_at = current_utc_datetime()
-        self._smoothed_raw_density: Optional[float] = None
-        self._smoothed_raw_density_at = current_utc_datetime()
-        self._stop_signal_source = "filtered_density_fallback"
-        self._signal_channel = config.get("sdr_od_stop.config", "signal_channel", fallback="1")
-        self._raw_density_ema = ExponentialMovingAverage(
-            config.getfloat("sdr_od_stop.config", "raw_density_ema_alpha", fallback=0.55)
-        )
-        self._raw_outlier_abs_delta = config.getfloat(
-            "sdr_od_stop.config", "raw_density_outlier_abs_delta", fallback=0.20
-        )
-        self._raw_outlier_rel_delta = config.getfloat(
-            "sdr_od_stop.config", "raw_density_outlier_rel_delta", fallback=0.08
-        )
-        self._raw_signal_max_age_seconds = config.getfloat(
-            "sdr_od_stop.config", "raw_density_signal_max_age_seconds", fallback=5 * 60
-        )
+        # NOTE: EMA-smoothed raw-OD stop signal disabled. The previous parameters
+        # (alpha=0.55, abs_delta=0.20, rel_delta=0.08) caused the smoothed signal
+        # to lag the true density, so the stop check now uses the UKF filtered
+        # density directly. Re-enable with retuned parameters if needed.
+        # self._latest_raw_density: Optional[float] = None
+        # self._latest_raw_density_at = current_utc_datetime()
+        # self._smoothed_raw_density: Optional[float] = None
+        # self._smoothed_raw_density_at = current_utc_datetime()
+        # self._signal_channel = config.get("sdr_od_stop.config", "signal_channel", fallback="1")
+        # self._raw_density_ema = ExponentialMovingAverage(
+        #     config.getfloat("sdr_od_stop.config", "raw_density_ema_alpha", fallback=0.55)
+        # )
+        # self._raw_outlier_abs_delta = config.getfloat(
+        #     "sdr_od_stop.config", "raw_density_outlier_abs_delta", fallback=0.20
+        # )
+        # self._raw_outlier_rel_delta = config.getfloat(
+        #     "sdr_od_stop.config", "raw_density_outlier_rel_delta", fallback=0.08
+        # )
+        # self._raw_signal_max_age_seconds = config.getfloat(
+        #     "sdr_od_stop.config", "raw_density_signal_max_age_seconds", fallback=5 * 60
+        # )
         self._dosing_complete = False
         self._primed = False
 
@@ -158,50 +161,54 @@ class SDRODStop(DosingAutomationJob):
         self._latest_density = payload.density
         self._latest_density_at = payload.timestamp
 
-    def _set_raw_density(self, message: pt.MQTTMessage) -> None:
-        if not message.payload:
-            return
-
-        payload = decode(message.payload, type=structs.ODReadings)
-        if not payload.ods:
-            return
-
-        reading = payload.ods.get(self._signal_channel)
-        if reading is None:
-            reading = next(iter(payload.ods.values()))
-
-        raw_density = reading.od
-        if not math.isfinite(raw_density):
-            return
-
-        if self._latest_raw_density is not None:
-            baseline = max(abs(self._latest_raw_density), 1e-6)
-            outlier_threshold = max(
-                self._raw_outlier_abs_delta, self._raw_outlier_rel_delta * baseline
-            )
-            if abs(raw_density - self._latest_raw_density) > outlier_threshold:
-                self.logger.debug(
-                    "Rejecting raw density outlier: raw=%.4f, previous=%.4f, limit=%.4f",
-                    raw_density,
-                    self._latest_raw_density,
-                    outlier_threshold,
-                )
-                return
-
-        self._latest_raw_density = raw_density
-        self._latest_raw_density_at = payload.timestamp
-        self._smoothed_raw_density = self._raw_density_ema.update(raw_density)
-        self._smoothed_raw_density_at = payload.timestamp
-
-    def _get_stop_density(self) -> tuple[float, str]:
-        if (
-            self._smoothed_raw_density is not None
-            and (current_utc_datetime() - self._smoothed_raw_density_at).total_seconds()
-            <= self._raw_signal_max_age_seconds
-        ):
-            return self._smoothed_raw_density, "ema_raw_density"
-
-        return self.latest_density, "filtered_density_fallback"
+    # NOTE: EMA-smoothed raw-OD stop signal disabled. The previous parameters
+    # (alpha=0.55, abs_delta=0.20, rel_delta=0.08) caused the smoothed signal
+    # to lag the true density, so the stop check now uses the UKF filtered
+    # density directly. Re-enable with retuned parameters if needed.
+    # def _set_raw_density(self, message: pt.MQTTMessage) -> None:
+    #     if not message.payload:
+    #         return
+    #
+    #     payload = decode(message.payload, type=structs.ODReadings)
+    #     if not payload.ods:
+    #         return
+    #
+    #     reading = payload.ods.get(self._signal_channel)
+    #     if reading is None:
+    #         reading = next(iter(payload.ods.values()))
+    #
+    #     raw_density = reading.od
+    #     if not math.isfinite(raw_density):
+    #         return
+    #
+    #     if self._latest_raw_density is not None:
+    #         baseline = max(abs(self._latest_raw_density), 1e-6)
+    #         outlier_threshold = max(
+    #             self._raw_outlier_abs_delta, self._raw_outlier_rel_delta * baseline
+    #         )
+    #         if abs(raw_density - self._latest_raw_density) > outlier_threshold:
+    #             self.logger.debug(
+    #                 "Rejecting raw density outlier: raw=%.4f, previous=%.4f, limit=%.4f",
+    #                 raw_density,
+    #                 self._latest_raw_density,
+    #                 outlier_threshold,
+    #             )
+    #             return
+    #
+    #     self._latest_raw_density = raw_density
+    #     self._latest_raw_density_at = payload.timestamp
+    #     self._smoothed_raw_density = self._raw_density_ema.update(raw_density)
+    #     self._smoothed_raw_density_at = payload.timestamp
+    #
+    # def _get_stop_density(self) -> tuple[float, str]:
+    #     if (
+    #         self._smoothed_raw_density is not None
+    #         and (current_utc_datetime() - self._smoothed_raw_density_at).total_seconds()
+    #         <= self._raw_signal_max_age_seconds
+    #     ):
+    #         return self._smoothed_raw_density, "ema_raw_density"
+    #
+    #     return self.latest_density, "filtered_density_fallback"
 
     def start_passive_listeners(self) -> None:
         super().start_passive_listeners()
@@ -209,10 +216,11 @@ class SDRODStop(DosingAutomationJob):
             self._set_density,
             f"pioreactor/{self.unit}/{self.experiment}/growth_rate_calculating/density",
         )
-        self.subscribe_and_callback(
-            self._set_raw_density,
-            f"pioreactor/{self.unit}/{self.experiment}/od_reading/ods",
-        )
+        # NOTE: EMA-smoothed raw-OD stop signal disabled (see _set_raw_density above).
+        # self.subscribe_and_callback(
+        #     self._set_raw_density,
+        #     f"pioreactor/{self.unit}/{self.experiment}/od_reading/ods",
+        # )
 
     def execute(self) -> Optional[events.DilutionEvent]:
         # Anchor guard: nothing happens (no priming, no dose) until the on-device
@@ -245,10 +253,8 @@ class SDRODStop(DosingAutomationJob):
             )
             self._primed = True
 
-        current_density, signal_source = self._get_stop_density()
-        if signal_source != self._stop_signal_source:
-            self.logger.info("Stop signal source changed to `%s`.", signal_source)
-            self._stop_signal_source = signal_source
+        current_density = self.latest_density
+        signal_source = "ukf_filtered_density"
 
         if self.starting_density is None:
             self.starting_density = self._latest_density
